@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>词格</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <div class="titlebar" data-tauri-drag-region>
+      <span class="titlebar-title" data-tauri-drag-region>词格</span>
+      <button id="btn-theme" type="button" title="切换主题" aria-label="切换主题">☁️</button>
+    </div>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-badge">词格</span>
+        <input id="project-title" class="title-input" value="未命名歌曲" aria-label="工程标题" />
+      </div>
+      <div class="topbar-actions">
+        <label class="pattern-label">
+          词格
+          <input id="new-pattern" class="pattern-input" value="4/4" />
+        </label>
+        <button id="btn-add-sentence" type="button">新句</button>
+        <button id="btn-add-section" type="button">新段落</button>
+        <button id="btn-import-lyrics" type="button">导入歌词</button>
+        <button id="btn-open" type="button">打开</button>
+        <button id="btn-save" type="button">保存</button>
+        <button id="btn-save-as" type="button">另存为</button>
+        <button id="btn-export" type="button">导出</button>
+        <button id="btn-copy-lyrics" type="button">复制歌词</button>
+        <button id="btn-undo" type="button">撤销</button>
+        <button id="btn-redo" type="button">重做</button>
+      </div>
+    </header>
+
+    <main id="sentences" class="sentences"></main>
+
+    <footer class="statusbar">
+      <span id="status-stats" class="status-stats"></span>
+      <span id="status-hint">点格子输入 · Backspace 原地删 · Alt+←/→ 整句挪动 · Ctrl/Cmd+S 保存 · Ctrl/Cmd+Z 撤销 · Shift+Cmd+Z 重做</span>
+      <span class="status-right">
+        <span id="status-path"></span>
+        <span id="status-autosave"></span>
+      </span>
+    </footer>
+  </body>
+</html>
