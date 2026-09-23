@@ -30,14 +30,18 @@ export function totalCells(pattern: number[]): number {
 
 const PUNCT_SYMBOL = /[\p{P}\p{S}]/u
 
-export function countChars(text: string): number {
-  let n = 0
+export function contentChars(text: string): string[] {
+  const result: string[] = []
   for (const ch of text) {
     if (/\s/u.test(ch)) continue
     if (PUNCT_SYMBOL.test(ch)) continue
-    n++
+    result.push(ch)
   }
-  return n
+  return result
+}
+
+export function countChars(text: string): number {
+  return contentChars(text).length
 }
 
 export function countGroup(token: string): number {

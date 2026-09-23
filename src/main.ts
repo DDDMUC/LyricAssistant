@@ -8,7 +8,8 @@ import {
   shiftSentence,
   writeChars,
 } from "./model/grid"
-import { parsePattern, patternFromLyrics, patternToString, totalCells } from "./model/pattern"
+import { parseLyrics } from "./model/lyrics"
+import { parsePattern, patternToString, totalCells } from "./model/pattern"
 import { isEndingFilled, rhymeHue, rhymeOfCells } from "./model/rhyme"
 import type { Project, Section, Sentence } from "./model/types"
 import {
@@ -135,17 +136,10 @@ function render(): void {
   renderStatusBar()
 }
 
-const SECTION_HUES = [24, 205, 150, 280, 340, 190, 55, 320]
-
-function sectionHue(index: number): number {
-  return SECTION_HUES[index % SECTION_HUES.length]
-}
-
 function renderSection(section: Section, sectionIdx: number): HTMLElement {
   const root = document.createElement("section")
   root.className = "section"
   root.dataset.sectionId = section.id
-  root.style.setProperty("--section-hue", String(sectionHue(sectionIdx)))
 
   const header = document.createElement("div")
   header.className = "section-header"
@@ -306,27 +300,18 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
     focusCellInput()
   })
 
-  const meta = document.createElement("div")
-  meta.className = "sentence-meta"
+  const cells = getCells(sentence)
+
+  const row = document.createElement("div")
+  row.className = "sentence-row"
+
+  const side = document.createElement("div")
+  side.className = "sentence-side"
 
   const indexEl = document.createElement("span")
   indexEl.className = "sentence-index"
-  indexEl.textContent = `#${index + 1}`
-  meta.appendChild(indexEl)
-
-  const cellsForRhyme = getCells(sentence)
-  const rhyme = rhymeOfCells(cellsForRhyme)
-  if (rhyme) {
-    const ended = isEndingFilled(cellsForRhyme)
-    const badge = document.createElement("span")
-    badge.className = ended ? "rhyme-badge" : "rhyme-badge pending"
-    badge.textContent = rhyme.label.replace(/辙$/, "")
-    badge.title = ended
-      ? `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label}`
-      : `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label}（句尾未填，暂不统计）`
-    badge.style.setProperty("--rhyme-hue", String(rhymeHue(rhyme.key)))
-    meta.appendChild(badge)
-  }
+  indexEl.textContent = String(index + 1)
+  side.appendChild(indexEl)
 
   const patternInput = document.createElement("input")
   patternInput.className = "pattern-input sentence-pattern"
@@ -345,11 +330,16 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
       setStatus(err instanceof Error ? err.message : String(err), true)
     }
   })
-  meta.appendChild(patternInput)
+  side.appendChild(patternInput)
+  row.appendChild(side)
+
+  const meta = document.createElement("div")
+  meta.className = "sentence-meta"
 
   const noteInput = document.createElement("input")
   noteInput.className = "sentence-note"
-  noteInput.placeholder = "备注（不占格子）"
+  noteInput.placeholder = "备注"
+  noteInput.title = "备注（不占格子，导出时可选带上）"
   noteInput.value = sentence.note
   noteInput.addEventListener("change", () => {
     mutate(() => {
@@ -357,7 +347,10 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
       if (target) target.note = noteInput.value
     })
   })
-  meta.appendChild(noteInput)
+
+
+  const altCombo = document.createElement("span")
+  altCombo.className = "alt-combo"
 
   const altSelect = document.createElement("select")
   altSelect.className = "alt-select"
@@ -374,21 +367,23 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
       if (target) switchAlternative(target, Number(altSelect.value))
     })
   })
-  meta.appendChild(altSelect)
-
-  const controls = document.createElement("div")
-  controls.className = "sentence-controls"
+  altCombo.appendChild(altSelect)
 
   const addAltBtn = document.createElement("button")
   addAltBtn.type = "button"
-  addAltBtn.textContent = "+备选"
+  addAltBtn.className = "alt-add"
+  addAltBtn.textContent = "+"
+  addAltBtn.title = "新增备选"
   addAltBtn.addEventListener("click", () => {
     mutate(() => {
       const target = store.findSentence(sentence.id)
       if (target) addAlternative(target)
     })
   })
-  controls.appendChild(addAltBtn)
+  altCombo.appendChild(addAltBtn)
+
+  const controls = document.createElement("div")
+  controls.className = "sentence-controls"
 
   const copyBtn = document.createElement("button")
   copyBtn.type = "button"
@@ -483,12 +478,8 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   })
   controls.appendChild(delBtn)
 
-  meta.appendChild(controls)
-  root.appendChild(meta)
-
   const grid = document.createElement("div")
   grid.className = "grid"
-  const cells = getCells(sentence)
   let cellIdx = 0
 
   sentence.pattern.forEach((size, g) => {
@@ -532,7 +523,37 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
     grid.appendChild(groupEl)
   })
 
-  root.appendChild(grid)
+  row.appendChild(grid)
+
+  const sideRight = document.createElement("div")
+  sideRight.className = "sentence-side-right"
+
+  const rhyme = rhymeOfCells(cells)
+  if (rhyme) {
+    const ended = isEndingFilled(cells)
+    const badge = document.createElement("span")
+    badge.className = ended ? "rhyme-badge" : "rhyme-badge pending"
+    badge.textContent = rhyme.label.replace(/辙$/, "")
+    badge.title = ended
+      ? `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label}`
+      : `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label}（句尾未填，暂不统计）`
+    badge.style.setProperty("--rhyme-hue", String(rhymeHue(rhyme.key)))
+    sideRight.appendChild(badge)
+  }
+
+  const filled = cells.filter((char) => char.trim() !== "").length
+  const progress = document.createElement("span")
+  progress.className = "sentence-progress"
+  progress.textContent = `${filled}/${cells.length}`
+  sideRight.appendChild(progress)
+
+  row.appendChild(sideRight)
+
+  meta.append(altCombo, noteInput, controls)
+  root.appendChild(meta)
+
+  root.appendChild(row)
+
   return root
 }
 
@@ -786,7 +807,7 @@ async function saveProject(saveAs: boolean): Promise<void> {
     store.markSaved()
     store.persist()
     renderStatusBar()
-    setStatus("已保存")
+    setStatus("已保存工程")
   } catch (err) {
     setStatus(`保存失败: ${err instanceof Error ? err.message : err}`, true)
   }
@@ -810,7 +831,7 @@ async function openProject(): Promise<void> {
     store.markSaved()
     store.persist()
     render()
-    setStatus("已打开")
+    setStatus("已打开工程")
   } catch (err) {
     setStatus(`打开失败: ${err instanceof Error ? err.message : err}`, true)
   }
@@ -830,23 +851,38 @@ async function exportText(): Promise<void> {
   }
 }
 
-function applyLyricsText(text: string, fileTitle?: string, merge = false): boolean {
+function applyLyricsText(
+  text: string,
+  fileTitle?: string,
+  merge = false,
+  fillLyrics = true,
+): boolean {
   try {
-    const blocks = text
-      .split(/\r?\n\s*\r?\n/)
-      .map((block) => patternFromLyrics(block))
-      .filter((patterns) => patterns.length > 0)
-    if (blocks.length === 0) {
+    const parsed = parseLyrics(text)
+    const total = parsed.sections.reduce((n, section) => n + section.lines.length, 0)
+    if (total === 0) {
       setStatus("没有识别到歌词行", true)
       return false
     }
     mutate(() => {
-      const imported = blocks.map((patterns, i) =>
-        createSection(
-          blocks.length === 1 ? "导入" : `导入 ${i + 1}`,
-          patterns.map((p) => createSentence(p)),
-        ),
-      )
+      const imported = parsed.sections.map((section, i) => {
+        const sentences = section.lines.map((line) => {
+          const sentence = createSentence(line.pattern)
+          if (fillLyrics) {
+            setCells(sentence, line.cells)
+            for (const altCells of line.alts) {
+              addAlternative(sentence)
+              setCells(sentence, altCells)
+            }
+            switchAlternative(sentence, 0)
+            if (line.note) sentence.note = line.note
+          }
+          return sentence
+        })
+        const name =
+          section.name || (parsed.sections.length === 1 ? "导入" : `导入 ${i + 1}`)
+        return createSection(name, sentences)
+      })
       if (merge) {
         store.project.sections.push(...imported)
       } else {
@@ -854,13 +890,13 @@ function applyLyricsText(text: string, fileTitle?: string, merge = false): boole
       }
       const first = imported[0]?.sentences[0]
       if (first) store.cursor = { sentenceId: first.id, cell: 0 }
-      if (fileTitle && !merge) {
-        store.project.title = fileTitle
-        titleEl.value = fileTitle
+      const title = parsed.title || fileTitle
+      if (title && !merge) {
+        store.project.title = title
+        titleEl.value = title
       }
     })
-    const count = blocks.reduce((n, patterns) => n + patterns.length, 0)
-    setStatus(merge ? `已合并 ${count} 句词格` : `已按歌词生成 ${count} 句词格`)
+    setStatus(merge ? `已合并 ${total} 句歌词` : `已导入 ${total} 句歌词`)
     return true
   } catch (err) {
     setStatus(err instanceof Error ? err.message : String(err), true)
@@ -872,9 +908,14 @@ function openImportDialog(): void {
   const dialog = document.createElement("dialog")
   dialog.innerHTML = `
     <form method="dialog" class="dialog-body">
+      <button class="dialog-close" value="cancel" type="submit" title="关闭" aria-label="关闭">×</button>
       <strong>导入歌词</strong>
-      <p>每行一句；行内用空格分隔分句组，空行分段。例：<code>真的 假的 啊</code> → 2/2/1。可直接粘贴、从剪贴板读入，或选择 .txt / .lrc / .md 文件。</p>
-      <textarea placeholder="我 爱 你&#10;真的是 你啊"></textarea>
+      <p>每行一句，空格分组，空行分段。支持《标题》、[段落名]、行尾（备注）、<code>|</code> 分隔备选、纯数字行只生成词格。例：<code>真的 假的 啊</code> → 2/2/1。可直接粘贴、从剪贴板读入，或选择 .txt / .lrc / .md 文件。</p>
+      <textarea placeholder="《歌名》&#10;[Verse]&#10;真的 假的（温柔）|真的啊"></textarea>
+      <div class="dialog-radios">
+        <label><input type="radio" name="import-mode" value="lyrics" checked /> 同时导入歌词</label>
+        <label><input type="radio" name="import-mode" value="grid" /> 仅词格</label>
+      </div>
       <label class="dialog-check">
         <input type="checkbox" id="import-merge" />
         合并到现有歌词（不覆盖）
@@ -882,7 +923,6 @@ function openImportDialog(): void {
       <div class="dialog-actions">
         <button value="clip" type="submit">从剪贴板</button>
         <button value="file" type="submit">选择文件…</button>
-        <button value="cancel" type="submit">取消</button>
         <button value="ok" type="submit">导入</button>
       </div>
     </form>
@@ -890,6 +930,9 @@ function openImportDialog(): void {
   document.body.appendChild(dialog)
   const textarea = dialog.querySelector("textarea")!
   const mergeInput = dialog.querySelector<HTMLInputElement>("#import-merge")!
+  const modeInputs = Array.from(
+    dialog.querySelectorAll<HTMLInputElement>('input[name="import-mode"]'),
+  )
   dialog.addEventListener("close", () => {
     const action = dialog.returnValue
     if (action === "file") {
@@ -912,9 +955,10 @@ function openImportDialog(): void {
       return
     }
     const merge = mergeInput.checked
+    const fillLyrics = modeInputs.find((el) => el.checked)?.value !== "grid"
     dialog.remove()
     if (action === "ok") {
-      applyLyricsText(textarea.value, textarea.dataset.fileTitle, merge)
+      applyLyricsText(textarea.value, textarea.dataset.fileTitle, merge, fillLyrics)
     }
   })
   dialog.showModal()
