@@ -9,10 +9,12 @@
   --text-muted: #8e8e93;
   --border: #e5e5ea;
   --border-strong: #d2d2d7;
-  --border-cell: #c7c7cc;
+  --border-cell: #d0d0d6;
   --accent: #0071e3;
   --accent-soft: rgba(0, 113, 227, 0.12);
   --accent-bg: #f0f8ff;
+  --field-bg: #ececf1;
+  --field-bg-hover: #e2e2e8;
   --danger: #ff3b30;
   --section-accent: #c8a02c;
   --grid-line: rgba(201, 162, 74, 0.4);
@@ -45,6 +47,8 @@ html[data-theme="dark"] {
   --accent: #0a84ff;
   --accent-soft: rgba(10, 132, 255, 0.22);
   --accent-bg: #1c3a5e;
+  --field-bg: #2f2f31;
+  --field-bg-hover: #3a3a3c;
   --danger: #ff453a;
   --section-accent: #e8c547;
   --grid-line: rgba(232, 197, 71, 0.32);
@@ -112,33 +116,43 @@ select {
 
 button {
   cursor: pointer;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-input);
+  border: 1px solid transparent;
+  background: transparent;
   border-radius: 8px;
-  padding: 0.35em 0.9em;
+  padding: 0.34em 0.75em;
+  font-size: 13px;
   color: var(--text);
+  transition: background-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
 }
 
 button:hover {
-  border-color: var(--accent);
-}
-
-button:active {
   background: var(--bg-hover);
 }
 
+button:active {
+  background: var(--bg-soft);
+}
+
+button.primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+button.primary:hover,
+button.primary:active {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
 button.danger:hover {
-  border-color: var(--danger);
+  background: rgba(255, 59, 48, 0.1);
   color: var(--danger);
 }
 
 button:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: default;
-}
-
-button:disabled:hover {
-  border-color: var(--border-strong);
+  background: transparent;
 }
 
 .topbar {
@@ -147,8 +161,8 @@ button:disabled:hover {
   z-index: 10;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
+  gap: 10px;
+  padding: 8px 16px;
   background: var(--topbar-bg);
   border-bottom: 1px solid var(--border);
   backdrop-filter: blur(8px);
@@ -162,8 +176,8 @@ button:disabled:hover {
 }
 
 .brand-badge {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: 12px;
   font-weight: 700;
   padding: 3px 8px;
@@ -190,7 +204,7 @@ button:disabled:hover {
 
 .topbar-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
   flex-wrap: wrap;
 }
@@ -203,13 +217,34 @@ button:disabled:hover {
   font-size: 13px;
 }
 
+.pattern-input,
+.sentence-note,
+.alt-select {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0.32em 0.6em;
+  background: var(--field-bg);
+  color: var(--text);
+  transition: background-color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
 .pattern-input {
   width: 6em;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  padding: 0.35em 0.6em;
+}
+
+.pattern-input:hover,
+.sentence-note:hover,
+.alt-select:hover {
+  background: var(--field-bg-hover);
+}
+
+.pattern-input:focus,
+.sentence-note:focus,
+.alt-select:focus {
+  outline: none;
   background: var(--bg-input);
-  color: var(--text);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .pattern-input.invalid {
@@ -235,9 +270,26 @@ button:disabled:hover {
 }
 
 .section {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding-left: 14px;
+}
+
+.section::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: hsl(var(--section-hue, 40) 50% 48%);
+}
+
+html[data-theme="dark"] .section::before {
+  background: hsl(var(--section-hue, 40) 55% 60%);
 }
 
 .section-header {
@@ -251,12 +303,16 @@ button:disabled:hover {
 .section-name {
   border: none;
   background: transparent;
-  color: var(--section-accent);
+  color: hsl(var(--section-hue, 40) 48% 34%);
   font-size: 17px;
   font-weight: 700;
   padding: 2px 6px;
   border-radius: 6px;
   min-width: 6em;
+}
+
+html[data-theme="dark"] .section-name {
+  color: hsl(var(--section-hue, 40) 62% 70%);
 }
 
 .section-name:hover,
@@ -279,25 +335,27 @@ button:disabled:hover {
 .section-actions button {
   font-size: 12px;
   padding: 0.2em 0.6em;
+  color: var(--text-secondary);
+}
+
+.section-actions button:hover {
+  color: var(--text);
 }
 
 .sentence {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px 14px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
 }
 
 .sentence:hover {
-  border-color: var(--border-strong);
+  background: var(--bg-hover);
 }
 
 .sentence.active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--accent-soft);
 }
 
 .sentence-meta {
@@ -313,6 +371,30 @@ button:disabled:hover {
   min-width: 2em;
 }
 
+.rhyme-badge {
+  --rhyme-hue: 210;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 1px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  color: hsl(var(--rhyme-hue) 65% 36%);
+  background: hsl(var(--rhyme-hue) 75% 50% / 0.14);
+  border: 1px solid hsl(var(--rhyme-hue) 75% 50% / 0.35);
+}
+
+html[data-theme="dark"] .rhyme-badge {
+  color: hsl(var(--rhyme-hue) 80% 74%);
+  background: hsl(var(--rhyme-hue) 80% 60% / 0.18);
+  border-color: hsl(var(--rhyme-hue) 80% 60% / 0.4);
+}
+
+.rhyme-badge.pending {
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
 .sentence-pattern {
   width: 6em;
 }
@@ -320,11 +402,6 @@ button:disabled:hover {
 .sentence-note {
   flex: 1;
   min-width: 8em;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  padding: 0.3em 0.6em;
-  background: var(--bg-input);
-  color: var(--text);
 }
 
 .sentence-note::placeholder {
@@ -332,11 +409,7 @@ button:disabled:hover {
 }
 
 .alt-select {
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  padding: 0.3em 0.5em;
-  background: var(--bg-input);
-  color: var(--text);
+  padding: 0.32em 0.5em;
 }
 
 .sentence-controls {
@@ -354,6 +427,21 @@ button:disabled:hover {
 .sentence-controls button {
   font-size: 12px;
   padding: 0.2em 0.55em;
+  color: var(--text-secondary);
+}
+
+.sentence-controls button:hover {
+  color: var(--text);
+}
+
+.add-sentence-inline {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.add-sentence-inline:hover {
+  color: var(--text);
 }
 
 .grid {
@@ -379,7 +467,7 @@ button:disabled:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1.5px solid var(--border-cell);
+  border: 1px solid var(--border-cell);
   border-radius: 9px;
   background-color: var(--bg-soft);
   color: var(--text);
@@ -401,7 +489,7 @@ button:disabled:hover {
   width: 54px;
   height: 54px;
   box-sizing: border-box;
-  border: 1.5px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 9px;
   background-color: var(--accent-bg);
   color: var(--text);
@@ -506,13 +594,31 @@ dialog::backdrop {
 .dialog-body textarea {
   width: 100%;
   height: 180px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid transparent;
   border-radius: 8px;
   padding: 8px;
   resize: vertical;
   font-family: inherit;
-  background: var(--bg-input);
+  background: var(--field-bg);
   color: var(--text);
+  transition: background-color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.dialog-body textarea:focus {
+  outline: none;
+  background: var(--bg-input);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.dialog-actions button[value="ok"] {
+  background: var(--accent);
+  color: #fff;
+}
+
+.dialog-actions button[value="ok"]:hover {
+  background: var(--accent);
+  filter: brightness(1.08);
 }
 
 .dialog-check {

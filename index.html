@@ -25,10 +25,9 @@
           <input id="new-pattern" class="pattern-input" value="4/4" />
         </label>
         <button id="btn-add-sentence" type="button">新句</button>
-        <button id="btn-add-section" type="button">新段落</button>
         <button id="btn-import-lyrics" type="button">导入歌词</button>
         <button id="btn-open" type="button">打开</button>
-        <button id="btn-save" type="button">保存</button>
+        <button id="btn-save" class="primary" type="button">保存</button>
         <button id="btn-save-as" type="button">另存为</button>
         <button id="btn-export" type="button">导出</button>
         <button id="btn-copy-lyrics" type="button">复制歌词</button>
@@ -43,6 +42,7 @@
       <span id="status-stats" class="status-stats"></span>
       <span id="status-hint">点格子输入 · Backspace 原地删 · Alt+←/→ 整句挪动 · Ctrl/Cmd+S 保存 · Ctrl/Cmd+Z 撤销 · Shift+Cmd+Z 重做</span>
       <span class="status-right">
+        <span id="status-rhyme"></span>
         <span id="status-path"></span>
         <span id="status-autosave"></span>
       </span>

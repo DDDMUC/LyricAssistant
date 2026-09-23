@@ -9,6 +9,7 @@ import {
   writeChars,
 } from "./model/grid"
 import { parsePattern, patternFromLyrics, patternToString, totalCells } from "./model/pattern"
+import { isEndingFilled, rhymeHue, rhymeOfCells } from "./model/rhyme"
 import type { Project, Section, Sentence } from "./model/types"
 import {
   autosaveState,
@@ -42,6 +43,7 @@ const statusStatsEl = document.querySelector("#status-stats") as HTMLElement
 const statusHintEl = document.querySelector("#status-hint") as HTMLElement
 const statusPathEl = document.querySelector("#status-path") as HTMLElement
 const statusAutosaveEl = document.querySelector("#status-autosave") as HTMLElement
+const statusRhymeEl = document.querySelector("#status-rhyme") as HTMLElement
 const themeBtn = document.querySelector("#btn-theme") as HTMLButtonElement
 const undoBtn = document.querySelector("#btn-undo") as HTMLButtonElement
 const redoBtn = document.querySelector("#btn-redo") as HTMLButtonElement
@@ -88,9 +90,29 @@ function renderStatusBar(): void {
   undoBtn.disabled = !store.canUndo()
   redoBtn.disabled = !store.canRedo()
 
+  statusRhymeEl.textContent = rhymeSummaryText()
+
   updatePathStatus()
   statusAutosaveEl.textContent = autosaveState.at ? `已自动保存 ${autosaveState.at}` : ""
   document.title = `${store.dirty ? "● " : ""}${store.project.title || "词格"} · 词格`
+}
+
+function rhymeSummaryText(): string {
+  const counts = new Map<string, { label: string; count: number }>()
+  for (const sentence of allSentences(store.project)) {
+    const cells = getCells(sentence)
+    if (!isEndingFilled(cells)) continue
+    const rhyme = rhymeOfCells(cells)
+    if (!rhyme) continue
+    const entry = counts.get(rhyme.key) ?? { label: rhyme.label, count: 0 }
+    entry.count += 1
+    counts.set(rhyme.key, entry)
+  }
+  if (counts.size === 0) return ""
+  const parts = [...counts.values()]
+    .sort((a, b) => b.count - a.count)
+    .map((entry) => `${entry.label.replace(/辙$/, "")}×${entry.count}`)
+  return `韵脚 ${parts.join(" ")}`
 }
 
 function mutate(fn: () => void): void {
@@ -113,10 +135,17 @@ function render(): void {
   renderStatusBar()
 }
 
+const SECTION_HUES = [24, 205, 150, 280, 340, 190, 55, 320]
+
+function sectionHue(index: number): number {
+  return SECTION_HUES[index % SECTION_HUES.length]
+}
+
 function renderSection(section: Section, sectionIdx: number): HTMLElement {
   const root = document.createElement("section")
   root.className = "section"
   root.dataset.sectionId = section.id
+  root.style.setProperty("--section-hue", String(sectionHue(sectionIdx)))
 
   const header = document.createElement("div")
   header.className = "section-header"
@@ -150,6 +179,13 @@ function renderSection(section: Section, sectionIdx: number): HTMLElement {
   addBtn.textContent = "+ 新增一句"
   addBtn.addEventListener("click", () => addSentenceToSection(section.id))
   actions.appendChild(addBtn)
+
+  const addSectionBtn = document.createElement("button")
+  addSectionBtn.type = "button"
+  addSectionBtn.textContent = "+ 段"
+  addSectionBtn.title = "在此段后插入新段落"
+  addSectionBtn.addEventListener("click", () => addSectionAfter(section.id))
+  actions.appendChild(addSectionBtn)
 
   const upSectionBtn = document.createElement("button")
   upSectionBtn.type = "button"
@@ -228,6 +264,20 @@ function addSentenceToSection(sectionId: string): void {
   }
 }
 
+function addSectionAfter(sectionId: string): void {
+  mutate(() => {
+    const index = store.project.sections.findIndex((s) => s.id === sectionId)
+    const section = createSection(
+      `段落 ${store.project.sections.length + 1}`,
+      [createSentence([4, 4])],
+    )
+    store.project.sections.splice(index < 0 ? store.project.sections.length : index + 1, 0, section)
+    store.cursor = { sentenceId: section.sentences[0].id, cell: 0 }
+  })
+  setStatus("已加段落")
+  focusCellInput()
+}
+
 function moveSectionBy(sectionId: string, dir: -1 | 1): void {
   const index = store.project.sections.findIndex((s) => s.id === sectionId)
   const target = index + dir
@@ -263,6 +313,20 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   indexEl.className = "sentence-index"
   indexEl.textContent = `#${index + 1}`
   meta.appendChild(indexEl)
+
+  const cellsForRhyme = getCells(sentence)
+  const rhyme = rhymeOfCells(cellsForRhyme)
+  if (rhyme) {
+    const ended = isEndingFilled(cellsForRhyme)
+    const badge = document.createElement("span")
+    badge.className = ended ? "rhyme-badge" : "rhyme-badge pending"
+    badge.textContent = rhyme.label.replace(/辙$/, "")
+    badge.title = ended
+      ? `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label}`
+      : `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label}（句尾未填，暂不统计）`
+    badge.style.setProperty("--rhyme-hue", String(rhymeHue(rhyme.key)))
+    meta.appendChild(badge)
+  }
 
   const patternInput = document.createElement("input")
   patternInput.className = "pattern-input sentence-pattern"
@@ -443,8 +507,9 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
         input.className = "cell-input"
         input.dataset.sentenceId = sentence.id
         input.dataset.index = String(i)
-        input.value = ""
-        input.placeholder = cells[i] ?? ""
+        const base = cells[i] ?? ""
+        input.value = base
+        input.dataset.base = base
         input.autocomplete = "off"
         input.spellcheck = false
         bindCellInput(input, sentence.id, i)
@@ -527,7 +592,12 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
     if (e.key === "Backspace") {
       e.preventDefault()
       if (input.value.length > 0) {
-        input.value = ""
+        mutate(() => {
+          const s = store.findSentence(sentenceId)
+          if (!s) return
+          setCells(s, clearCell(getCells(s), store.cursor.cell))
+        })
+        focusCellInput()
         return
       }
       const sentence = store.findSentence(sentenceId)
@@ -540,20 +610,18 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
         setCells(s, clearCell(getCells(s), target))
         store.cursor.cell = target
       })
+      focusCellInput()
       return
     }
 
     if (e.key === "Delete") {
       e.preventDefault()
-      if (input.value.length > 0) {
-        input.value = ""
-        return
-      }
       mutate(() => {
         const s = store.findSentence(sentenceId)
         if (!s) return
         setCells(s, clearCell(getCells(s), store.cursor.cell))
       })
+      focusCellInput()
       return
     }
 
@@ -568,7 +636,7 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
       return
     }
 
-    if (e.key === "ArrowLeft" && input.value === "") {
+    if (e.key === "ArrowLeft" && !e.shiftKey) {
       e.preventDefault()
       if (store.cursor.cell > 0) {
         store.cursor.cell -= 1
@@ -577,7 +645,7 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
       }
       return
     }
-    if (e.key === "ArrowRight" && input.value === "") {
+    if (e.key === "ArrowRight" && !e.shiftKey) {
       e.preventDefault()
       const s = store.findSentence(sentenceId)
       if (!s) return
@@ -606,8 +674,18 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
 }
 
 function commitInput(input: HTMLInputElement): void {
-  const text = input.value
-  if (!text) return
+  const base = input.dataset.base ?? ""
+  const raw = input.value
+  if (!raw) {
+    input.value = base
+    return
+  }
+  if (base && raw === base) return
+  const text = base ? raw.replace(base, "") : raw
+  if (!text) {
+    input.value = base
+    return
+  }
   const sentenceId = input.dataset.sentenceId ?? ""
   const start = store.cursor.cell
   input.value = ""
@@ -883,19 +961,6 @@ function bindToolbar(): void {
       findSectionBySentence(store.project, store.cursor.sentenceId)?.id ??
       store.project.sections[0]?.id
     if (sectionId) addSentenceToSection(sectionId)
-  })
-
-  document.querySelector("#btn-add-section")?.addEventListener("click", () => {
-    mutate(() => {
-      const section = createSection(
-        `段落 ${store.project.sections.length + 1}`,
-        [createSentence([4, 4])],
-      )
-      store.project.sections.push(section)
-      store.cursor = { sentenceId: section.sentences[0].id, cell: 0 }
-    })
-    setStatus("已加段落")
-    focusCellInput()
   })
 
   document.querySelector("#btn-import-lyrics")?.addEventListener("click", openImportDialog)
