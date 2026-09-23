@@ -47,6 +47,60 @@ describe("parseLyrics", () => {
     expect(parsed.sections[1].lines[0].cells).toEqual(["爱", "你", "哦"])
   })
 
+  it("无空行无段落头时每 4 句自动分段", () => {
+    const lines = Array.from({ length: 12 }, (_, i) => `第${i + 1}句`).join("\n")
+    const parsed = parseLyrics(lines)
+    expect(parsed.sections.map((s) => s.lines.length)).toEqual([4, 4, 4])
+  })
+
+  it("余 1 句时并进上一段", () => {
+    const lines = Array.from({ length: 13 }, (_, i) => `第${i + 1}句`).join("\n")
+    const parsed = parseLyrics(lines)
+    expect(parsed.sections.map((s) => s.lines.length)).toEqual([4, 4, 5])
+  })
+
+  it("不足 5 句不分段", () => {
+    const parsed = parseLyrics("一 二\n三 四\n五")
+    expect(parsed.sections).toHaveLength(1)
+  })
+
+  it("裸关键词识别为段落头", () => {
+    const parsed = parseLyrics(
+      "Verse\n真的 假的\nChorus\n爱你 哦\n\n副歌 2\n再来 一遍\n(Intro)\n前奏 词\n#verse\n最后 一句",
+    )
+    expect(parsed.sections.map((s) => s.name)).toEqual([
+      "Verse",
+      "Chorus",
+      "副歌 2",
+      "Intro",
+      "verse",
+    ])
+    expect(parsed.sections[3].lines[0].cells).toEqual(["前", "奏", "词"])
+  })
+
+  it("含关键词的歌词行不当段落头", () => {
+    const parsed = parseLyrics("副歌 真的 假的")
+    expect(parsed.sections).toHaveLength(1)
+    expect(parsed.sections[0].name).toBe("")
+    expect(parsed.sections[0].lines[0].pattern).toEqual([2, 2, 2])
+  })
+
+  it("※ 也可作备选分隔符", () => {
+    const parsed = parseLyrics("你好 吗※你好\n真的｜真的啊")
+    expect(parsed.sections[0].lines[0].alts).toEqual([["你", "好", ""]])
+    expect(parsed.sections[0].lines[1].alts).toEqual([["真", "的"]])
+  })
+
+  it("XXXX 占位只生成词格不填字", () => {
+    const parsed = parseLyrics("XXXX XXX\nXX 真的")
+    const first = parsed.sections[0].lines[0]
+    expect(first.pattern).toEqual([4, 3])
+    expect(first.cells).toEqual(new Array(7).fill(""))
+    const second = parsed.sections[0].lines[1]
+    expect(second.pattern).toEqual([2, 2])
+    expect(second.cells).toEqual(["", "", "真", "的"])
+  })
+
   it("空行自动分段", () => {
     const parsed = parseLyrics("第一段 词\n第二句\n\n第三段 词")
     expect(parsed.sections).toHaveLength(2)
@@ -60,6 +114,61 @@ describe("parseLyrics", () => {
     expect(lines).toHaveLength(2)
     expect(lines[0].cells).toEqual(["真", "的", "假", "的"])
     expect(lines[1].cells).toEqual(["重", "复", "句"])
+  })
+
+  it("识别并跳过 credit 行，一条行内多条也拆开", () => {
+    const parsed = parseLyrics(
+      "作词: 择荇作曲: 叶里\n编曲: 雷震\n混音/母带: mading\n歌曲联合发行: QQ音乐国风集\n我要扶摇直上 坐拥满天星斗",
+    )
+    expect(parsed.credits).toEqual([
+      "作词：择荇",
+      "作曲：叶里",
+      "编曲：雷震",
+      "混音/母带：mading",
+      "歌曲联合发行：QQ音乐国风集",
+    ])
+    expect(parsed.sections).toHaveLength(1)
+    expect(parsed.sections[0].lines).toHaveLength(1)
+    expect(parsed.sections[0].lines[0].cells.join("")).toBe("我要扶摇直上坐拥满天星斗")
+  })
+
+  it("英文 credit 也认", () => {
+    const parsed = parseLyrics("Lyrics: Someone\nComposer: Someone Else\n真的 假的")
+    expect(parsed.credits).toEqual(["Lyrics：Someone", "Composer：Someone Else"])
+    expect(parsed.sections[0].lines).toHaveLength(1)
+  })
+
+  it("歌词里的冒号不误判为 credit", () => {
+    const parsed = parseLyrics("他说：走吧\n真的 假的")
+    expect(parsed.credits).toEqual([])
+    expect(parsed.sections[0].lines).toHaveLength(2)
+  })
+
+  it("带值的和声算 credit，裸「和声」算段落名", () => {
+    const parsed = parseLyrics("和声: 叶里\n和声\n真的 假的")
+    expect(parsed.credits).toEqual(["和声：叶里"])
+    expect(parsed.sections[0].name).toBe("和声")
+  })
+
+  it("credit 块里的裸行识别为歌名", () => {
+    const parsed = parseLyrics(
+      "作词：冉语优\n人间应又雪\n演唱：洛天依、言和\n夜 泼墨如雨昏又明",
+    )
+    expect(parsed.title).toBe("人间应又雪")
+    expect(parsed.credits).toEqual(["作词：冉语优", "演唱：洛天依、言和"])
+    expect(parsed.sections[0].lines).toHaveLength(1)
+  })
+
+  it("下一行不是 credit 时不抢作歌名", () => {
+    const parsed = parseLyrics("人间应又雪\n夜 泼墨如雨昏又明")
+    expect(parsed.title).toBe("")
+    expect(parsed.sections[0].lines).toHaveLength(2)
+  })
+
+  it("乐器与分轨类 credit 也识别", () => {
+    const parsed = parseLyrics("二胡：二胡妹\n分轨混音/母带：周天澈\n真的 假的")
+    expect(parsed.credits).toEqual(["二胡：二胡妹", "分轨混音/母带：周天澈"])
+    expect(parsed.sections[0].lines).toHaveLength(1)
   })
 
   it("跳过注释行与空文本", () => {

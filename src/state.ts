@@ -21,6 +21,7 @@ export function createSentence(pattern: number[]): Sentence {
     alternatives: [emptyAlternative("备选 1", cells)],
     activeAlt: 0,
     note: "",
+    overflow: "",
   }
 }
 
@@ -42,6 +43,7 @@ export function createProject(): Project {
     title: "未命名歌曲",
     sections: [verse, chorus],
     updatedAt: new Date().toISOString(),
+    credits: [],
   }
 }
 
@@ -76,11 +78,13 @@ export function statsOf(project: Project): ProjectStats {
   const sentences = allSentences(project)
   let filled = 0
   let total = 0
+  let overflow = 0
   for (const sentence of sentences) {
     total += totalCells(sentence.pattern)
     for (const ch of getCells(sentence)) {
       if (ch) filled += 1
     }
+    overflow += [...sentence.overflow].filter((ch) => ch.trim() !== "").length
   }
   return {
     filled,
@@ -88,6 +92,7 @@ export function statsOf(project: Project): ProjectStats {
     sentences: sentences.length,
     sections: project.sections.length,
     percent: total === 0 ? 0 : Math.round((filled / total) * 100),
+    overflow,
   }
 }
 
@@ -100,9 +105,23 @@ export function setCells(sentence: Sentence, cells: string[]): void {
 }
 
 export function setPattern(sentence: Sentence, pattern: number[]): void {
+  const oldSize = totalCells(sentence.pattern)
+  const newSize = totalCells(pattern)
   sentence.pattern = pattern
-  for (const alt of sentence.alternatives) {
+  sentence.alternatives.forEach((alt, index) => {
+    const tail =
+      index === sentence.activeAlt ? alt.cells.slice(newSize).filter(Boolean).join("") : ""
     alt.cells = resizeToPattern(pattern, alt.cells)
+    if (tail) sentence.overflow = sentence.overflow + tail
+  })
+  if (newSize > oldSize && sentence.overflow) {
+    const cells = getCells(sentence)
+    const chars = [...sentence.overflow]
+    for (let i = oldSize; i < newSize && chars.length > 0; i++) {
+      if (!cells[i]) cells[i] = chars.shift() ?? ""
+    }
+    setCells(sentence, cells)
+    sentence.overflow = chars.join("")
   }
 }
 
@@ -146,6 +165,7 @@ function normalizeSentence(sentence: Sentence): void {
     while (alt.cells.length < size) alt.cells.push("")
   }
   if (typeof sentence.note !== "string") sentence.note = ""
+  if (typeof sentence.overflow !== "string") sentence.overflow = ""
   if (typeof sentence.id !== "string" || !sentence.id) sentence.id = newId("s")
 }
 
@@ -164,6 +184,7 @@ export function parseProject(raw: string): Project {
       title: legacy.title || "未命名",
       sections: [section],
       updatedAt: legacy.updatedAt || new Date().toISOString(),
+      credits: [],
     }
   }
 
@@ -181,31 +202,117 @@ export function parseProject(raw: string): Project {
   if (project.sections.length === 0) {
     project.sections.push(createSection("歌词", [createSentence([2, 2, 3])]))
   }
+  project.credits = Array.isArray(project.credits)
+    ? project.credits.filter((credit): credit is string => typeof credit === "string" && credit.trim() !== "")
+    : []
   return project
 }
 
-export function sentenceLine(sentence: Sentence): string {
-  const cells = getCells(sentence)
+export function cellsToLine(cells: string[], pattern: number[]): string {
   const parts: string[] = []
   let acc = 0
-  for (const size of sentence.pattern) {
+  for (const size of pattern) {
     parts.push(cells.slice(acc, acc + size).join(""))
     acc += size
   }
   return parts.join(" ")
 }
 
-export function exportLyrics(project: Project): string {
-  return project.sections
-    .map((section) => section.sentences.map(sentenceLine).join("\n"))
+export function sentenceLine(sentence: Sentence): string {
+  const line = cellsToLine(getCells(sentence), sentence.pattern)
+  return sentence.overflow ? line + sentence.overflow : line
+}
+
+export function reflowOverflow(project: Project): number {
+  let moved = 0
+  for (const section of project.sections) {
+    for (let index = 0; index < section.sentences.length; index++) {
+      const sentence = section.sentences[index]
+      const over = sentence.overflow
+      if (!over) continue
+      sentence.overflow = ""
+      moved += [...over].length
+      const chars = [...over]
+      const next = section.sentences[index + 1]
+      if (next) {
+        const total = totalCells(next.pattern)
+        const combined = [...chars, ...getCells(next)]
+        const tail = combined.slice(total).filter(Boolean).join("")
+        setCells(next, resizeToPattern(next.pattern, combined))
+        if (tail) next.overflow = tail + next.overflow
+      } else {
+        const created = createSentence([chars.length])
+        setCells(created, chars)
+        section.sentences.push(created)
+      }
+    }
+  }
+  return moved
+}
+
+export function applyImportedCredits(
+  project: Project,
+  credits: string[],
+  merge: boolean,
+): void {
+  if (merge) {
+    if (credits.length === 0) return
+    project.credits = [...new Set([...(project.credits ?? []), ...credits])]
+  } else {
+    project.credits = [...credits]
+  }
+}
+
+export interface ExportOptions {
+  alts: boolean
+  note: boolean
+  credits: boolean
+}
+
+export const ALT_EXPORT_SEP = " ※ "
+
+export function exportSentenceLine(sentence: Sentence, options: ExportOptions): string {
+  const lines: string[] = []
+  const current = sentenceLine(sentence).trim()
+  if (current) lines.push(current)
+  if (options.alts) {
+    sentence.alternatives.forEach((alt, index) => {
+      if (index === sentence.activeAlt) return
+      const line = cellsToLine(alt.cells, sentence.pattern).trim()
+      if (line && !lines.includes(line)) lines.push(line)
+    })
+  }
+  let line = lines.join(ALT_EXPORT_SEP)
+  if (!line) {
+    line = sentence.pattern.map((size) => "X".repeat(size)).join(" ")
+  }
+  if (options.note && sentence.note) line += `（${sentence.note}）`
+  return line
+}
+
+export function exportLyrics(
+  project: Project,
+  options: ExportOptions = { alts: false, note: false, credits: false },
+): string {
+  const body = project.sections
+    .map((section) =>
+      section.sentences.map((sentence) => exportSentenceLine(sentence, options)).join("\n"),
+    )
     .join("\n\n")
+  const credits = options.credits ? (project.credits ?? []) : []
+  return credits.length > 0 ? `${credits.join("\n")}\n\n${body}` : body
 }
 
 export const autosaveState = { at: null as string | null }
 let autosaveListener: (() => void) | null = null
+let autosaveWriter: ((store: Store) => void) | null = null
 
 export function onAutosave(cb: () => void): void {
   autosaveListener = cb
+}
+
+export function onAutosaveWrite(cb: (store: Store) => void): void {
+  autosaveWriter = cb
 }
 
 export class Store {
@@ -302,21 +409,13 @@ export class Store {
   }
 }
 
-const AUTOSAVE_KEY = "cige-grid-autosave"
-
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null
 
 function scheduleAutosave(store: Store): void {
   if (autosaveTimer) clearTimeout(autosaveTimer)
   autosaveTimer = setTimeout(() => {
     try {
-      localStorage.setItem(
-        AUTOSAVE_KEY,
-        JSON.stringify({
-          project: store.project,
-          filePath: store.filePath,
-        }),
-      )
+      autosaveWriter?.(store)
       const now = new Date()
       autosaveState.at = `${String(now.getHours()).padStart(2, "0")}:${String(
         now.getMinutes(),
@@ -326,15 +425,4 @@ function scheduleAutosave(store: Store): void {
       // 忽略配额错误
     }
   }, 400)
-}
-
-export function loadAutosave(): { project: Project; filePath: string | null } | null {
-  try {
-    const raw = localStorage.getItem(AUTOSAVE_KEY)
-    if (!raw) return null
-    const data = JSON.parse(raw) as { project: Project; filePath: string | null }
-    return { project: parseProject(JSON.stringify(data.project)), filePath: data.filePath }
-  } catch {
-    return null
-  }
 }

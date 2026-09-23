@@ -14,38 +14,71 @@
       <button id="btn-theme" type="button" title="切换主题" aria-label="切换主题">☁️</button>
     </div>
 
-    <header class="topbar">
-      <div class="brand">
-        <span class="brand-badge">词格</span>
-        <input id="project-title" class="title-input" value="未命名歌曲" aria-label="工程标题" />
-      </div>
-      <div class="topbar-actions">
-        <label class="pattern-label">
-          词格
-          <input id="new-pattern" class="pattern-input" value="4/4" />
-        </label>
-        <button id="btn-add-sentence" type="button">新句</button>
-        <button id="btn-import-lyrics" type="button">导入歌词</button>
-        <button id="btn-open" type="button">打开工程</button>
-        <button id="btn-save" type="button">保存工程</button>
-        <button id="btn-save-as" type="button">另存为</button>
-        <button id="btn-export" class="primary" type="button">导出歌词</button>
-        <button id="btn-copy-lyrics" type="button">复制歌词</button>
-        <button id="btn-undo" type="button">撤销</button>
-        <button id="btn-redo" type="button">重做</button>
-      </div>
-    </header>
+    <div class="workspace">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <span class="brand-badge">词格</span>
+          <button id="btn-sidebar" type="button" title="收起侧边栏" aria-label="收起侧边栏">
+            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.4" />
+              <rect x="3.4" y="4.4" width="3.1" height="7.2" rx="0.9" fill="currentColor" />
+            </svg>
+          </button>
+        </div>
+        <button id="btn-new-doc" class="new-doc" type="button" title="新建歌词文件" aria-label="新建歌词文件">＋ 新建歌词</button>
+        <div id="doc-list" class="doc-list"></div>
+      </aside>
+      <div
+        id="sidebar-resizer"
+        class="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整侧边栏宽度"
+        title="拖动调整宽度（双击恢复默认）"
+      ></div>
 
-    <main id="sentences" class="sentences"></main>
+      <div class="main-col">
+        <header class="topbar">
+          <button id="btn-sidebar-expand" type="button" title="展开侧边栏" aria-label="展开侧边栏">
+            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.4" />
+              <rect x="3.4" y="4.4" width="3.1" height="7.2" rx="0.9" fill="currentColor" />
+            </svg>
+          </button>
+          <div class="brand">
+            <input id="project-title" class="title-input" value="未命名歌曲" aria-label="工程标题" />
+            <button id="btn-credits" type="button" hidden title="查看 / 编辑创作信息">创作信息</button>
+          </div>
+          <div class="topbar-actions">
+            <label class="pattern-label">
+              词格
+              <input id="new-pattern" class="pattern-input" value="4/4" />
+            </label>
+            <button id="btn-add-sentence" type="button">新句</button>
+            <button id="btn-reflow" type="button" hidden>整理溢出</button>
+            <button id="btn-import-lyrics" type="button">导入歌词</button>
+            <button id="btn-open" type="button">打开工程</button>
+            <button id="btn-save" type="button">保存工程</button>
+            <button id="btn-save-as" type="button">另存为</button>
+            <button id="btn-export" class="primary" type="button">导出歌词</button>
+            <button id="btn-copy-lyrics" type="button">复制歌词</button>
+            <button id="btn-undo" type="button">撤销</button>
+            <button id="btn-redo" type="button">重做</button>
+          </div>
+        </header>
 
-    <footer class="statusbar">
-      <span id="status-stats" class="status-stats"></span>
-      <span id="status-hint">点格子输入 · Backspace 原地删 · Alt+←/→ 整句挪动 · Ctrl/Cmd+S 保存 · Ctrl/Cmd+Z 撤销 · Shift+Cmd+Z 重做</span>
-      <span class="status-right">
-        <span id="status-rhyme"></span>
-        <span id="status-path"></span>
-        <span id="status-autosave"></span>
-      </span>
-    </footer>
+        <main id="sentences" class="sentences"></main>
+
+        <footer class="statusbar">
+          <span id="status-stats" class="status-stats"></span>
+          <span id="status-hint">点格子输入 · Backspace 原地删 · Alt+←/→ 整句挪动 · Ctrl/Cmd+S 保存 · Ctrl/Cmd+Z 撤销 · Shift+Cmd+Z 重做</span>
+          <span class="status-right">
+            <span id="status-rhyme"></span>
+            <span id="status-path"></span>
+            <span id="status-autosave"></span>
+          </span>
+        </footer>
+      </div>
+    </div>
   </body>
 </html>
