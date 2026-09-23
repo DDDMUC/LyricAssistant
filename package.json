@@ -1,7 +1,7 @@
 {
   "name": "cige-grid",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "中文歌词词格写作工具",
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -17,7 +17,8 @@
     "@tauri-apps/plugin-clipboard-manager": "^2.3.3",
     "@tauri-apps/plugin-dialog": "^2.7.3",
     "@tauri-apps/plugin-fs": "^2.5.2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-opener": "^2",
+    "pinyin-pro": "^3.29.4"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
