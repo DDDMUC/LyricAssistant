@@ -8,6 +8,7 @@ import {
   removeCellAt,
   resizeToPattern,
   shiftSentence,
+  splitOrMergePattern,
   writeChars,
 } from "./grid"
 import { totalCells } from "./pattern"
@@ -106,18 +107,53 @@ describe("addCellAt / removeCellAt", () => {
     expect(result.cursor).toBe(2)
   })
 
-  it("组内至少保留一格", () => {
+  it("组只剩一格且还有其他组时删掉整组，尾部字进入溢出", () => {
     const pattern = [1, 2]
     const cells = ["a", "b", "c"]
-    expect(removeCellAt(pattern, cells, 0)).toBeNull()
-    expect(removeCellAt(pattern, cells, 1)).not.toBeNull()
+    expect(removeCellAt(pattern, cells, 0)).toEqual({
+      pattern: [2],
+      cells: ["a", "b"],
+      cursor: 0,
+      overflow: "c",
+    })
   })
 
-  it("移除后更新词格", () => {
+  it("全句只剩一组一格时不能删", () => {
+    expect(removeCellAt([1], ["a"], 0)).toBeNull()
+  })
+
+  it("移除后更新词格并保留尾部字", () => {
     const pattern = [2, 3]
     const cells = ["a", "b", "c", "d", "e"]
     const result = removeCellAt(pattern, cells, 3)
-    expect(result).toEqual({ pattern: [2, 2], cells: ["a", "b", "c", "e"], cursor: 3 })
+    expect(result).toEqual({
+      pattern: [2, 2],
+      cells: ["a", "b", "c", "d"],
+      cursor: 3,
+      overflow: "e",
+    })
+  })
+
+  it("尾部为空时不产生溢出", () => {
+    const pattern = [2, 2]
+    const cells = ["a", "b", "c", ""]
+    expect(removeCellAt(pattern, cells, 0)?.overflow).toBe("")
+  })
+})
+
+describe("splitOrMergePattern", () => {
+  it("组内断开", () => {
+    expect(splitOrMergePattern([4, 3], 2)).toEqual([2, 2, 3])
+    expect(splitOrMergePattern([4], 3)).toEqual([3, 1])
+  })
+
+  it("分句开头与上一组合并", () => {
+    expect(splitOrMergePattern([4, 3], 4)).toEqual([7])
+    expect(splitOrMergePattern([2, 3], 2)).toEqual([5])
+  })
+
+  it("最前面无法断开或合并", () => {
+    expect(splitOrMergePattern([4, 3], 0)).toBeNull()
   })
 })
 

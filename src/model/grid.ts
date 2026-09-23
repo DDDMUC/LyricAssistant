@@ -88,21 +88,42 @@ export function removeCellAt(
   pattern: number[],
   cells: string[],
   flat: number,
-): { pattern: number[]; cells: string[]; cursor: number } | null {
+): { pattern: number[]; cells: string[]; cursor: number; overflow: string } | null {
   const total = totalCells(pattern)
   if (flat < 0 || flat >= total) return null
   const { g } = locate(pattern, flat)
-  if (pattern[g] <= 1) return null
   const nextPattern = pattern.slice()
-  nextPattern[g] -= 1
-  const nextCells = cells.slice()
-  nextCells.splice(flat, 1)
+  if (pattern[g] > 1) {
+    nextPattern[g] -= 1
+  } else if (pattern.length > 1) {
+    nextPattern.splice(g, 1)
+  } else {
+    return null
+  }
   const nextTotal = totalCells(nextPattern)
   return {
     pattern: nextPattern,
-    cells: nextCells,
+    cells: resizeToPattern(nextPattern, cells),
     cursor: Math.min(flat, nextTotal - 1),
+    overflow: cells.slice(nextTotal).filter(Boolean).join(""),
   }
+}
+
+export function splitOrMergePattern(pattern: number[], flat: number): number[] | null {
+  const total = totalCells(pattern)
+  if (total === 0) return null
+  const index = Math.min(Math.max(0, flat), total - 1)
+  const { g, o } = locate(pattern, index)
+  const next = pattern.slice()
+  if (o > 0) {
+    next.splice(g, 1, o, pattern[g] - o)
+    return next
+  }
+  if (g > 0) {
+    next.splice(g - 1, 2, pattern[g - 1] + pattern[g])
+    return next
+  }
+  return null
 }
 
 export function resizeToPattern(pattern: number[], cells: string[]): string[] {

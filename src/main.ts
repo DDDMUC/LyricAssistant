@@ -6,27 +6,31 @@ import {
   clearCell,
   removeCellAt,
   shiftSentence,
+  splitOrMergePattern,
   writeChars,
 } from "./model/grid"
+import { createDoc, createDocFrom, loadDocs, saveDocs, type DocRecord } from "./docs"
 import { parseLyrics } from "./model/lyrics"
 import { parsePattern, patternToString, totalCells } from "./model/pattern"
 import { isEndingFilled, rhymeHue, rhymeOfCells } from "./model/rhyme"
 import type { Project, Section, Sentence } from "./model/types"
+import type { ExportOptions } from "./state"
 import {
   autosaveState,
   Store,
   addAlternative,
+  applyImportedCredits,
   allSentences,
-  createProject,
   createSection,
   createSentence,
   exportLyrics,
   findSectionBySentence,
   getCells,
-  loadAutosave,
   moveSection,
   onAutosave,
+  onAutosaveWrite,
   parseProject,
+  reflowOverflow,
   sentenceAt,
   sentenceIndex,
   sentenceLine,
@@ -46,6 +50,14 @@ const statusPathEl = document.querySelector("#status-path") as HTMLElement
 const statusAutosaveEl = document.querySelector("#status-autosave") as HTMLElement
 const statusRhymeEl = document.querySelector("#status-rhyme") as HTMLElement
 const themeBtn = document.querySelector("#btn-theme") as HTMLButtonElement
+const docListEl = document.querySelector("#doc-list") as HTMLElement
+const newDocBtn = document.querySelector("#btn-new-doc") as HTMLButtonElement
+const resizerEl = document.querySelector("#sidebar-resizer") as HTMLElement
+const reflowBtn = document.querySelector("#btn-reflow") as HTMLButtonElement
+const creditsBtn = document.querySelector("#btn-credits") as HTMLButtonElement
+const sidebarToggleBtns = ["#btn-sidebar", "#btn-sidebar-expand"]
+  .map((selector) => document.querySelector(selector))
+  .filter((el): el is HTMLButtonElement => el instanceof HTMLButtonElement)
 const undoBtn = document.querySelector("#btn-undo") as HTMLButtonElement
 const redoBtn = document.querySelector("#btn-redo") as HTMLButtonElement
 
@@ -53,9 +65,11 @@ let composing = false
 let statusOverride: { text: string; isError: boolean } | null = null
 let statusOverrideTimer: ReturnType<typeof setTimeout> | null = null
 
-const autosaved = loadAutosave()
-const store = autosaved ? new Store(autosaved.project) : new Store(createProject())
-if (autosaved?.filePath) store.filePath = autosaved.filePath
+const docsState = loadDocs()
+const initialDoc =
+  docsState.docs.find((doc) => doc.id === docsState.activeId) ?? docsState.docs[0]
+const store = new Store(initialDoc.project)
+if (initialDoc.filePath) store.filePath = initialDoc.filePath
 
 function setStatus(text: string, isError = false): void {
   statusOverride = { text, isError }
@@ -77,7 +91,10 @@ function renderStatusBar(): void {
   const stats = statsOf(store.project)
   statusStatsEl.textContent =
     `已填 ${stats.filled} / ${stats.total} 格 · 完成 ${stats.percent}% · ` +
-    `句数 ${stats.sentences} · 段落 ${stats.sections}`
+    `句数 ${stats.sentences} · 段落 ${stats.sections}` +
+    (stats.overflow > 0 ? ` · 溢出 ${stats.overflow} 字` : "")
+  reflowBtn.hidden = stats.overflow === 0
+  creditsBtn.hidden = (store.project.credits ?? []).length === 0
 
   if (statusOverride) {
     statusHintEl.textContent = statusOverride.text
@@ -124,6 +141,207 @@ function mutate(fn: () => void): void {
   render()
 }
 
+function syncActiveDoc(): void {
+  const doc = docsState.docs.find((d) => d.id === docsState.activeId)
+  if (!doc) return
+  doc.project = store.project
+  doc.filePath = store.filePath
+  doc.updatedAt = store.project.updatedAt
+  saveDocs(docsState)
+}
+
+function renderDocList(): void {
+  docListEl.replaceChildren()
+  docsState.docs.forEach((doc) => {
+    const item = document.createElement("div")
+    item.className = `doc-item${doc.id === docsState.activeId ? " active" : ""}`
+    item.title = doc.filePath ?? "未保存到文件"
+
+    const title = document.createElement("span")
+    title.className = "doc-title"
+    title.textContent = doc.project.title || "未命名"
+    title.title = "双击重命名"
+    title.addEventListener("dblclick", (event) => {
+      event.stopPropagation()
+      startRenameDoc(doc, item, title)
+    })
+    item.appendChild(title)
+
+    const stats = statsOf(doc.project)
+    const meta = document.createElement("span")
+    meta.className = "doc-meta"
+    meta.textContent = `${stats.sentences} 句`
+    item.appendChild(meta)
+
+    if (docsState.docs.length > 1) {
+      const del = document.createElement("button")
+      del.type = "button"
+      del.className = "doc-del"
+      del.textContent = "×"
+      del.title = "删除这个歌词文件"
+      del.addEventListener("click", (event) => {
+        event.stopPropagation()
+        deleteDoc(doc.id)
+      })
+      item.appendChild(del)
+    }
+
+    item.addEventListener("click", () => switchDoc(doc.id))
+    docListEl.appendChild(item)
+  })
+}
+
+function renameDoc(docId: string, rawName: string): void {
+  const doc = docsState.docs.find((item) => item.id === docId)
+  if (!doc) return
+  const name = rawName.trim() || doc.project.title || "未命名"
+  if (name === doc.project.title) {
+    renderDocList()
+    return
+  }
+  if (docId === docsState.activeId) {
+    mutate(() => {
+      store.project.title = name
+    })
+  } else {
+    doc.project.title = name
+    doc.updatedAt = new Date().toISOString()
+    saveDocs(docsState)
+    renderDocList()
+  }
+  setStatus(`已重命名为「${name}」`)
+}
+
+function startRenameDoc(doc: DocRecord, item: HTMLElement, label: HTMLElement): void {
+  const input = document.createElement("input")
+  input.className = "doc-rename-input"
+  input.value = doc.project.title
+  input.spellcheck = false
+  item.replaceChild(input, label)
+  input.focus()
+  input.select()
+
+  let done = false
+  const commit = (save: boolean): void => {
+    if (done) return
+    done = true
+    if (save) renameDoc(doc.id, input.value)
+    else renderDocList()
+  }
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault()
+      commit(true)
+    } else if (event.key === "Escape") {
+      event.preventDefault()
+      commit(false)
+    }
+  })
+  input.addEventListener("blur", () => commit(true))
+  input.addEventListener("click", (event) => event.stopPropagation())
+  input.addEventListener("pointerdown", (event) => event.stopPropagation())
+}
+
+function activateDoc(doc: DocRecord): void {
+  store.project = doc.project
+  store.filePath = doc.filePath
+  store.dirty = false
+  store.undoStack = []
+  store.redoStack = []
+  const first = allSentences(doc.project)[0]
+  store.cursor = { sentenceId: first?.id ?? "", cell: 0 }
+  store.ensureCursor()
+}
+
+function switchDoc(id: string): void {
+  if (id === docsState.activeId) return
+  const target = docsState.docs.find((doc) => doc.id === id)
+  if (!target) return
+  syncActiveDoc()
+  docsState.activeId = id
+  activateDoc(target)
+  saveDocs(docsState)
+  render()
+  focusCellInput()
+  setStatus(`已切换到「${target.project.title || "未命名"}」`)
+}
+
+function addDoc(): void {
+  syncActiveDoc()
+  const doc = createDoc(`未命名 ${docsState.docs.length + 1}`)
+  docsState.docs.push(doc)
+  docsState.activeId = doc.id
+  activateDoc(doc)
+  saveDocs(docsState)
+  render()
+  titleEl.focus()
+  titleEl.select()
+  setStatus("已新建歌词文件")
+}
+
+function deleteDoc(id: string): void {
+  if (docsState.docs.length <= 1) return
+  const doc = docsState.docs.find((item) => item.id === id)
+  if (!doc) return
+  confirmDeleteDoc(id, doc.project.title || "未命名")
+}
+
+function confirmDeleteDoc(id: string, name: string): void {
+  const dialog = document.createElement("dialog")
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body"
+
+  const title = document.createElement("strong")
+  title.textContent = "删除歌词文件"
+
+  const text = document.createElement("p")
+  text.textContent = `确定删除「${name}」？删除后无法恢复。`
+
+  const actions = document.createElement("div")
+  actions.className = "dialog-actions"
+
+  const cancel = document.createElement("button")
+  cancel.type = "submit"
+  cancel.value = "cancel"
+  cancel.textContent = "取消"
+
+  const ok = document.createElement("button")
+  ok.type = "submit"
+  ok.value = "ok"
+  ok.textContent = "删除"
+  ok.className = "danger"
+
+  actions.append(cancel, ok)
+  form.append(title, text, actions)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  dialog.addEventListener("close", () => {
+    const action = dialog.returnValue
+    dialog.remove()
+    if (action === "ok") performDeleteDoc(id, name)
+  })
+  dialog.showModal()
+}
+
+function performDeleteDoc(id: string, name: string): void {
+  const index = docsState.docs.findIndex((doc) => doc.id === id)
+  if (index < 0) return
+  docsState.docs.splice(index, 1)
+  if (docsState.activeId === id) {
+    const next = docsState.docs[Math.max(0, index - 1)]
+    docsState.activeId = next.id
+    activateDoc(next)
+    render()
+    focusCellInput()
+  } else {
+    renderDocList()
+  }
+  saveDocs(docsState)
+  setStatus(`已删除「${name}」`)
+}
+
 function render(): void {
   if (composing) return
   titleEl.value = store.project.title
@@ -134,6 +352,7 @@ function render(): void {
   })
 
   renderStatusBar()
+  renderDocList()
 }
 
 function renderSection(section: Section, sectionIdx: number): HTMLElement {
@@ -352,6 +571,13 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   const altCombo = document.createElement("span")
   altCombo.className = "alt-combo"
 
+  const renameAltBtn = document.createElement("button")
+  renameAltBtn.type = "button"
+  renameAltBtn.className = "alt-rename"
+  renameAltBtn.textContent = "✎"
+  renameAltBtn.title = "重命名当前备选"
+  altCombo.appendChild(renameAltBtn)
+
   const altSelect = document.createElement("select")
   altSelect.className = "alt-select"
   sentence.alternatives.forEach((alt, i) => {
@@ -368,6 +594,10 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
     })
   })
   altCombo.appendChild(altSelect)
+
+  renameAltBtn.addEventListener("click", () =>
+    startRenameAlternative(sentence.id, altCombo, altSelect),
+  )
 
   const addAltBtn = document.createElement("button")
   addAltBtn.type = "button"
@@ -399,44 +629,43 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   pasteBtn.addEventListener("click", () => void pasteSentence(sentence.id))
   controls.appendChild(pasteBtn)
 
-  const addCellBtn = document.createElement("button")
-  addCellBtn.type = "button"
-  addCellBtn.textContent = "+"
-  addCellBtn.title = "光标所在分句加一格"
-  addCellBtn.addEventListener("click", () => {
-    if (!isActive) store.cursor = { sentenceId: sentence.id, cell: 0 }
+  const clearBtn = document.createElement("button")
+  clearBtn.type = "button"
+  clearBtn.textContent = "清空"
+  clearBtn.title = "清空这一句当前备选的所有字（可撤销）"
+  clearBtn.addEventListener("click", () => {
     mutate(() => {
-      const target = store.findSentence(sentence.id)
-      if (!target) return
-      const result = addCellAt(target.pattern, getCells(target), store.cursor.cell)
-      setPattern(target, result.pattern)
-      setCells(target, result.cells)
-      store.cursor.cell = result.cursor
+      const s = store.findSentence(sentence.id)
+      if (!s) return
+      setCells(s, getCells(s).map(() => ""))
+      s.overflow = ""
+      store.cursor = { sentenceId: sentence.id, cell: 0 }
     })
+    focusCellInput()
+    setStatus("已清空该句")
   })
-  controls.appendChild(addCellBtn)
+  controls.appendChild(clearBtn)
 
   const removeCellBtn = document.createElement("button")
   removeCellBtn.type = "button"
-  removeCellBtn.textContent = "-"
-  removeCellBtn.title = "删除光标所在格（仅当前分句）"
-  removeCellBtn.addEventListener("click", () => {
-    if (!isActive) store.cursor = { sentenceId: sentence.id, cell: 0 }
-    mutate(() => {
-      const target = store.findSentence(sentence.id)
-      if (!target) return
-      const result = removeCellAt(target.pattern, getCells(target), store.cursor.cell)
-      if (!result) {
-        setStatus("每个分句至少保留 1 格", true)
-        return
-      }
-      setPattern(target, result.pattern)
-      setCells(target, result.cells)
-      store.cursor.cell = result.cursor
-      setStatus("已删格")
-    })
-  })
+  removeCellBtn.textContent = "−"
+  removeCellBtn.title = "删除光标所在格；该组只剩 1 格时连同分组一起删 (Cmd/Ctrl+[)"
+  removeCellBtn.addEventListener("click", () => removeCellHere(sentence.id))
   controls.appendChild(removeCellBtn)
+
+  const addCellBtn = document.createElement("button")
+  addCellBtn.type = "button"
+  addCellBtn.textContent = "+"
+  addCellBtn.title = "光标所在分句加一格 (Cmd/Ctrl+])"
+  addCellBtn.addEventListener("click", () => addCellHere(sentence.id))
+  controls.appendChild(addCellBtn)
+
+  const splitBtn = document.createElement("button")
+  splitBtn.type = "button"
+  splitBtn.textContent = "／"
+  splitBtn.title = "在光标处断开分句；在分句开头则与上一分句合并 (Cmd/Ctrl+\\)"
+  splitBtn.addEventListener("click", () => splitHere(sentence.id))
+  controls.appendChild(splitBtn)
 
   const shiftLeftBtn = document.createElement("button")
   shiftLeftBtn.type = "button"
@@ -451,6 +680,13 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   shiftRightBtn.title = "整句右移一格 (Alt+→)"
   shiftRightBtn.addEventListener("click", () => doShift(sentence.id, 1))
   controls.appendChild(shiftRightBtn)
+
+  const dupBtn = document.createElement("button")
+  dupBtn.type = "button"
+  dupBtn.textContent = "⧉"
+  dupBtn.title = "复制本句词格，在下方插入新句"
+  dupBtn.addEventListener("click", () => duplicateSentence(sentence.id))
+  controls.appendChild(dupBtn)
 
   const delBtn = document.createElement("button")
   delBtn.type = "button"
@@ -477,6 +713,9 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
     setStatus("已删句")
   })
   controls.appendChild(delBtn)
+  controls.appendChild(copyBtn)
+  controls.appendChild(pasteBtn)
+  controls.appendChild(clearBtn)
 
   const grid = document.createElement("div")
   grid.className = "grid"
@@ -525,6 +764,14 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
 
   row.appendChild(grid)
 
+  if (sentence.overflow) {
+    const overflowEl = document.createElement("span")
+    overflowEl.className = "sentence-overflow"
+    overflowEl.textContent = `＋${sentence.overflow}`
+    overflowEl.title = "超出词格的字；点顶栏「整理溢出」可顺移到下一句"
+    row.appendChild(overflowEl)
+  }
+
   const sideRight = document.createElement("div")
   sideRight.className = "sentence-side-right"
 
@@ -557,6 +804,84 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   return root
 }
 
+const SIDEBAR_WIDTH_KEY = "cige-grid-sidebar-width"
+const SIDEBAR_COLLAPSED_KEY = "cige-grid-sidebar-collapsed"
+const SIDEBAR_DEFAULT_WIDTH = 188
+const SIDEBAR_MIN_WIDTH = 140
+const SIDEBAR_MAX_WIDTH = 420
+
+function setSidebarCollapsed(collapsed: boolean): void {
+  document.documentElement.classList.toggle("sidebar-collapsed", collapsed)
+  const sidebar = document.querySelector(".sidebar") as HTMLElement | null
+  if (sidebar) sidebar.inert = collapsed
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0")
+  } catch {
+    // 忽略配额错误
+  }
+}
+
+function setSidebarWidth(width: number): void {
+  const clamped = Math.min(
+    SIDEBAR_MAX_WIDTH,
+    Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)),
+  )
+  document.documentElement.style.setProperty("--sidebar-width", `${clamped}px`)
+  try {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clamped))
+  } catch {
+    // 忽略配额错误
+  }
+}
+
+function initSidebarResizer(): void {
+  try {
+    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
+    if (Number.isFinite(saved) && saved > 0) setSidebarWidth(saved)
+    setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1")
+  } catch {
+    setSidebarCollapsed(false)
+  }
+
+  sidebarToggleBtns.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setSidebarCollapsed(
+        !document.documentElement.classList.contains("sidebar-collapsed"),
+      )
+    })
+  })
+
+  resizerEl.addEventListener("pointerdown", (event) => {
+    event.preventDefault()
+    const sidebar = document.querySelector(".sidebar") as HTMLElement | null
+    if (!sidebar) return
+    const startX = event.clientX
+    const startWidth = sidebar.getBoundingClientRect().width
+    resizerEl.classList.add("dragging")
+    document.body.classList.add("resizing")
+    document.body.style.userSelect = "none"
+    resizerEl.setPointerCapture(event.pointerId)
+
+    const onMove = (moveEvent: PointerEvent): void => {
+      setSidebarWidth(startWidth + (moveEvent.clientX - startX))
+    }
+    const onUp = (): void => {
+      resizerEl.classList.remove("dragging")
+      document.body.classList.remove("resizing")
+      document.body.style.userSelect = ""
+      resizerEl.removeEventListener("pointermove", onMove)
+      resizerEl.removeEventListener("pointerup", onUp)
+      resizerEl.removeEventListener("pointercancel", onUp)
+    }
+
+    resizerEl.addEventListener("pointermove", onMove)
+    resizerEl.addEventListener("pointerup", onUp)
+    resizerEl.addEventListener("pointercancel", onUp)
+  })
+
+  resizerEl.addEventListener("dblclick", () => setSidebarWidth(SIDEBAR_DEFAULT_WIDTH))
+}
+
 function focusCellInput(): void {
   const input = sentencesEl.querySelector<HTMLInputElement>("input.cell-input")
   if (input) {
@@ -564,6 +889,52 @@ function focusCellInput(): void {
     const len = input.value.length
     input.setSelectionRange(len, len)
   }
+}
+
+function startRenameAlternative(
+  sentenceId: string,
+  combo: HTMLElement,
+  select: HTMLSelectElement,
+): void {
+  const sentence = store.findSentence(sentenceId)
+  const alt = sentence?.alternatives[sentence.activeAlt]
+  if (!alt) return
+
+  const input = document.createElement("input")
+  input.className = "alt-rename-input"
+  input.value = alt.name
+  input.spellcheck = false
+  combo.replaceChild(input, select)
+  input.focus()
+  input.select()
+
+  let done = false
+  const commit = (save: boolean): void => {
+    if (done) return
+    done = true
+    if (save) {
+      const name = input.value.trim() || alt.name
+      mutate(() => {
+        const target = store.findSentence(sentenceId)
+        const targetAlt = target?.alternatives[sentence.activeAlt]
+        if (targetAlt) targetAlt.name = name
+      })
+    } else {
+      render()
+    }
+    focusCellInput()
+  }
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault()
+      commit(true)
+    } else if (e.key === "Escape") {
+      e.preventDefault()
+      commit(false)
+    }
+  })
+  input.addEventListener("blur", () => commit(true))
 }
 
 function moveCursorToFlatIndex(currentId: string, nextFlat: number): void {
@@ -717,17 +1088,14 @@ function commitInput(input: HTMLInputElement): void {
   store.pushUndo()
   const result = writeChars(getCells(sentence), start, text)
   setCells(sentence, result.cells)
+  const excess = [...text].slice(result.written).join("")
+  if (excess) sentence.overflow = sentence.overflow + excess
   store.cursor.cell = Math.min(start + result.written, totalCells(sentence.pattern) - 1)
   store.touch()
   render()
   focusCellInput()
 
-  const total = totalCells(sentence.pattern)
-  if (start + result.written >= total && countRaw(text) > result.written) {
-    setStatus("已写到词格末尾，多余字未写入", true)
-  } else {
-    setStatus("已填入")
-  }
+  setStatus(excess ? `多余 ${countRaw(excess)} 字已记为溢出` : "已填入")
 }
 
 function countRaw(text: string): number {
@@ -750,6 +1118,73 @@ function doShift(sentenceId: string, dir: -1 | 1): void {
   render()
   if (sentence.id === store.cursor.sentenceId) focusCellInput()
   setStatus("整句已挪动")
+}
+
+function addCellHere(sentenceId: string): void {
+  if (store.cursor.sentenceId !== sentenceId) store.cursor = { sentenceId, cell: 0 }
+  mutate(() => {
+    const target = store.findSentence(sentenceId)
+    if (!target) return
+    const result = addCellAt(target.pattern, getCells(target), store.cursor.cell)
+    setPattern(target, result.pattern)
+    setCells(target, result.cells)
+    store.cursor.cell = result.cursor
+  })
+  focusCellInput()
+}
+
+function removeCellHere(sentenceId: string): void {
+  if (store.cursor.sentenceId !== sentenceId) store.cursor = { sentenceId, cell: 0 }
+  const target = store.findSentence(sentenceId)
+  if (!target) return
+  const result = removeCellAt(target.pattern, getCells(target), store.cursor.cell)
+  if (!result) {
+    setStatus("这句只剩一格，不能再删", true)
+    return
+  }
+  mutate(() => {
+    const s = store.findSentence(sentenceId)
+    if (!s) return
+    setPattern(s, result.pattern)
+    setCells(s, result.cells)
+    if (result.overflow) s.overflow = s.overflow + result.overflow
+    store.cursor.cell = result.cursor
+  })
+  focusCellInput()
+  setStatus(result.overflow ? "已删格，尾部字记为溢出" : "已删格")
+}
+
+function splitHere(sentenceId: string): void {
+  if (store.cursor.sentenceId !== sentenceId) store.cursor = { sentenceId, cell: 0 }
+  const target = store.findSentence(sentenceId)
+  if (!target) return
+  const next = splitOrMergePattern(target.pattern, store.cursor.cell)
+  if (!next) {
+    setStatus("光标在最前面的分句开头，无法断开或合并", true)
+    return
+  }
+  const merged = next.length < target.pattern.length
+  mutate(() => {
+    const s = store.findSentence(sentenceId)
+    if (!s) return
+    setPattern(s, next)
+  })
+  focusCellInput()
+  setStatus(merged ? "已与上一分句合并" : "已在光标处断开分句")
+}
+
+function duplicateSentence(sentenceId: string): void {
+  mutate(() => {
+    const section = findSectionBySentence(store.project, sentenceId)
+    if (!section) return
+    const index = section.sentences.findIndex((s) => s.id === sentenceId)
+    if (index < 0) return
+    const copy = createSentence(section.sentences[index].pattern.slice())
+    section.sentences.splice(index + 1, 0, copy)
+    store.cursor = { sentenceId: copy.id, cell: 0 }
+  })
+  focusCellInput()
+  setStatus("已复制本句词格")
 }
 
 async function copySentence(sentenceId: string): Promise<void> {
@@ -776,13 +1211,15 @@ async function pasteSentence(sentenceId: string): Promise<void> {
   const written = Math.min(chars.length, total)
   const cells = getCells(sentence).slice()
   for (let i = 0; i < written; i++) cells[i] = chars[i]
+  const excess = chars.slice(written).join("")
   store.pushUndo()
   setCells(sentence, cells)
+  if (excess) sentence.overflow = sentence.overflow + excess
   store.cursor = { sentenceId, cell: Math.max(0, written - 1) }
   store.touch()
   render()
   focusCellInput()
-  setStatus(chars.length > written ? "已粘贴，多余字未写入" : "已粘贴该句")
+  setStatus(excess ? `已粘贴，多余 ${excess.length} 字记为溢出` : "已粘贴该句")
 }
 
 async function copyLyrics(): Promise<void> {
@@ -822,29 +1259,187 @@ async function openProject(): Promise<void> {
     if (!chosen || Array.isArray(chosen)) return
     const raw = await readTextFile(chosen)
     const project = parseProject(raw)
-    store.pushUndo()
-    store.project = project
-    store.filePath = chosen
-    const first = allSentences(project)[0]
-    store.cursor = { sentenceId: first?.id ?? "", cell: 0 }
-    store.ensureCursor()
-    store.markSaved()
-    store.persist()
+    syncActiveDoc()
+    const doc = createDocFrom(project, chosen)
+    docsState.docs.push(doc)
+    docsState.activeId = doc.id
+    activateDoc(doc)
+    saveDocs(docsState)
     render()
-    setStatus("已打开工程")
+    focusCellInput()
+    setStatus(`已打开「${project.title || "未命名"}」`)
   } catch (err) {
     setStatus(`打开失败: ${err instanceof Error ? err.message : err}`, true)
   }
 }
 
+const EXPORT_OPTIONS_KEY = "cige-grid-export-options"
+
+function loadExportOptions(): ExportOptions {
+  try {
+    const raw = localStorage.getItem(EXPORT_OPTIONS_KEY)
+    if (raw) {
+      const data = JSON.parse(raw) as { alts?: unknown; note?: unknown; credits?: unknown }
+      return {
+        alts: data.alts === true,
+        note: data.note === true,
+        credits: data.credits === true,
+      }
+    }
+  } catch {
+    // 忽略
+  }
+  return { alts: false, note: false, credits: false }
+}
+
+function saveExportOptions(options: ExportOptions): void {
+  try {
+    localStorage.setItem(EXPORT_OPTIONS_KEY, JSON.stringify(options))
+  } catch {
+    // 忽略
+  }
+}
+
+function openCreditsDialog(): void {
+  const dialog = document.createElement("dialog")
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body"
+
+  const title = document.createElement("strong")
+  title.textContent = "创作信息"
+
+  const hint = document.createElement("p")
+  hint.textContent =
+    "每行一条，例如「作词：择荇」。不会生成词格；导出歌词时可选择写在 TXT 顶部。"
+
+  const textarea = document.createElement("textarea")
+  textarea.value = (store.project.credits ?? []).join("\n")
+  textarea.placeholder = "作词：择荇\n作曲：叶里"
+
+  const actions = document.createElement("div")
+  actions.className = "dialog-actions"
+  const cancel = document.createElement("button")
+  cancel.type = "submit"
+  cancel.value = "cancel"
+  cancel.textContent = "取消"
+  const ok = document.createElement("button")
+  ok.type = "submit"
+  ok.value = "ok"
+  ok.textContent = "保存"
+  actions.append(cancel, ok)
+
+  form.append(title, hint, textarea, actions)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  dialog.addEventListener("close", () => {
+    const action = dialog.returnValue
+    dialog.remove()
+    if (action !== "ok") return
+    const credits = textarea.value
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    mutate(() => {
+      store.project.credits = credits
+    })
+    setStatus(credits.length > 0 ? `已保存 ${credits.length} 条创作信息` : "已清空创作信息")
+  })
+  dialog.showModal()
+  textarea.focus()
+}
+
+function askExportOptions(): Promise<ExportOptions | null> {
+  return new Promise((resolve) => {
+    const current = loadExportOptions()
+    const sentences = allSentences(store.project)
+    const altCount = sentences.filter((sentence) => sentence.alternatives.length > 1).length
+    const noteCount = sentences.filter((sentence) => sentence.note).length
+
+    const dialog = document.createElement("dialog")
+    const form = document.createElement("form")
+    form.method = "dialog"
+    form.className = "dialog-body"
+
+    const title = document.createElement("strong")
+    title.textContent = "导出歌词"
+
+    const intro = document.createElement("p")
+    intro.textContent = `全篇有 ${altCount} 句带备选、${noteCount} 句带备注。勾选要一并写进 TXT 的内容。`
+
+    const label1 = document.createElement("label")
+    label1.className = "dialog-check"
+    const check1 = document.createElement("input")
+    check1.type = "checkbox"
+    check1.checked = current.alts
+    label1.append(check1, document.createTextNode("导出全部备选（同句用 ※ 分隔）"))
+
+    const label2 = document.createElement("label")
+    label2.className = "dialog-check"
+    const check2 = document.createElement("input")
+    check2.type = "checkbox"
+    check2.checked = current.note
+    label2.append(check2, document.createTextNode("导出备注（写在句末的（）里）"))
+
+    const credits = store.project.credits ?? []
+    let check3: HTMLInputElement | null = null
+    let label3: HTMLLabelElement | null = null
+    if (credits.length > 0) {
+      label3 = document.createElement("label")
+      label3.className = "dialog-check"
+      check3 = document.createElement("input")
+      check3.type = "checkbox"
+      check3.checked = current.credits
+      label3.append(check3, document.createTextNode("带上创作信息（写在歌词上方）"))
+    }
+
+    const hint = document.createElement("p")
+    hint.textContent = "导出的 TXT 可以原样再导入，备选、备注和创作信息会一起读回来。"
+
+    const actions = document.createElement("div")
+    actions.className = "dialog-actions"
+    const cancel = document.createElement("button")
+    cancel.type = "submit"
+    cancel.value = "cancel"
+    cancel.textContent = "取消"
+    const ok = document.createElement("button")
+    ok.type = "submit"
+    ok.value = "ok"
+    ok.textContent = "导出"
+    actions.append(cancel, ok)
+
+    form.append(title, intro, label1, label2, ...(label3 ? [label3] : []), hint, actions)
+    dialog.appendChild(form)
+    document.body.appendChild(dialog)
+    dialog.addEventListener("close", () => {
+      const action = dialog.returnValue
+      dialog.remove()
+      if (action !== "ok") {
+        resolve(null)
+        return
+      }
+      const options = {
+        alts: check1.checked,
+        note: check2.checked,
+        credits: check3 ? check3.checked : false,
+      }
+      saveExportOptions(options)
+      resolve(options)
+    })
+    dialog.showModal()
+  })
+}
+
 async function exportText(): Promise<void> {
+  const options = await askExportOptions()
+  if (!options) return
   try {
     const chosen = await saveFileDialog({
       filters: [{ name: "歌词文本", extensions: ["txt"] }],
       defaultPath: `${store.project.title || "歌词"}.txt`,
     })
     if (!chosen) return
-    await writeTextFile(chosen, exportLyrics(store.project))
+    await writeTextFile(chosen, exportLyrics(store.project, options))
     setStatus("已导出歌词")
   } catch (err) {
     setStatus(`导出失败: ${err instanceof Error ? err.message : err}`, true)
@@ -879,8 +1474,7 @@ function applyLyricsText(
           }
           return sentence
         })
-        const name =
-          section.name || (parsed.sections.length === 1 ? "导入" : `导入 ${i + 1}`)
+        const name = section.name || `段落 ${i + 1}`
         return createSection(name, sentences)
       })
       if (merge) {
@@ -890,13 +1484,16 @@ function applyLyricsText(
       }
       const first = imported[0]?.sentences[0]
       if (first) store.cursor = { sentenceId: first.id, cell: 0 }
+      applyImportedCredits(store.project, parsed.credits, merge)
       const title = parsed.title || fileTitle
       if (title && !merge) {
         store.project.title = title
         titleEl.value = title
       }
     })
-    setStatus(merge ? `已合并 ${total} 句歌词` : `已导入 ${total} 句歌词`)
+    const creditNote =
+      parsed.credits.length > 0 ? `，创作信息 ${parsed.credits.length} 条` : ""
+    setStatus((merge ? `已合并 ${total} 句歌词` : `已导入 ${total} 句歌词`) + creditNote)
     return true
   } catch (err) {
     setStatus(err instanceof Error ? err.message : String(err), true)
@@ -1008,6 +1605,22 @@ function bindToolbar(): void {
   })
 
   document.querySelector("#btn-import-lyrics")?.addEventListener("click", openImportDialog)
+  newDocBtn.addEventListener("click", addDoc)
+  creditsBtn.addEventListener("click", openCreditsDialog)
+  reflowBtn.addEventListener("click", () => {
+    store.pushUndo()
+    const moved = reflowOverflow(store.project)
+    if (!moved) {
+      store.undoStack.pop()
+      setStatus("没有溢出", true)
+      return
+    }
+    store.ensureCursor()
+    store.touch()
+    render()
+    focusCellInput()
+    setStatus(`已顺移 ${moved} 个字`)
+  })
   document.querySelector("#btn-save")?.addEventListener("click", () => void saveProject(false))
   document.querySelector("#btn-save-as")?.addEventListener("click", () => void saveProject(true))
   document.querySelector("#btn-open")?.addEventListener("click", () => void openProject())
@@ -1040,6 +1653,21 @@ function bindToolbar(): void {
     if (key === "y" && e.ctrlKey) {
       e.preventDefault()
       doRedo()
+      return
+    }
+    if (key === "[") {
+      e.preventDefault()
+      if (store.cursor.sentenceId) addCellHere(store.cursor.sentenceId)
+      return
+    }
+    if (key === "]") {
+      e.preventDefault()
+      if (store.cursor.sentenceId) removeCellHere(store.cursor.sentenceId)
+      return
+    }
+    if (key === "\\") {
+      e.preventDefault()
+      if (store.cursor.sentenceId) splitHere(store.cursor.sentenceId)
     }
   })
 }
@@ -1067,7 +1695,16 @@ function doRedo(): void {
 initTheme()
 refreshThemeButton()
 onAutosave(() => renderStatusBar())
+onAutosaveWrite((s) => {
+  const doc = docsState.docs.find((d) => d.id === docsState.activeId)
+  if (!doc) return
+  doc.project = s.project
+  doc.filePath = s.filePath
+  doc.updatedAt = s.project.updatedAt
+  saveDocs(docsState)
+})
 bindToolbar()
+initSidebarResizer()
 render()
 focusCellInput()
 

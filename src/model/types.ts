@@ -10,6 +10,7 @@ export interface Sentence {
   alternatives: Alternative[]
   activeAlt: number
   note: string
+  overflow: string
 }
 
 export interface Section {
@@ -23,6 +24,7 @@ export interface Project {
   title: string
   sections: Section[]
   updatedAt: string
+  credits?: string[]
 }
 
 export interface Cursor {
@@ -36,4 +38,5 @@ export interface ProjectStats {
   sentences: number
   sections: number
   percent: number
+  overflow: number
 }

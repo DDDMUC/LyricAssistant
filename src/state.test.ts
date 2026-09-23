@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   Store,
+  applyImportedCredits,
   createProject,
   createSection,
   createSentence,
@@ -8,8 +9,10 @@ import {
   getCells,
   moveSection,
   parseProject,
+  reflowOverflow,
   sentenceLine,
   setCells,
+  setPattern,
   statsOf,
   allSentences,
 } from "./state"
@@ -145,6 +148,132 @@ describe("allSentences", () => {
       updatedAt: new Date().toISOString(),
     }
     expect(allSentences(project).map((s) => s.id)).toEqual([a.id, b.id])
+  })
+})
+
+describe("applyImportedCredits", () => {
+  it("覆盖模式：新创作信息替换旧的，空则清空", () => {
+    const project = createProject()
+    project.credits = ["作词：旧"]
+    applyImportedCredits(project, ["作词：新"], false)
+    expect(project.credits).toEqual(["作词：新"])
+    applyImportedCredits(project, [], false)
+    expect(project.credits).toEqual([])
+  })
+
+  it("合并模式：去重追加，空则不动", () => {
+    const project = createProject()
+    project.credits = ["作词：旧"]
+    applyImportedCredits(project, ["作词：旧", "作曲：新"], true)
+    expect(project.credits).toEqual(["作词：旧", "作曲：新"])
+    applyImportedCredits(project, [], true)
+    expect(project.credits).toEqual(["作词：旧", "作曲：新"])
+  })
+})
+
+describe("溢出处理", () => {
+  function projectOf(sentences: ReturnType<typeof createSentence>[]) {
+    return {
+      version: 2 as const,
+      title: "t",
+      sections: [createSection("A", sentences)],
+      updatedAt: new Date().toISOString(),
+      credits: [] as string[],
+    }
+  }
+
+  it("statsOf 统计溢出字数", () => {
+    const sentence = createSentence([2])
+    setCells(sentence, ["你", "好"])
+    sentence.overflow = "再见"
+    expect(statsOf(projectOf([sentence])).overflow).toBe(2)
+  })
+
+  it("缩格时尾部字进入溢出，扩格时回填", () => {
+    const sentence = createSentence([4])
+    setCells(sentence, ["一", "二", "三", "四"])
+    setPattern(sentence, [2])
+    expect(getCells(sentence)).toEqual(["一", "二"])
+    expect(sentence.overflow).toBe("三四")
+    setPattern(sentence, [3])
+    expect(getCells(sentence)).toEqual(["一", "二", "三"])
+    expect(sentence.overflow).toBe("四")
+    setPattern(sentence, [4])
+    expect(getCells(sentence)).toEqual(["一", "二", "三", "四"])
+    expect(sentence.overflow).toBe("")
+  })
+
+  it("reflowOverflow 把溢出顺移到下一句开头", () => {
+    const first = createSentence([2])
+    setCells(first, ["一", "二"])
+    first.overflow = "三四"
+    const second = createSentence([4])
+    setCells(second, ["五", "", "", ""])
+    const project = projectOf([first, second])
+    expect(reflowOverflow(project)).toBe(2)
+    expect(first.overflow).toBe("")
+    expect(getCells(second)).toEqual(["三", "四", "五", ""])
+    expect(second.overflow).toBe("")
+  })
+
+  it("reflowOverflow 在最后一句溢出时新建一句", () => {
+    const only = createSentence([2])
+    setCells(only, ["一", "二"])
+    only.overflow = "三四"
+    const project = projectOf([only])
+    expect(reflowOverflow(project)).toBe(2)
+    expect(project.sections[0].sentences).toHaveLength(2)
+    const created = project.sections[0].sentences[1]
+    expect(created.pattern).toEqual([2])
+    expect(getCells(created)).toEqual(["三", "四"])
+  })
+
+  it("导出歌词带上溢出字", () => {
+    const sentence = createSentence([2])
+    setCells(sentence, ["你", "好"])
+    sentence.overflow = "吗"
+    expect(exportLyrics(projectOf([sentence]))).toBe("你好吗")
+  })
+
+  it("导出可带备选与备注，并能原样读回", async () => {
+    const { parseLyrics } = await import("./model/lyrics")
+    const sentence = createSentence([2])
+    setCells(sentence, ["你", "好"])
+    sentence.note = "温柔"
+    sentence.alternatives.push({
+      id: "alt-x",
+      name: "备选 2",
+      cells: ["再", "见"],
+    })
+    const text = exportLyrics(projectOf([sentence]), { alts: true, note: true, credits: false })
+    expect(text).toBe("你好 ※ 再见（温柔）")
+    const parsed = parseLyrics(text)
+    expect(parsed.sections[0].lines[0].cells).toEqual(["你", "好"])
+    expect(parsed.sections[0].lines[0].alts).toEqual([["再", "见"]])
+    expect(parsed.sections[0].lines[0].note).toBe("温柔")
+  })
+
+  it("导出可带创作信息并原样读回", async () => {
+    const { parseLyrics } = await import("./model/lyrics")
+    const sentence = createSentence([2])
+    setCells(sentence, ["你", "好"])
+    const project = projectOf([sentence])
+    project.credits = ["作词：某人"]
+    const text = exportLyrics(project, { alts: false, note: false, credits: true })
+    expect(text.startsWith("作词：某人\n\n")).toBe(true)
+    const parsed = parseLyrics(text)
+    expect(parsed.credits).toEqual(["作词：某人"])
+    expect(parsed.sections[0].lines[0].cells).toEqual(["你", "好"])
+  })
+
+  it("空句导出为 XXXX 占位，回读保留词格", async () => {
+    const { parseLyrics } = await import("./model/lyrics")
+    const sentence = createSentence([4, 3])
+    const text = exportLyrics(projectOf([sentence]))
+    expect(text).toBe("XXXX XXX")
+    const parsed = parseLyrics(text)
+    expect(parsed.sections[0].lines[0].pattern).toEqual([4, 3])
+    expect(parsed.sections[0].lines[0].cells).toEqual(new Array(7).fill(""))
   })
 })
 

@@ -23,6 +23,7 @@
   --cell-empty-bg: rgba(255, 253, 248, 0.55);
   --topbar-bg: rgba(246, 241, 230, 0.92);
   --shadow-dialog: rgba(60, 45, 30, 0.25);
+  --sidebar-width: 188px;
 
   font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Inter, sans-serif;
   font-size: 15px;
@@ -105,6 +106,8 @@ select {
   user-select: none;
 }
 
+
+
 .titlebar #btn-theme {
   -webkit-app-region: no-drag;
   min-width: 2.2em;
@@ -118,6 +121,200 @@ select {
 .titlebar #btn-theme:hover {
   background: var(--bg-hover);
   border-color: transparent;
+}
+
+.workspace {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  min-height: 0;
+}
+
+.sidebar {
+  width: var(--sidebar-width, 188px);
+  flex-shrink: 0;
+  position: sticky;
+  top: 28px;
+  max-height: calc(100vh - 28px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 8px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: width 0.16s ease, padding 0.16s ease;
+}
+
+body.resizing .sidebar {
+  transition: none;
+}
+
+html.sidebar-collapsed .sidebar {
+  width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  overflow: hidden;
+}
+
+html.sidebar-collapsed .sidebar-resizer {
+  display: none;
+}
+
+html.sidebar-collapsed .main-col {
+  border-left-color: transparent;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px 4px 6px;
+}
+
+.new-doc {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 2px 0 6px;
+  padding: 0.42em 0.6em;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.new-doc:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.sidebar-head button,
+.topbar #btn-sidebar-expand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.sidebar-head button:hover,
+.topbar #btn-sidebar-expand:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+html:not(.sidebar-collapsed) #btn-sidebar-expand {
+  display: none;
+}
+
+.doc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.doc-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.doc-item:hover {
+  background: var(--bg-hover);
+}
+
+.doc-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.doc-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-rename-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 1px 4px;
+  outline: none;
+}
+
+.doc-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.doc-item.active .doc-meta {
+  color: var(--accent);
+  opacity: 0.75;
+}
+
+.doc-del {
+  opacity: 0;
+  padding: 0 0.3em;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+.doc-item:hover .doc-del {
+  opacity: 1;
+}
+
+.doc-del:hover {
+  color: var(--danger);
+  background: transparent;
+}
+
+.sidebar-resizer {
+  position: sticky;
+  top: 28px;
+  align-self: flex-start;
+  width: 7px;
+  height: calc(100vh - 28px);
+  margin-left: -4px;
+  margin-right: -3px;
+  flex-shrink: 0;
+  z-index: 5;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer.dragging {
+  background: var(--accent-soft);
+}
+
+.main-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
 }
 
 button {
@@ -260,8 +457,8 @@ button:disabled {
 
 .alt-select {
   border: none;
-  border-radius: 8px 0 0 8px;
-  padding: 0.32em 0.15em 0.32em 0.6em;
+  border-radius: 0;
+  padding: 0.32em 0.15em 0.32em 0.5em;
   background: transparent;
   color: var(--text-secondary);
   outline: none;
@@ -271,6 +468,33 @@ button:disabled {
   background: transparent;
   border: none;
   box-shadow: none;
+}
+
+.alt-rename {
+  border: none;
+  border-radius: 8px 0 0 8px;
+  padding: 0.34em 0.45em 0.34em 0.55em;
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: inset -1px 0 0 var(--border);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.alt-rename:hover {
+  background: transparent;
+  color: var(--accent);
+}
+
+.alt-rename-input {
+  width: 5.5em;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 0.32em 0.6em;
+  outline: none;
 }
 
 .alt-add {
@@ -443,6 +667,17 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+.sentence-overflow {
+  align-self: center;
+  margin-left: 2px;
+  color: var(--danger);
+  font-size: 13px;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  border-bottom: 1px dashed var(--danger);
+  cursor: default;
+}
+
 .sentence + .sentence::before {
   content: "";
   display: block;
@@ -454,7 +689,7 @@ button:disabled {
   display: flex;
   gap: 8px;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   min-height: 30px;
   margin-bottom: 4px;
   padding: 2px 2px 0;
