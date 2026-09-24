@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest"
 import {
   Store,
   applyImportedCredits,
+  applyImportedTitle,
+  applyImportedSource,
+  autosaveState,
   createProject,
+  markAutosaved,
   createSection,
   createSentence,
   exportLyrics,
@@ -151,6 +155,14 @@ describe("allSentences", () => {
   })
 })
 
+describe("markAutosaved", () => {
+  it("更新时间戳", () => {
+    autosaveState.at = null
+    markAutosaved()
+    expect(autosaveState.at).toMatch(/^\d{2}:\d{2}$/)
+  })
+})
+
 describe("applyImportedCredits", () => {
   it("覆盖模式：新创作信息替换旧的，空则清空", () => {
     const project = createProject()
@@ -168,6 +180,42 @@ describe("applyImportedCredits", () => {
     expect(project.credits).toEqual(["作词：旧", "作曲：新"])
     applyImportedCredits(project, [], true)
     expect(project.credits).toEqual(["作词：旧", "作曲：新"])
+  })
+})
+
+describe("applyImportedTitle", () => {
+  it("覆盖模式：有名字替换，没有清空回未命名", () => {
+    const project = createProject()
+    project.title = "旧歌名"
+    applyImportedTitle(project, "新歌名", false)
+    expect(project.title).toBe("新歌名")
+    applyImportedTitle(project, "", false)
+    expect(project.title).toBe("未命名歌曲")
+  })
+
+  it("合并模式：不动标题", () => {
+    const project = createProject()
+    project.title = "旧歌名"
+    applyImportedTitle(project, "新歌名", true)
+    expect(project.title).toBe("旧歌名")
+  })
+})
+
+describe("applyImportedSource", () => {
+  it("覆盖模式替换原文", () => {
+    const project = createProject()
+    project.source = "旧原文"
+    applyImportedSource(project, "新原文", false)
+    expect(project.source).toBe("新原文")
+  })
+
+  it("合并模式保留并追加原文", () => {
+    const project = createProject()
+    project.source = "旧原文"
+    applyImportedSource(project, "新原文", true)
+    expect(project.source).toBe("旧原文\n\n新原文")
+    applyImportedSource(project, "第三次", true)
+    expect(project.source).toBe("旧原文\n\n新原文\n\n第三次")
   })
 })
 

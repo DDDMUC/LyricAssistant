@@ -23,6 +23,7 @@ const NOTE_RE = /[（(]\s*([^（）()]*?)\s*[)）]\s*$/
 const TITLE_RE = /^《\s*(.+?)\s*》$/
 const PURE_PATTERN_RE = /^\d+(\s*[/,，、+\-\s]\s*\d+)*$/
 const ALT_SEP = /\s*[|｜※]\s*/
+const GROUP_SPLIT_RE = /[\s，。、；：？！]+/u
 const PLACEHOLDER_RE = /^[XxＸｘ×✕✖]+$/
 const LINES_PER_SECTION = 4
 
@@ -109,6 +110,15 @@ const CREDIT_WORDS = [
   "人声",
   "念白",
   "监唱",
+  "导唱",
+  "协力",
+  "合作",
+  "协助",
+  "顾问",
+  "合唱",
+  "合声编写",
+  "联合监制",
+  "特别鸣谢",
   "录音棚",
   "混音棚",
 ]
@@ -187,13 +197,24 @@ function nextMeaningful(lines: string[], from: number): string | null {
   return null
 }
 
+const LABEL_COLON_RE = /^([^:：]{1,12})[:：]\s*(.+)$/
+
 function isBareTitleLine(line: string): boolean {
   if (line.length < 2 || line.length > 24) return false
   if (/\s/.test(line)) return false
   if (PURE_PATTERN_RE.test(line)) return false
   if (PLACEHOLDER_RE.test(line)) return false
   if (TITLE_RE.test(line)) return false
+  const labeled = line.match(LABEL_COLON_RE)
+  if (labeled) return labeled[1].includes("名")
   return true
+}
+
+function labelTitleOf(line: string): string | null {
+  const labeled = line.match(LABEL_COLON_RE)
+  if (!labeled || !labeled[1].includes("名")) return null
+  const value = labeled[2].trim()
+  return value || null
 }
 
 function sectionNameOf(line: string): string | null {
@@ -226,7 +247,7 @@ function chunkLines(lines: ParsedLine[]): ParsedSection[] {
 function splitLine(line: string): { pattern: number[]; cells: string[] } | null {
   const pattern: number[] = []
   const cells: string[] = []
-  for (const token of line.trim().split(/\s+/)) {
+  for (const token of line.trim().split(GROUP_SPLIT_RE)) {
     if (!token) continue
     if (PLACEHOLDER_RE.test(token)) {
       const size = [...token].length
@@ -314,6 +335,12 @@ export function parseLyrics(text: string): ParsedLyrics {
     }
 
     if (/^(#|\/\/)/.test(line)) continue
+
+    const labeledTitle = labelTitleOf(line)
+    if (labeledTitle && result.title === "" && !hasContent) {
+      result.title = labeledTitle
+      continue
+    }
 
     if (result.title === "" && !hasContent) {
       const next = nextMeaningful(rawLines, lineIndex)

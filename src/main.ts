@@ -9,10 +9,24 @@ import {
   splitOrMergePattern,
   writeChars,
 } from "./model/grid"
-import { createDoc, createDocFrom, loadDocs, saveDocs, type DocRecord } from "./docs"
+import {
+  buildDocsBackup,
+  createDoc,
+  createDocFrom,
+  loadDocs,
+  parseDocsBackup,
+  saveDocs,
+  type DocRecord,
+} from "./docs"
 import { parseLyrics } from "./model/lyrics"
 import { parsePattern, patternToString, totalCells } from "./model/pattern"
-import { isEndingFilled, rhymeHue, rhymeOfCells } from "./model/rhyme"
+import {
+  RHYME_LABEL_BY_KEY,
+  charFitsRhyme,
+  isEndingFilled,
+  rhymeHue,
+  rhymeOfCells,
+} from "./model/rhyme"
 import type { Project, Section, Sentence } from "./model/types"
 import type { ExportOptions } from "./state"
 import {
@@ -20,12 +34,16 @@ import {
   Store,
   addAlternative,
   applyImportedCredits,
+  applyImportedTitle,
+  applyImportedSource,
   allSentences,
+  createProject,
   createSection,
   createSentence,
   exportLyrics,
   findSectionBySentence,
   getCells,
+  markAutosaved,
   moveSection,
   onAutosave,
   onAutosaveWrite,
@@ -55,6 +73,12 @@ const newDocBtn = document.querySelector("#btn-new-doc") as HTMLButtonElement
 const resizerEl = document.querySelector("#sidebar-resizer") as HTMLElement
 const reflowBtn = document.querySelector("#btn-reflow") as HTMLButtonElement
 const creditsBtn = document.querySelector("#btn-credits") as HTMLButtonElement
+const sourceBtn = document.querySelector("#btn-source") as HTMLButtonElement
+const sourcePanel = document.querySelector("#source-panel") as HTMLElement
+const sourceTextEl = document.querySelector("#source-text") as HTMLTextAreaElement
+const sourceCloseBtn = document.querySelector("#btn-source-close") as HTMLButtonElement
+const editorActionsEl = document.querySelector("#editor-actions") as HTMLElement
+
 const sidebarToggleBtns = ["#btn-sidebar", "#btn-sidebar-expand"]
   .map((selector) => document.querySelector(selector))
   .filter((el): el is HTMLButtonElement => el instanceof HTMLButtonElement)
@@ -66,10 +90,9 @@ let statusOverride: { text: string; isError: boolean } | null = null
 let statusOverrideTimer: ReturnType<typeof setTimeout> | null = null
 
 const docsState = loadDocs()
-const initialDoc =
-  docsState.docs.find((doc) => doc.id === docsState.activeId) ?? docsState.docs[0]
-const store = new Store(initialDoc.project)
-if (initialDoc.filePath) store.filePath = initialDoc.filePath
+const initialDoc = docsState.docs.find((doc) => doc.id === docsState.activeId)
+const store = new Store(initialDoc ? initialDoc.project : createProject())
+if (initialDoc?.filePath) store.filePath = initialDoc.filePath
 
 function setStatus(text: string, isError = false): void {
   statusOverride = { text, isError }
@@ -82,13 +105,20 @@ function setStatus(text: string, isError = false): void {
 }
 
 function updatePathStatus(): void {
-  const path = store.filePath ? store.filePath : "未保存到文件"
-  statusPathEl.textContent = store.dirty ? `● ${path}` : path
-  statusPathEl.classList.toggle("dirty", store.dirty)
+  if (store.filePath) {
+    statusPathEl.textContent = store.dirty ? `● ${store.filePath}` : store.filePath
+    statusPathEl.classList.toggle("dirty", store.dirty)
+    return
+  }
+  statusPathEl.textContent = "草稿自动保存中 · 尚未保存为工程文件"
+  statusPathEl.classList.remove("dirty")
 }
 
 function renderStatusBar(): void {
-  const stats = statsOf(store.project)
+  const stats =
+    docsState.docs.length === 0
+      ? { filled: 0, total: 0, sentences: 0, sections: 0, percent: 0, overflow: 0 }
+      : statsOf(store.project)
   statusStatsEl.textContent =
     `已填 ${stats.filled} / ${stats.total} 格 · 完成 ${stats.percent}% · ` +
     `句数 ${stats.sentences} · 段落 ${stats.sections}` +
@@ -111,7 +141,9 @@ function renderStatusBar(): void {
   statusRhymeEl.textContent = rhymeSummaryText()
 
   updatePathStatus()
-  statusAutosaveEl.textContent = autosaveState.at ? `已自动保存 ${autosaveState.at}` : ""
+  statusAutosaveEl.textContent = autosaveState.at
+    ? `已自动保存 ${autosaveState.at}`
+    : "自动保存已开启"
   document.title = `${store.dirty ? "● " : ""}${store.project.title || "词格"} · 词格`
 }
 
@@ -141,13 +173,18 @@ function mutate(fn: () => void): void {
   render()
 }
 
+function persistDocs(): void {
+  saveDocs(docsState)
+  markAutosaved()
+}
+
 function syncActiveDoc(): void {
   const doc = docsState.docs.find((d) => d.id === docsState.activeId)
   if (!doc) return
   doc.project = store.project
   doc.filePath = store.filePath
   doc.updatedAt = store.project.updatedAt
-  saveDocs(docsState)
+  persistDocs()
 }
 
 function renderDocList(): void {
@@ -173,18 +210,16 @@ function renderDocList(): void {
     meta.textContent = `${stats.sentences} 句`
     item.appendChild(meta)
 
-    if (docsState.docs.length > 1) {
-      const del = document.createElement("button")
-      del.type = "button"
-      del.className = "doc-del"
-      del.textContent = "×"
-      del.title = "删除这个歌词文件"
-      del.addEventListener("click", (event) => {
-        event.stopPropagation()
-        deleteDoc(doc.id)
-      })
-      item.appendChild(del)
-    }
+    const del = document.createElement("button")
+    del.type = "button"
+    del.className = "doc-del"
+    del.textContent = "×"
+    del.title = "删除这个歌词文件"
+    del.addEventListener("click", (event) => {
+      event.stopPropagation()
+      deleteDoc(doc.id)
+    })
+    item.appendChild(del)
 
     item.addEventListener("click", () => switchDoc(doc.id))
     docListEl.appendChild(item)
@@ -206,7 +241,7 @@ function renameDoc(docId: string, rawName: string): void {
   } else {
     doc.project.title = name
     doc.updatedAt = new Date().toISOString()
-    saveDocs(docsState)
+    persistDocs()
     renderDocList()
   }
   setStatus(`已重命名为「${name}」`)
@@ -261,7 +296,7 @@ function switchDoc(id: string): void {
   syncActiveDoc()
   docsState.activeId = id
   activateDoc(target)
-  saveDocs(docsState)
+  persistDocs()
   render()
   focusCellInput()
   setStatus(`已切换到「${target.project.title || "未命名"}」`)
@@ -273,7 +308,7 @@ function addDoc(): void {
   docsState.docs.push(doc)
   docsState.activeId = doc.id
   activateDoc(doc)
-  saveDocs(docsState)
+  persistDocs()
   render()
   titleEl.focus()
   titleEl.select()
@@ -281,7 +316,6 @@ function addDoc(): void {
 }
 
 function deleteDoc(id: string): void {
-  if (docsState.docs.length <= 1) return
   const doc = docsState.docs.find((item) => item.id === id)
   if (!doc) return
   confirmDeleteDoc(id, doc.project.title || "未命名")
@@ -325,34 +359,96 @@ function confirmDeleteDoc(id: string, name: string): void {
   dialog.showModal()
 }
 
+function resetStoreToEmpty(): void {
+  store.project = createProject()
+  store.filePath = null
+  store.undoStack = []
+  store.redoStack = []
+  store.dirty = false
+  store.cursor = { sentenceId: "", cell: 0 }
+  docsState.activeId = ""
+}
+
 function performDeleteDoc(id: string, name: string): void {
   const index = docsState.docs.findIndex((doc) => doc.id === id)
   if (index < 0) return
   docsState.docs.splice(index, 1)
   if (docsState.activeId === id) {
-    const next = docsState.docs[Math.max(0, index - 1)]
-    docsState.activeId = next.id
-    activateDoc(next)
+    if (docsState.docs.length === 0) {
+      resetStoreToEmpty()
+    } else {
+      const next = docsState.docs[Math.max(0, index - 1)]
+      docsState.activeId = next.id
+      activateDoc(next)
+    }
     render()
     focusCellInput()
   } else {
     renderDocList()
   }
-  saveDocs(docsState)
+  persistDocs()
   setStatus(`已删除「${name}」`)
+}
+
+function openSourcePanel(): void {
+  sourcePanel.hidden = false
+  sourceTextEl.value = store.project.source ?? ""
+}
+
+function closeSourcePanel(): void {
+  sourcePanel.hidden = true
+}
+
+function syncSourcePanel(): void {
+  const hasSource = !!store.project.source
+  sourceBtn.hidden = !hasSource
+  sourceTextEl.value = store.project.source ?? ""
+  if (!hasSource) sourcePanel.hidden = true
+}
+
+function renderEmptyState(): HTMLElement {
+  const wrap = document.createElement("div")
+  wrap.className = "empty-state"
+
+  const title = document.createElement("p")
+  title.className = "empty-title"
+  title.textContent = "还没有歌词"
+
+  const hint = document.createElement("p")
+  hint.className = "empty-hint"
+  hint.textContent = "点「＋ 新建歌词」或「导入歌词」开始"
+
+  wrap.append(title, hint)
+  return wrap
 }
 
 function render(): void {
   if (composing) return
-  titleEl.value = store.project.title
+  const prevScrollY = window.scrollY
+  const empty = docsState.docs.length === 0
+  if (empty) {
+    titleEl.value = ""
+    titleEl.disabled = true
+  } else {
+    titleEl.value = store.project.title
+    titleEl.disabled = false
+  }
   sentencesEl.replaceChildren()
+  editorActionsEl.hidden = empty
 
-  store.project.sections.forEach((section, sectionIdx) => {
-    sentencesEl.appendChild(renderSection(section, sectionIdx))
-  })
+  if (empty) {
+    sentencesEl.appendChild(renderEmptyState())
+  } else {
+    store.project.sections.forEach((section, sectionIdx) => {
+      sentencesEl.appendChild(renderSection(section, sectionIdx))
+    })
+  }
 
   renderStatusBar()
   renderDocList()
+  syncSourcePanel()
+  // replaceChildren 会先清空容器，高度瞬间归零导致 scrollTop 被钳到 0，这里补回
+  if (window.scrollY !== prevScrollY) window.scrollTo(0, prevScrollY)
 }
 
 function renderSection(section: Section, sectionIdx: number): HTMLElement {
@@ -776,17 +872,35 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   sideRight.className = "sentence-side-right"
 
   const rhyme = rhymeOfCells(cells)
-  if (rhyme) {
+  const lockKey = sentence.rhymeLock ?? ""
+  const lockLabel = RHYME_LABEL_BY_KEY.get(lockKey)
+  const badge = document.createElement("span")
+  if (lockLabel) {
+    const mismatch = rhyme !== null && rhyme.key !== lockKey
+    badge.className = mismatch ? "rhyme-badge locked mismatch" : "rhyme-badge locked"
+    badge.textContent = `${lockLabel} 🔒`
+    badge.title = mismatch && rhyme
+      ? `已锁「${lockLabel}」· 但句尾是「${rhyme.char}」（${rhyme.label}），不合辙`
+      : `已锁「${lockLabel}」· 点击解锁`
+    badge.style.setProperty("--rhyme-hue", String(rhymeHue(lockKey)))
+  } else if (rhyme) {
     const ended = isEndingFilled(cells)
-    const badge = document.createElement("span")
     badge.className = ended ? "rhyme-badge" : "rhyme-badge pending"
     badge.textContent = rhyme.label.replace(/辙$/, "")
     badge.title = ended
-      ? `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label}`
+      ? `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label} · 点击加锁`
       : `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label}（句尾未填，暂不统计）`
     badge.style.setProperty("--rhyme-hue", String(rhymeHue(rhyme.key)))
-    sideRight.appendChild(badge)
+  } else {
+    badge.className = "rhyme-badge empty"
+    badge.textContent = "＋ 锁"
+    badge.title = "锁定韵辙：写句尾时只允许押这个辙的字"
   }
+  badge.addEventListener("click", (event) => {
+    event.stopPropagation()
+    openRhymeLockDialog(sentence.id, lockKey)
+  })
+  sideRight.appendChild(badge)
 
   const filled = cells.filter((char) => char.trim() !== "").length
   const progress = document.createElement("span")
@@ -1085,6 +1199,20 @@ function commitInput(input: HTMLInputElement): void {
   const sentence = store.findSentence(sentenceId)
   if (!sentence) return
 
+  const lockKey = sentence.rhymeLock ?? ""
+  if (lockKey) {
+    const total = totalCells(sentence.pattern)
+    const lastIndex = total - 1
+    const chars = [...text]
+    for (let i = start, j = 0; i <= lastIndex && j < chars.length; i++, j++) {
+      if (i !== lastIndex) continue
+      if (!charFitsRhyme(chars[j], lockKey)) {
+        setStatus(`『${chars[j]}』不押「${RHYME_LABEL_BY_KEY.get(lockKey) ?? lockKey}」，已拦下`, true)
+        return
+      }
+    }
+  }
+
   store.pushUndo()
   const result = writeChars(getCells(sentence), start, text)
   setCells(sentence, result.cells)
@@ -1209,6 +1337,14 @@ async function pasteSentence(sentenceId: string): Promise<void> {
   if (!sentence) return
   const total = totalCells(sentence.pattern)
   const written = Math.min(chars.length, total)
+  const lockKey = sentence.rhymeLock ?? ""
+  if (lockKey && written > 0) {
+    const lastChar = chars[written - 1]
+    if (!charFitsRhyme(lastChar, lockKey)) {
+      setStatus(`『${lastChar}』不押「${RHYME_LABEL_BY_KEY.get(lockKey) ?? lockKey}」，已拦下`, true)
+      return
+    }
+  }
   const cells = getCells(sentence).slice()
   for (let i = 0; i < written; i++) cells[i] = chars[i]
   const excess = chars.slice(written).join("")
@@ -1228,6 +1364,10 @@ async function copyLyrics(): Promise<void> {
 }
 
 async function saveProject(saveAs: boolean): Promise<void> {
+  if (docsState.docs.length === 0) {
+    setStatus("没有可保存的歌词", true)
+    return
+  }
   try {
     let path = store.filePath
     if (saveAs || !path) {
@@ -1254,17 +1394,30 @@ async function openProject(): Promise<void> {
   try {
     const chosen = await openFileDialog({
       multiple: false,
-      filters: [{ name: "词格工程", extensions: ["json"] }],
+      filters: [{ name: "词格文件（工程 / 草稿备份）", extensions: ["json"] }],
     })
     if (!chosen || Array.isArray(chosen)) return
     const raw = await readTextFile(chosen)
+    const backup = parseDocsBackup(raw)
+    if (backup) {
+      docsState.docs = backup.docs
+      docsState.activeId = backup.activeId
+      const active =
+        docsState.docs.find((doc) => doc.id === docsState.activeId) ?? docsState.docs[0]
+      activateDoc(active)
+      persistDocs()
+      render()
+      focusCellInput()
+      setStatus(`已从草稿备份恢复 ${docsState.docs.length} 个歌词文件`)
+      return
+    }
     const project = parseProject(raw)
     syncActiveDoc()
     const doc = createDocFrom(project, chosen)
     docsState.docs.push(doc)
     docsState.activeId = doc.id
     activateDoc(doc)
-    saveDocs(docsState)
+    persistDocs()
     render()
     focusCellInput()
     setStatus(`已打开「${project.title || "未命名"}」`)
@@ -1298,6 +1451,80 @@ function saveExportOptions(options: ExportOptions): void {
   } catch {
     // 忽略
   }
+}
+
+async function exportDraftsBackup(): Promise<void> {
+  try {
+    syncActiveDoc()
+    const chosen = await saveFileDialog({
+      filters: [{ name: "词格草稿备份", extensions: ["json"] }],
+      defaultPath: "词格草稿备份.json",
+    })
+    if (!chosen) return
+    await writeTextFile(chosen, JSON.stringify(buildDocsBackup(docsState), null, 2))
+    setStatus(`已导出 ${docsState.docs.length} 个歌词文件的草稿备份`)
+  } catch (err) {
+    setStatus(`导出失败: ${err instanceof Error ? err.message : err}`, true)
+  }
+}
+
+
+
+function openRhymeLockDialog(sentenceId: string, current: string): void {
+  const dialog = document.createElement("dialog")
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body"
+
+  const title = document.createElement("strong")
+  title.textContent = "锁定韵辙"
+
+  const hint = document.createElement("p")
+  hint.textContent = "锁定后，这句的句尾只能输入押该辙的字（多音字任一读音命中即放行）。"
+
+  const grid = document.createElement("div")
+  grid.className = "rhyme-grid"
+
+  RHYME_LABEL_BY_KEY.forEach((label, key) => {
+    const btn = document.createElement("button")
+    btn.type = "submit"
+    btn.value = key
+    btn.textContent = label
+    if (key === current) btn.className = "primary"
+    btn.style.setProperty("--rhyme-hue", String(rhymeHue(key)))
+    grid.appendChild(btn)
+  })
+
+  const actions = document.createElement("div")
+  actions.className = "dialog-actions"
+  const unlock = document.createElement("button")
+  unlock.type = "submit"
+  unlock.value = ""
+  unlock.textContent = "解锁"
+  unlock.className = "danger"
+  const cancel = document.createElement("button")
+  cancel.type = "submit"
+  cancel.value = "cancel"
+  cancel.textContent = "取消"
+  actions.append(unlock, cancel)
+
+  form.append(title, hint, grid, actions)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  dialog.addEventListener("close", () => {
+    const action = dialog.returnValue
+    dialog.remove()
+    if (action === "cancel") return
+    const key = action || ""
+    if (key === current) return
+    mutate(() => {
+      const target = store.findSentence(sentenceId)
+      if (!target) return
+      target.rhymeLock = key
+    })
+    setStatus(key ? `已锁「${RHYME_LABEL_BY_KEY.get(key)}」，句尾只能押这个辙` : "已解锁")
+  })
+  dialog.showModal()
 }
 
 function openCreditsDialog(): void {
@@ -1460,6 +1687,16 @@ function applyLyricsText(
       return false
     }
     mutate(() => {
+      if (docsState.docs.length === 0) {
+        const doc = createDoc()
+        docsState.docs.push(doc)
+        docsState.activeId = doc.id
+        store.project = doc.project
+        store.filePath = null
+        store.undoStack = []
+        store.redoStack = []
+        store.cursor = { sentenceId: "", cell: 0 }
+      }
       const imported = parsed.sections.map((section, i) => {
         const sentences = section.lines.map((line) => {
           const sentence = createSentence(line.pattern)
@@ -1484,12 +1721,9 @@ function applyLyricsText(
       }
       const first = imported[0]?.sentences[0]
       if (first) store.cursor = { sentenceId: first.id, cell: 0 }
-      applyImportedCredits(store.project, parsed.credits, merge)
-      const title = parsed.title || fileTitle
-      if (title && !merge) {
-        store.project.title = title
-        titleEl.value = title
-      }
+  applyImportedCredits(store.project, parsed.credits, merge)
+  applyImportedTitle(store.project, parsed.title || fileTitle || "", merge)
+  applyImportedSource(store.project, text, merge)
     })
     const creditNote =
       parsed.credits.length > 0 ? `，创作信息 ${parsed.credits.length} 条` : ""
@@ -1530,7 +1764,7 @@ function openImportDialog(): void {
   const modeInputs = Array.from(
     dialog.querySelectorAll<HTMLInputElement>('input[name="import-mode"]'),
   )
-  dialog.addEventListener("close", () => {
+  dialog.addEventListener("close", async () => {
     const action = dialog.returnValue
     if (action === "file") {
       void pickLyricsFileInto(textarea).then(() => {
@@ -1555,7 +1789,13 @@ function openImportDialog(): void {
     const fillLyrics = modeInputs.find((el) => el.checked)?.value !== "grid"
     dialog.remove()
     if (action === "ok") {
-      applyLyricsText(textarea.value, textarea.dataset.fileTitle, merge, fillLyrics)
+      const imported = await applyLyricsText(
+        textarea.value,
+        textarea.dataset.fileTitle,
+        merge,
+        fillLyrics,
+      )
+      if (imported) openSourcePanel()
     }
   })
   dialog.showModal()
@@ -1607,6 +1847,13 @@ function bindToolbar(): void {
   document.querySelector("#btn-import-lyrics")?.addEventListener("click", openImportDialog)
   newDocBtn.addEventListener("click", addDoc)
   creditsBtn.addEventListener("click", openCreditsDialog)
+  sourceBtn.addEventListener("click", () => {
+    if (sourcePanel.hidden) openSourcePanel()
+    else closeSourcePanel()
+  })
+  sourceCloseBtn.addEventListener("click", closeSourcePanel)
+  statusPathEl.title = "点这里保存草稿备份（全部歌词文件）"
+  statusPathEl.addEventListener("click", () => void exportDraftsBackup())
   reflowBtn.addEventListener("click", () => {
     store.pushUndo()
     const moved = reflowOverflow(store.project)

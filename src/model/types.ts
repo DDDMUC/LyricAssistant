@@ -11,6 +11,7 @@ export interface Sentence {
   activeAlt: number
   note: string
   overflow: string
+  rhymeLock?: string
 }
 
 export interface Section {
@@ -25,6 +26,7 @@ export interface Project {
   sections: Section[]
   updatedAt: string
   credits?: string[]
+  source?: string
 }
 
 export interface Cursor {
