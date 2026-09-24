@@ -17,11 +17,18 @@ describe("parseLyrics", () => {
     expect(parsed.sections[0].lines[0].cells).toEqual(new Array(8).fill(""))
   })
 
-  it("标点不占格也不入格", () => {
+  it("中文停顿标点不占格，但作为分句边界", () => {
     const parsed = parseLyrics("你好，世界！ 啊")
     const line = parsed.sections[0].lines[0]
-    expect(line.pattern).toEqual([4, 1])
+    expect(line.pattern).toEqual([2, 2, 1])
     expect(line.cells).toEqual(["你", "好", "世", "界", "啊"])
+  })
+
+  it("逗号分句按各自字数成组", () => {
+    const parsed = parseLyrics("我生分九野，以正四方象观")
+    const line = parsed.sections[0].lines[0]
+    expect(line.pattern).toEqual([5, 6])
+    expect(line.cells.join("")).toBe("我生分九野以正四方象观")
   })
 
   it("行尾括号提取为备注", () => {
@@ -148,6 +155,29 @@ describe("parseLyrics", () => {
     const parsed = parseLyrics("和声: 叶里\n和声\n真的 假的")
     expect(parsed.credits).toEqual(["和声：叶里"])
     expect(parsed.sections[0].name).toBe("和声")
+  })
+
+  it("带冒号的短行不当歌名，除非标签含「名」", () => {
+    const text = `演唱: 洛天依
+作词: 骆栖淮
+混音: 圈太
+ 导唱协力：小缘
+ 出品：哔哩哔哩拜年纪
+ 我生分九野，以正四方象观
+ 察宇宙晨昏去复始元`
+    const parsed = parseLyrics(text)
+    expect(parsed.title).toBe("")
+    expect(parsed.credits).toContain("导唱协力：小缘")
+    expect(parsed.credits).toContain("出品：哔哩哔哩拜年纪")
+    expect(parsed.sections[0].lines[0].cells.join("")).toBe("我生分九野以正四方象观")
+    expect(parsed.sections[0].lines[0].pattern).toEqual([5, 6])
+  })
+
+  it("「歌名：xxx」显式标记当歌名", () => {
+    const parsed = parseLyrics("演唱：A\n歌名：某首歌\n我 爱 你")
+    expect(parsed.title).toBe("某首歌")
+    expect(parsed.credits).toEqual(["演唱：A"])
+    expect(parsed.sections[0].lines).toHaveLength(1)
   })
 
   it("credit 块里的裸行识别为歌名", () => {

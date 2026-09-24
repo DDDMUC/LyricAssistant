@@ -76,15 +76,14 @@ export function loadDocs(): DocsState {
     const raw = localStorage.getItem(DOCS_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as { activeId?: unknown; docs?: unknown }
-      const docs = Array.isArray(parsed.docs)
-        ? parsed.docs
-            .map(normalizeDoc)
-            .filter((doc): doc is DocRecord => doc !== null)
-        : []
-      if (docs.length > 0) {
-        const activeId = docs.some((doc) => doc.id === parsed.activeId)
-          ? String(parsed.activeId)
-          : docs[0].id
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.docs)) {
+        const docs = parsed.docs
+          .map(normalizeDoc)
+          .filter((doc): doc is DocRecord => doc !== null)
+        const activeId =
+          typeof parsed.activeId === "string" && docs.some((doc) => doc.id === parsed.activeId)
+            ? parsed.activeId
+            : ""
         return { activeId, docs }
       }
     }
@@ -114,4 +113,43 @@ export function loadDocs(): DocsState {
 
 export function saveDocs(state: DocsState): void {
   localStorage.setItem(DOCS_KEY, JSON.stringify(state))
+}
+
+export interface DocsBackup {
+  format: "cige-grid-drafts"
+  version: 1
+  exportedAt: string
+  activeId: string
+  docs: DocRecord[]
+}
+
+export function buildDocsBackup(state: DocsState): DocsBackup {
+  return {
+    format: "cige-grid-drafts",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    activeId: state.activeId,
+    docs: state.docs,
+  }
+}
+
+export function parseDocsBackup(raw: string): DocsState | null {
+  try {
+    const data = JSON.parse(raw) as {
+      format?: unknown
+      activeId?: unknown
+      docs?: unknown
+    }
+    if (data.format !== "cige-grid-drafts" || !Array.isArray(data.docs)) return null
+    const docs = data.docs
+      .map(normalizeDoc)
+      .filter((doc): doc is DocRecord => doc !== null)
+    if (docs.length === 0) return null
+    const activeId = docs.some((doc) => doc.id === data.activeId)
+      ? String(data.activeId)
+      : docs[0].id
+    return { activeId, docs }
+  } catch {
+    return null
+  }
 }

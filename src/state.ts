@@ -22,6 +22,7 @@ export function createSentence(pattern: number[]): Sentence {
     activeAlt: 0,
     note: "",
     overflow: "",
+    rhymeLock: "",
   }
 }
 
@@ -44,6 +45,7 @@ export function createProject(): Project {
     sections: [verse, chorus],
     updatedAt: new Date().toISOString(),
     credits: [],
+    source: "",
   }
 }
 
@@ -166,6 +168,7 @@ function normalizeSentence(sentence: Sentence): void {
   }
   if (typeof sentence.note !== "string") sentence.note = ""
   if (typeof sentence.overflow !== "string") sentence.overflow = ""
+  if (typeof sentence.rhymeLock !== "string") sentence.rhymeLock = ""
   if (typeof sentence.id !== "string" || !sentence.id) sentence.id = newId("s")
 }
 
@@ -263,6 +266,24 @@ export function applyImportedCredits(
   }
 }
 
+export function applyImportedTitle(
+  project: Project,
+  title: string,
+  merge: boolean,
+): void {
+  if (merge) return
+  project.title = title || "未命名歌曲"
+}
+
+export function applyImportedSource(
+  project: Project,
+  text: string,
+  merge: boolean,
+): void {
+  const current = project.source ?? ""
+  project.source = merge ? (current ? `${current}\n\n${text}` : text) : text
+}
+
 export interface ExportOptions {
   alts: boolean
   note: boolean
@@ -313,6 +334,14 @@ export function onAutosave(cb: () => void): void {
 
 export function onAutosaveWrite(cb: (store: Store) => void): void {
   autosaveWriter = cb
+}
+
+export function markAutosaved(): void {
+  const now = new Date()
+  autosaveState.at = `${String(now.getHours()).padStart(2, "0")}:${String(
+    now.getMinutes(),
+  ).padStart(2, "0")}`
+  autosaveListener?.()
 }
 
 export class Store {
@@ -416,11 +445,7 @@ function scheduleAutosave(store: Store): void {
   autosaveTimer = setTimeout(() => {
     try {
       autosaveWriter?.(store)
-      const now = new Date()
-      autosaveState.at = `${String(now.getHours()).padStart(2, "0")}:${String(
-        now.getMinutes(),
-      ).padStart(2, "0")}`
-      autosaveListener?.()
+      markAutosaved()
     } catch {
       // 忽略配额错误
     }

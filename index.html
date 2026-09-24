@@ -48,37 +48,47 @@
           <div class="brand">
             <input id="project-title" class="title-input" value="未命名歌曲" aria-label="工程标题" />
             <button id="btn-credits" type="button" hidden title="查看 / 编辑创作信息">创作信息</button>
+            <button id="btn-source" type="button" hidden title="查看 / 隐藏导入原文（用于核对）">原文</button>
           </div>
           <div class="topbar-actions">
             <label class="pattern-label">
               词格
               <input id="new-pattern" class="pattern-input" value="4/4" />
             </label>
-            <button id="btn-add-sentence" type="button">新句</button>
-            <button id="btn-reflow" type="button" hidden>整理溢出</button>
             <button id="btn-import-lyrics" type="button">导入歌词</button>
             <button id="btn-open" type="button">打开工程</button>
-            <button id="btn-save" type="button">保存工程</button>
-            <button id="btn-save-as" type="button">另存为</button>
-            <button id="btn-export" class="primary" type="button">导出歌词</button>
-            <button id="btn-copy-lyrics" type="button">复制歌词</button>
-            <button id="btn-undo" type="button">撤销</button>
-            <button id="btn-redo" type="button">重做</button>
+            <div id="editor-actions" class="editor-actions">
+              <button id="btn-add-sentence" type="button">新句</button>
+              <button id="btn-reflow" type="button" hidden>整理溢出</button>
+              <button id="btn-save" type="button">保存工程</button>
+              <button id="btn-save-as" type="button">另存为</button>
+              <button id="btn-export" class="primary" type="button">导出歌词</button>
+              <button id="btn-copy-lyrics" type="button">复制歌词</button>
+              <button id="btn-undo" type="button">撤销</button>
+              <button id="btn-redo" type="button">重做</button>
+            </div>
           </div>
         </header>
 
         <main id="sentences" class="sentences"></main>
-
-        <footer class="statusbar">
-          <span id="status-stats" class="status-stats"></span>
-          <span id="status-hint">点格子输入 · Backspace 原地删 · Alt+←/→ 整句挪动 · Ctrl/Cmd+S 保存 · Ctrl/Cmd+Z 撤销 · Shift+Cmd+Z 重做</span>
-          <span class="status-right">
-            <span id="status-rhyme"></span>
-            <span id="status-path"></span>
-            <span id="status-autosave"></span>
-          </span>
-        </footer>
       </div>
+      <aside id="source-panel" class="source-panel" hidden>
+        <div class="source-head">
+          <span>导入原文（核对用）</span>
+          <button id="btn-source-close" type="button" title="关闭">✕</button>
+        </div>
+        <textarea id="source-text" class="source-text" readonly spellcheck="false" placeholder="导入歌词后，原文会留在这里，方便核对"></textarea>
+      </aside>
     </div>
+
+    <footer class="statusbar">
+      <span id="status-stats" class="status-stats"></span>
+      <span id="status-hint">点格子输入 · Backspace 原地删 · Alt+←/→ 整句挪动 · Ctrl/Cmd+S 保存 · Ctrl/Cmd+Z 撤销 · Shift+Cmd+Z 重做</span>
+      <span class="status-right">
+        <span id="status-rhyme"></span>
+        <span id="status-path"></span>
+        <span id="status-autosave"></span>
+      </span>
+    </footer>
   </body>
 </html>
