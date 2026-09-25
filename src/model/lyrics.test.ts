@@ -36,7 +36,24 @@ describe("parseLyrics", () => {
     expect(parsed.sections[0].lines[0].note).toBe("温柔一点")
     expect(parsed.sections[0].lines[0].pattern).toEqual([2, 2])
     expect(parsed.sections[0].lines[1].note).toBe("备注")
-    expect(parsed.sections[0].lines[1].pattern).toEqual([3, 2])
+    expect(parsed.sections[0].lines[1].pattern).toEqual([3])
+  })
+
+  it("只收汉字：英文、拼音、数字、注音一律跳过", () => {
+    const parsed = parseLyrics(
+      "空天裂降（jiàng）三军\n乱云 English 开翻 123 金鳞",
+    )
+    const [first, second] = parsed.sections[0].lines
+    expect(first.cells).toEqual(["空", "天", "裂", "降", "三", "军"])
+    expect(first.pattern).toEqual([6])
+    expect(second.cells).toEqual(["乱", "云", "开", "翻", "金", "鳞"])
+    expect(second.pattern).toEqual([2, 2, 2])
+  })
+
+  it("整行都是拼音/英文的，不生成句子", () => {
+    const parsed = parseLyrics("jiàng\nyours truly\n真的 假的")
+    expect(parsed.sections[0].lines).toHaveLength(1)
+    expect(parsed.sections[0].lines[0].cells.join("")).toBe("真的假的")
   })
 
   it("竖线分隔备选，按主句词格截断补齐", () => {

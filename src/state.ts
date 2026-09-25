@@ -130,10 +130,10 @@ export function setPattern(sentence: Sentence, pattern: number[]): void {
   }
 }
 
-export function addAlternative(sentence: Sentence): void {
+export function addAlternative(sentence: Sentence, name?: string): void {
   const source = getCells(sentence)
-  const name = `备选 ${sentence.alternatives.length + 1}`
-  sentence.alternatives.push(emptyAlternative(name, source.slice()))
+  const fallback = `备选 ${sentence.alternatives.length + 1}`
+  sentence.alternatives.push(emptyAlternative(name || fallback, source.slice()))
   sentence.activeAlt = sentence.alternatives.length - 1
 }
 

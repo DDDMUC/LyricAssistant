@@ -172,6 +172,10 @@ export function rhymeHue(key: string): number {
   return Math.round((index * 360) / RHYME_GROUPS.length)
 }
 
+export function rhymeFinals(key: string): string[] {
+  return RHYME_GROUPS.find((group) => group.key === key)?.finals ?? []
+}
+
 export function rhymeLabels(): string[] {
   return RHYME_GROUPS.map((group) => group.label)
 }

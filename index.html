@@ -57,6 +57,7 @@
             </label>
             <button id="btn-import-lyrics" type="button">导入</button>
             <button id="btn-open" type="button">打开工程</button>
+            <button id="btn-ai" type="button" aria-expanded="false">AI 填词</button>
             <div id="editor-actions" class="editor-actions">
               <button id="btn-add-sentence" type="button">新句</button>
               <button id="btn-reflow" type="button" hidden>整理溢出</button>
@@ -67,6 +68,7 @@
                 <div id="export-menu" class="export-menu" hidden>
                   <button id="menu-export-lyrics" type="button">歌词</button>
                   <button id="menu-export-grid" type="button">词格</button>
+                  <button id="menu-export-midi" type="button">带歌词 MIDI</button>
                 </div>
               </span>
               <span class="menu-wrap">
@@ -81,6 +83,7 @@
             </div>
           </div>
           <button id="btn-clear-all" class="danger" type="button" title="清空所有格子（韵辙、歌名、备注保留，可撤销）">清空</button>
+          <div id="scroll-progress" class="scroll-progress" aria-hidden="true"></div>
         </header>
 
         <main id="sentences" class="sentences"></main>
@@ -91,6 +94,30 @@
           <button id="btn-source-close" type="button" title="关闭">✕</button>
         </div>
         <textarea id="source-text" class="source-text" readonly spellcheck="false" placeholder="导入歌词后，原文会留在这里，方便核对"></textarea>
+      </aside>
+      <div id="ai-resizer" class="ai-resizer" role="separator" aria-orientation="vertical" aria-label="调整 AI 面板宽度" title="拖动调整宽度（双击恢复默认）" hidden></div>
+      <aside id="ai-panel" class="ai-panel" hidden>
+        <div class="ai-head">
+          <span class="ai-title">AI 填词</span>
+          <button id="btn-ai-prompt" type="button" title="看发给模型的提示词">提示词</button>
+          <button id="btn-ai-settings" type="button" title="接口设置">⚙</button>
+          <button id="btn-ai-clear" type="button" title="清空对话">清空</button>
+          <button id="btn-ai-close" type="button" title="关闭" aria-label="关闭">✕</button>
+        </div>
+        <div id="ai-messages" class="ai-messages"></div>
+        <div class="ai-tools">
+          <button id="btn-ai-write-all" type="button" title="按当前词格写完整首">按词格写整首</button>
+        </div>
+        <div class="ai-composer">
+          <textarea id="ai-input" rows="2" placeholder="说要求，比如：写一段古风，押江阳；或「第 3 句重写」"></textarea>
+          <div class="ai-composer-foot">
+            <button id="ai-scope-chip" class="ai-chip" type="button" title="生成范围"></button>
+            <button id="ai-model-chip" class="ai-chip" type="button" title="选择模型"></button>
+            <button id="ai-effort-chip" class="ai-chip" type="button" title="推理等级"></button>
+            <button id="btn-ai-send" type="button" title="发送（Enter；生成中变成停止）">↑</button>
+          </div>
+        </div>
+        <div id="ai-hint" class="ai-hint">已自动附上词格</div>
       </aside>
     </div>
 
