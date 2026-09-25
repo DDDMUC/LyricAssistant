@@ -9,6 +9,7 @@ import {
   markAutosaved,
   createSection,
   createSentence,
+  exportGrid,
   exportLyrics,
   getCells,
   moveSection,
@@ -119,6 +120,17 @@ describe("statsOf", () => {
   })
 })
 
+describe("rhymeHint", () => {
+  it("句尾填上字后清掉记住的辙；句尾空着时保留", () => {
+    const s = createSentence([3])
+    s.rhymeHint = "gusu"
+    setCells(s, ["一", "夜", ""])
+    expect(s.rhymeHint).toBe("gusu")
+    setCells(s, ["一", "夜", "酥"])
+    expect(s.rhymeHint).toBe("")
+  })
+})
+
 describe("exportLyrics", () => {
   it("段落间空行、组间空格可回读", async () => {
     const { patternFromLyrics } = await import("./model/pattern")
@@ -138,6 +150,46 @@ describe("exportLyrics", () => {
     const text = exportLyrics(project)
     expect(text).toBe("真的 假的\n\n我爱你")
     expect(patternFromLyrics(text)).toEqual([[2, 2], [3]])
+  })
+
+  it("和声句导出带括号，且照样计入统计", () => {
+    const s1 = createSentence([3])
+    setCells(s1, ["你", "好", "吗"])
+    const s2 = createSentence([2], "harmony")
+    setCells(s2, ["啊", "哈"])
+    const project = {
+      version: 2 as const,
+      title: "t",
+      sections: [createSection("A", [s1, s2])],
+      updatedAt: new Date().toISOString(),
+    }
+    expect(exportLyrics(project)).toBe("你好吗\n（啊哈）")
+    const stats = statsOf(project)
+    expect(stats.sentences).toBe(2)
+    expect(stats.total).toBe(5)
+    expect(stats.filled).toBe(5)
+  })
+})
+
+describe("exportGrid", () => {
+  it("用 X 填格、保留段落名与和声括号，且能再导入", async () => {
+    const { parseLyrics } = await import("./model/lyrics")
+    const s1 = createSentence([2, 2])
+    setCells(s1, ["真", "的", "假", "的"])
+    const s2 = createSentence([3], "harmony")
+    setCells(s2, ["啊", "哈", "呀"])
+    const project = {
+      version: 2 as const,
+      title: "t",
+      sections: [createSection("主歌", [s1, s2])],
+      updatedAt: new Date().toISOString(),
+    }
+    expect(exportGrid(project)).toBe("[主歌]\nXX XX\n（XXX）")
+    const back = parseLyrics(exportGrid(project))
+    expect(back.sections[0].name).toBe("主歌")
+    expect(back.sections[0].lines[0].pattern).toEqual([2, 2])
+    expect(back.sections[0].lines[1].pattern).toEqual([3])
+    expect(back.sections[0].lines[1].harmony).toBe(true)
   })
 })
 
@@ -330,6 +382,12 @@ describe("sentenceLine", () => {
     const sentence = createSentence([2, 1])
     setCells(sentence, ["你", "好", "吗"])
     expect(sentenceLine(sentence)).toBe("你好 吗")
+  })
+
+  it("空格子用 X 占位，一个格子一字", () => {
+    const sentence = createSentence([2, 2])
+    setCells(sentence, ["你", "", "", "好"])
+    expect(sentenceLine(sentence)).toBe("你X X好")
   })
 })
 

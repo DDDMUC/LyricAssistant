@@ -156,10 +156,14 @@ export function charFitsRhyme(char: string, key: string): boolean {
   const group = RHYME_GROUPS.find((item) => item.key === key)
   if (!group) return true
   const finals = readingsOf(char)
-  if (finals.length === 0) return true
+  if (finals.length === 0) return false
   const known = finals.some((final) => FINAL_TO_GROUP.has(final))
   if (!known) return true
   return finals.some((final) => group.finals.includes(final))
+}
+
+export function isHanChar(char: string): boolean {
+  return CJK.test(char)
 }
 
 export function rhymeHue(key: string): number {

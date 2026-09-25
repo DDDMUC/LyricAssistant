@@ -40,6 +40,7 @@ import {
   createProject,
   createSection,
   createSentence,
+  exportGrid,
   exportLyrics,
   findSectionBySentence,
   getCells,
@@ -84,10 +85,18 @@ const sidebarToggleBtns = ["#btn-sidebar", "#btn-sidebar-expand"]
   .filter((el): el is HTMLButtonElement => el instanceof HTMLButtonElement)
 const undoBtn = document.querySelector("#btn-undo") as HTMLButtonElement
 const redoBtn = document.querySelector("#btn-redo") as HTMLButtonElement
+const clearAllBtn = document.querySelector("#btn-clear-all") as HTMLButtonElement
 
 let composing = false
+// 组字刚结束置 true：紧接着的第一次 Backspace 原地不动、什么都不做，
+// 避免删光拼音后连打删除键把前一格的字一起带走
+let imeJustEnded = false
 let statusOverride: { text: string; isError: boolean } | null = null
 let statusOverrideTimer: ReturnType<typeof setTimeout> | null = null
+
+let selection: { from: { sentenceId: string; cell: number }; to: { sentenceId: string; cell: number } } | null = null
+let dragStart: { sentenceId: string; index: number; moved: boolean } | null = null
+let justDragged = false
 
 const docsState = loadDocs()
 const initialDoc = docsState.docs.find((doc) => doc.id === docsState.activeId)
@@ -131,7 +140,7 @@ function renderStatusBar(): void {
     statusHintEl.classList.toggle("error", statusOverride.isError)
   } else {
     statusHintEl.textContent =
-      "点格子输入 · Backspace 原地删 · Alt+←/→ 整句挪动 · Ctrl/Cmd+S 保存 · Ctrl/Cmd+Z 撤销 · Shift+Cmd+Z 重做"
+      "点格子输入 · Backspace 删当前格 · Alt+←/→ 整句挪动 · Ctrl/Cmd+S 保存 · Ctrl/Cmd+Z 撤销 · Shift+Cmd+Z 重做"
     statusHintEl.classList.remove("error")
   }
 
@@ -416,7 +425,7 @@ function renderEmptyState(): HTMLElement {
 
   const hint = document.createElement("p")
   hint.className = "empty-hint"
-  hint.textContent = "点「＋ 新建歌词」或「导入歌词」开始"
+  hint.textContent = "点「＋ 新建歌词」或「导入」开始"
 
   wrap.append(title, hint)
   return wrap
@@ -435,6 +444,7 @@ function render(): void {
   }
   sentencesEl.replaceChildren()
   editorActionsEl.hidden = empty
+  clearAllBtn.hidden = empty
 
   if (empty) {
     sentencesEl.appendChild(renderEmptyState())
@@ -447,8 +457,162 @@ function render(): void {
   renderStatusBar()
   renderDocList()
   syncSourcePanel()
+  if (selection && (!store.findSentence(selection.from.sentenceId) || !store.findSentence(selection.to.sentenceId))) {
+    selection = null
+  }
+  paintSelection()
   // replaceChildren 会先清空容器，高度瞬间归零导致 scrollTop 被钳到 0，这里补回
   if (window.scrollY !== prevScrollY) window.scrollTo(0, prevScrollY)
+}
+
+function clearSelection(): void {
+  selection = null
+  paintSelection()
+}
+
+function consumeJustDragged(): boolean {
+  if (!justDragged) return false
+  justDragged = false
+  return true
+}
+
+function selectionSpans(): { sentence: Sentence; from: number; to: number }[] {
+  if (!selection) return []
+  const ordered = allSentences(store.project)
+  const fromIndex = ordered.findIndex((s) => s.id === selection!.from.sentenceId)
+  const toIndex = ordered.findIndex((s) => s.id === selection!.to.sentenceId)
+  if (fromIndex < 0 || toIndex < 0) return []
+  const spans: { sentence: Sentence; from: number; to: number }[] = []
+  for (let i = fromIndex; i <= toIndex; i++) {
+    const sentence = ordered[i]
+    const total = totalCells(sentence.pattern)
+    const from = i === fromIndex ? selection!.from.cell : 0
+    const to = i === toIndex ? selection!.to.cell : total - 1
+    const start = Math.max(0, from)
+    const end = Math.min(total - 1, to)
+    if (end >= start) spans.push({ sentence, from: start, to: end })
+  }
+  return spans
+}
+
+function setSelectionBetween(
+  a: { sentenceId: string; cell: number },
+  b: { sentenceId: string; cell: number },
+): void {
+  const ordered = allSentences(store.project)
+  const ai = ordered.findIndex((s) => s.id === a.sentenceId)
+  const bi = ordered.findIndex((s) => s.id === b.sentenceId)
+  if (ai < 0 || bi < 0) return
+  const forward = ai < bi || (ai === bi && a.cell <= b.cell)
+  selection = forward ? { from: a, to: b } : { from: b, to: a }
+}
+
+function paintSelection(): void {
+  document
+    .querySelectorAll(".cell.selected, .cell-input.selected")
+    .forEach((el) => el.classList.remove("selected"))
+  for (const span of selectionSpans()) {
+    const root = document.querySelector(`.sentence[data-id="${span.sentence.id}"]`)
+    if (!root) continue
+    root.querySelectorAll<HTMLElement>(".cell, .cell-input").forEach((el) => {
+      const index = Number(el.dataset.index)
+      if (index >= span.from && index <= span.to) el.classList.add("selected")
+    })
+  }
+}
+
+function removeSelectedCells(): void {
+  const spans = selectionSpans()
+  if (spans.length === 0) return
+  clearSelection()
+  mutate(() => {
+    for (const span of spans) {
+      const sentence = store.findSentence(span.sentence.id)
+      if (!sentence) continue
+      const cells = getCells(sentence).slice()
+      for (let i = span.from; i <= span.to; i++) cells[i] = ""
+      setCells(sentence, cells)
+    }
+  })
+  focusCellInput()
+  setStatus("已清空选中的格子")
+}
+
+async function copySelection(): Promise<void> {
+  const spans = selectionSpans()
+  if (spans.length === 0) return
+  const text = spans
+    .map((span) => getCells(span.sentence).slice(span.from, span.to + 1).filter(Boolean).join(""))
+    .join("\n")
+  const count = [...text.replace(/\n/g, "")].length
+  const ok = await copyText(text)
+  setStatus(ok ? `已复制 ${count} 个字` : "复制失败", !ok)
+  clearSelection()
+}
+
+function bindSelection(): void {
+  sentencesEl.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return
+    const cell = (event.target as HTMLElement).closest<HTMLElement>(".cell, .cell-input")
+    if (!cell) return
+    justDragged = false
+    dragStart = {
+      sentenceId: cell.dataset.sentenceId ?? "",
+      index: Number(cell.dataset.index),
+      moved: false,
+    }
+  })
+
+  document.addEventListener("pointermove", (event) => {
+    if (!dragStart) return
+    const el = (document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null)
+      ?.closest<HTMLElement>(".cell, .cell-input")
+    if (!el) return
+    const sentenceId = el.dataset.sentenceId ?? ""
+    const index = Number(el.dataset.index)
+    if (sentenceId === dragStart.sentenceId && index === dragStart.index && !dragStart.moved) return
+    dragStart.moved = true
+    window.getSelection()?.removeAllRanges()
+    setSelectionBetween(
+      { sentenceId: dragStart.sentenceId, cell: dragStart.index },
+      { sentenceId, cell: index },
+    )
+    paintSelection()
+  })
+
+  document.addEventListener("pointerup", () => {
+    if (!dragStart) return
+    if (dragStart.moved) justDragged = true
+    else clearSelection()
+    dragStart = null
+  })
+  document.addEventListener("pointercancel", () => {
+    dragStart = null
+  })
+
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (!selection) return
+      if (event.key === "Escape") {
+        event.preventDefault()
+        clearSelection()
+        return
+      }
+      if (event.key === "Backspace" || event.key === "Delete") {
+        event.preventDefault()
+        event.stopPropagation()
+        removeSelectedCells()
+        return
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
+        event.preventDefault()
+        event.stopPropagation()
+        void copySelection()
+      }
+    },
+    { capture: true },
+  )
 }
 
 function renderSection(section: Section, sectionIdx: number): HTMLElement {
@@ -488,6 +652,13 @@ function renderSection(section: Section, sectionIdx: number): HTMLElement {
   addBtn.textContent = "+ 新增一句"
   addBtn.addEventListener("click", () => addSentenceToSection(section.id))
   actions.appendChild(addBtn)
+
+  const addHarmonyBtn = document.createElement("button")
+  addHarmonyBtn.type = "button"
+  addHarmonyBtn.textContent = "+ 和声"
+  addHarmonyBtn.title = "在本段末尾加一句和声（与上一句同时唱的背景人声）"
+  addHarmonyBtn.addEventListener("click", () => addHarmonyToSection(section.id))
+  actions.appendChild(addHarmonyBtn)
 
   const addSectionBtn = document.createElement("button")
   addSectionBtn.type = "button"
@@ -573,6 +744,30 @@ function addSentenceToSection(sectionId: string): void {
   }
 }
 
+function addHarmonyToSection(sectionId: string): void {
+  const section = store.project.sections.find((s) => s.id === sectionId)
+  if (!section) return
+  const prev = section.sentences[section.sentences.length - 1]
+  let pattern: number[]
+  try {
+    pattern = prev ? prev.pattern.slice() : parsePattern(newPatternEl.value)
+    newPatternEl.classList.remove("invalid")
+  } catch (err) {
+    newPatternEl.classList.add("invalid")
+    setStatus(err instanceof Error ? err.message : String(err), true)
+    return
+  }
+  mutate(() => {
+    const target = store.project.sections.find((s) => s.id === sectionId)
+    if (!target) return
+    const sentence = createSentence(pattern, "harmony")
+    target.sentences.push(sentence)
+    store.cursor = { sentenceId: sentence.id, cell: 0 }
+  })
+  setStatus("已加和声句")
+  focusCellInput()
+}
+
 function addSectionAfter(sectionId: string): void {
   mutate(() => {
     const index = store.project.sections.findIndex((s) => s.id === sectionId)
@@ -599,11 +794,13 @@ function moveSectionBy(sectionId: string, dir: -1 | 1): void {
 
 function renderSentence(sentence: Sentence, index: number): HTMLElement {
   const isActive = sentence.id === store.cursor.sentenceId
+  const isHarmony = sentence.role === "harmony"
   const root = document.createElement("article")
-  root.className = `sentence${isActive ? " active" : ""}`
+  root.className = `sentence${isActive ? " active" : ""}${isHarmony ? " harmony" : ""}`
   root.dataset.id = sentence.id
 
   root.addEventListener("click", (event) => {
+    if (consumeJustDragged()) return
     const target = event.target as HTMLElement
     if (target.closest("input, button, select, textarea")) return
     if (store.cursor.sentenceId === sentence.id) {
@@ -646,6 +843,14 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
     }
   })
   side.appendChild(patternInput)
+
+  if (isHarmony) {
+    const tag = document.createElement("span")
+    tag.className = "harmony-tag"
+    tag.textContent = "和声"
+    tag.title = "和声句：与上一句同时唱的背景人声（导出时带括号）"
+    side.appendChild(tag)
+  }
   row.appendChild(side)
 
   const meta = document.createElement("div")
@@ -728,17 +933,18 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   const clearBtn = document.createElement("button")
   clearBtn.type = "button"
   clearBtn.textContent = "清空"
-  clearBtn.title = "清空这一句当前备选的所有字（可撤销）"
+  clearBtn.title = "清空这一句当前备选的所有字（韵辙保留，可撤销）"
   clearBtn.addEventListener("click", () => {
     mutate(() => {
       const s = store.findSentence(sentence.id)
       if (!s) return
+      rememberRhyme(s)
       setCells(s, getCells(s).map(() => ""))
       s.overflow = ""
       store.cursor = { sentenceId: sentence.id, cell: 0 }
     })
     focusCellInput()
-    setStatus("已清空该句")
+    setStatus("已清空该句，韵辙保留")
   })
   controls.appendChild(clearBtn)
 
@@ -783,6 +989,14 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   dupBtn.title = "复制本句词格，在下方插入新句"
   dupBtn.addEventListener("click", () => duplicateSentence(sentence.id))
   controls.appendChild(dupBtn)
+
+  const harmonyBtn = document.createElement("button")
+  harmonyBtn.type = "button"
+  harmonyBtn.textContent = "和声"
+  harmonyBtn.className = `harmony-toggle${isHarmony ? " on" : ""}`
+  harmonyBtn.title = isHarmony ? "取消和声标记" : "标为和声句（与上一句同时唱的背景人声）"
+  harmonyBtn.addEventListener("click", () => toggleHarmony(sentence.id))
+  controls.appendChild(harmonyBtn)
 
   const delBtn = document.createElement("button")
   delBtn.type = "button"
@@ -848,6 +1062,7 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
         cell.dataset.sentenceId = sentence.id
         cell.dataset.index = String(i)
         cell.addEventListener("click", () => {
+          if (consumeJustDragged()) return
           store.cursor = { sentenceId: sentence.id, cell: i }
           render()
           focusCellInput()
@@ -891,6 +1106,13 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
       ? `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label} · 点击加锁`
       : `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label}（句尾未填，暂不统计）`
     badge.style.setProperty("--rhyme-hue", String(rhymeHue(rhyme.key)))
+  } else if (RHYME_LABEL_BY_KEY.get(sentence.rhymeHint ?? "")) {
+    const hintKey = sentence.rhymeHint as string
+    const hintLabel = RHYME_LABEL_BY_KEY.get(hintKey) as string
+    badge.className = "rhyme-badge pending"
+    badge.textContent = hintLabel.replace(/辙$/, "")
+    badge.title = `清空时记住的辙「${hintLabel}」（未锁定）· 点击可加锁`
+    badge.style.setProperty("--rhyme-hue", String(rhymeHue(hintKey)))
   } else {
     badge.className = "rhyme-badge empty"
     badge.textContent = "＋ 锁"
@@ -1076,6 +1298,7 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
   input.addEventListener("compositionend", () => {
     composing = false
     input.style.width = ""
+    imeJustEnded = true
     commitInput(input)
   })
 
@@ -1084,6 +1307,7 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
   })
 
   input.addEventListener("input", () => {
+    clearSelection()
     if (composing) {
       const len = input.value.length
       input.style.width = len > 1 ? `${Math.max(54, (len + 1) * 16)}px` : ""
@@ -1095,7 +1319,14 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
   input.addEventListener("keydown", (e) => {
     if (composing) return
 
+    // 输入框内容超出当前格的原字 = 组字/追加输入过程中，交给浏览器删字符，
+    // 不能把格子里已有的字一起清掉（keydown 早于 compositionstart 触发，
+    // 所以 composing 标志靠不住，用值判断才稳）
+    const base = input.dataset.base ?? ""
+    const editing = input.value !== base
+
     if (e.key === "Backspace") {
+      if (editing) return
       e.preventDefault()
       if (input.value.length > 0) {
         mutate(() => {
@@ -1106,8 +1337,13 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
         focusCellInput()
         return
       }
-      const sentence = store.findSentence(sentenceId)
-      if (!sentence) return
+      // 当前格空。组字刚结束的那一下：什么都不做——拼音刚删空，
+      // 光标就该留在当前格里，哪也不去，更不碰前一格
+      if (imeJustEnded) {
+        imeJustEnded = false
+        return
+      }
+      // 平时在空格上按 Backspace：删掉前一格的字并左移（这是另一个明确动作）
       const target = store.cursor.cell - 1
       if (target < 0) return
       mutate(() => {
@@ -1121,6 +1357,7 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
     }
 
     if (e.key === "Delete") {
+      if (editing) return
       e.preventDefault()
       mutate(() => {
         const s = store.findSentence(sentenceId)
@@ -1315,6 +1552,52 @@ function duplicateSentence(sentenceId: string): void {
   setStatus("已复制本句词格")
 }
 
+function toggleHarmony(sentenceId: string): void {
+  mutate(() => {
+    const s = store.findSentence(sentenceId)
+    if (!s) return
+    if (s.role === "harmony") delete s.role
+    else s.role = "harmony"
+  })
+  setStatus(store.findSentence(sentenceId)?.role === "harmony" ? "已标为和声句" : "已取消和声")
+}
+
+function clearAllCells(): void {
+  if (docsState.docs.length === 0) return
+  const isAllEmpty = store.project.sections.every((section) =>
+    section.sentences.every((sentence) =>
+      sentence.alternatives.every((alt) => alt.cells.every((cell) => !cell)),
+    ),
+  )
+  if (isAllEmpty) {
+    setStatus("所有格子本来就是空的", true)
+    return
+  }
+  mutate(() => {
+    store.project.sections.forEach((section) => {
+      section.sentences.forEach((sentence) => {
+        rememberRhyme(sentence)
+        sentence.alternatives.forEach((alt) => {
+          alt.cells = alt.cells.map(() => "")
+        })
+        sentence.overflow = ""
+      })
+    })
+    const first = store.project.sections[0]?.sentences[0]
+    if (first) store.cursor = { sentenceId: first.id, cell: 0 }
+  })
+  focusCellInput()
+  setStatus("已清空所有格子，韵辙与歌名保留（Cmd/Ctrl+Z 可撤销）")
+}
+
+function rememberRhyme(sentence: Sentence): void {
+  if (sentence.rhymeLock) return
+  const cells = getCells(sentence)
+  if (!isEndingFilled(cells)) return
+  const rhyme = rhymeOfCells(cells)
+  if (rhyme) sentence.rhymeHint = rhyme.key
+}
+
 async function copySentence(sentenceId: string): Promise<void> {
   const sentence = store.findSentence(sentenceId)
   if (!sentence) return
@@ -1361,6 +1644,11 @@ async function pasteSentence(sentenceId: string): Promise<void> {
 async function copyLyrics(): Promise<void> {
   const ok = await copyText(exportLyrics(store.project))
   setStatus(ok ? "已复制歌词到剪贴板" : "复制失败", !ok)
+}
+
+async function copyGrid(): Promise<void> {
+  const ok = await copyText(exportGrid(store.project))
+  setStatus(ok ? "已复制词格到剪贴板" : "复制失败", !ok)
 }
 
 async function saveProject(saveAs: boolean): Promise<void> {
@@ -1673,6 +1961,20 @@ async function exportText(): Promise<void> {
   }
 }
 
+async function exportGridText(): Promise<void> {
+  try {
+    const chosen = await saveFileDialog({
+      filters: [{ name: "词格文本", extensions: ["txt"] }],
+      defaultPath: `${store.project.title || "未命名"} 词格.txt`,
+    })
+    if (!chosen) return
+    await writeTextFile(chosen, exportGrid(store.project))
+    setStatus("已导出词格")
+  } catch (err) {
+    setStatus(`导出失败: ${err instanceof Error ? err.message : err}`, true)
+  }
+}
+
 function applyLyricsText(
   text: string,
   fileTitle?: string,
@@ -1699,7 +2001,7 @@ function applyLyricsText(
       }
       const imported = parsed.sections.map((section, i) => {
         const sentences = section.lines.map((line) => {
-          const sentence = createSentence(line.pattern)
+          const sentence = createSentence(line.pattern, line.harmony ? "harmony" : undefined)
           if (fillLyrics) {
             setCells(sentence, line.cells)
             for (const altCells of line.alts) {
@@ -1830,6 +2132,37 @@ function refreshThemeButton(): void {
   themeBtn.setAttribute("aria-label", themeBtn.title)
 }
 
+function setupMenu(
+  buttonSel: string,
+  menuSel: string,
+  onPick: (id: string) => void,
+): void {
+  const btn = document.querySelector<HTMLButtonElement>(buttonSel)
+  const menu = document.querySelector<HTMLElement>(menuSel)
+  if (!btn || !menu) return
+  let open = false
+  const set = (value: boolean) => {
+    open = value
+    menu.hidden = !value
+    btn.setAttribute("aria-expanded", String(value))
+  }
+  btn.addEventListener("click", (event) => {
+    event.stopPropagation()
+    set(!open)
+  })
+  menu.addEventListener("click", (event) => event.stopPropagation())
+  document.addEventListener("click", () => set(false))
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") set(false)
+  })
+  menu.querySelectorAll("button").forEach((item) => {
+    item.addEventListener("click", () => {
+      set(false)
+      onPick(item.id)
+    })
+  })
+}
+
 function bindToolbar(): void {
   titleEl.addEventListener("change", () => {
     mutate(() => {
@@ -1871,10 +2204,17 @@ function bindToolbar(): void {
   document.querySelector("#btn-save")?.addEventListener("click", () => void saveProject(false))
   document.querySelector("#btn-save-as")?.addEventListener("click", () => void saveProject(true))
   document.querySelector("#btn-open")?.addEventListener("click", () => void openProject())
-  document.querySelector("#btn-export")?.addEventListener("click", () => void exportText())
-  document.querySelector("#btn-copy-lyrics")?.addEventListener("click", () => void copyLyrics())
+  setupMenu("#btn-export", "#export-menu", (id) => {
+    if (id === "menu-export-lyrics") void exportText()
+    else if (id === "menu-export-grid") void exportGridText()
+  })
+  setupMenu("#btn-copy", "#copy-menu", (id) => {
+    if (id === "menu-copy-lyrics") void copyLyrics()
+    else if (id === "menu-copy-grid") void copyGrid()
+  })
   undoBtn.addEventListener("click", doUndo)
   redoBtn.addEventListener("click", doRedo)
+  clearAllBtn.addEventListener("click", clearAllCells)
 
   themeBtn.addEventListener("click", () => {
     cycleTheme()
@@ -1952,6 +2292,7 @@ onAutosaveWrite((s) => {
 })
 bindToolbar()
 initSidebarResizer()
+bindSelection()
 render()
 focusCellInput()
 

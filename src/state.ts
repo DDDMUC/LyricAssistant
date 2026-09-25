@@ -13,7 +13,7 @@ function emptyAlternative(name: string, cells: string[]): Alternative {
   return { id: newId("alt"), name, cells }
 }
 
-export function createSentence(pattern: number[]): Sentence {
+export function createSentence(pattern: number[], role?: "harmony"): Sentence {
   const cells = cellsFromPattern(pattern)
   return {
     id: newId("s"),
@@ -23,6 +23,8 @@ export function createSentence(pattern: number[]): Sentence {
     note: "",
     overflow: "",
     rhymeLock: "",
+    rhymeHint: "",
+    ...(role === "harmony" ? { role: "harmony" as const } : {}),
   }
 }
 
@@ -104,6 +106,7 @@ export function getCells(sentence: Sentence): string[] {
 
 export function setCells(sentence: Sentence, cells: string[]): void {
   sentence.alternatives[sentence.activeAlt].cells = cells
+  if (cells[cells.length - 1]) sentence.rhymeHint = ""
 }
 
 export function setPattern(sentence: Sentence, pattern: number[]): void {
@@ -169,6 +172,8 @@ function normalizeSentence(sentence: Sentence): void {
   if (typeof sentence.note !== "string") sentence.note = ""
   if (typeof sentence.overflow !== "string") sentence.overflow = ""
   if (typeof sentence.rhymeLock !== "string") sentence.rhymeLock = ""
+  if (typeof sentence.rhymeHint !== "string") sentence.rhymeHint = ""
+  if (sentence.role !== "harmony") delete sentence.role
   if (typeof sentence.id !== "string" || !sentence.id) sentence.id = newId("s")
 }
 
@@ -211,11 +216,12 @@ export function parseProject(raw: string): Project {
   return project
 }
 
-export function cellsToLine(cells: string[], pattern: number[]): string {
+export function cellsToLine(cells: string[], pattern: number[], fill = "X"): string {
   const parts: string[] = []
   let acc = 0
   for (const size of pattern) {
-    parts.push(cells.slice(acc, acc + size).join(""))
+    const group = cells.slice(acc, acc + size)
+    parts.push(group.map((char) => char || fill).join(""))
     acc += size
   }
   return parts.join(" ")
@@ -308,6 +314,7 @@ export function exportSentenceLine(sentence: Sentence, options: ExportOptions): 
     line = sentence.pattern.map((size) => "X".repeat(size)).join(" ")
   }
   if (options.note && sentence.note) line += `（${sentence.note}）`
+  if (sentence.role === "harmony") line = `（${line}）`
   return line
 }
 
@@ -322,6 +329,18 @@ export function exportLyrics(
     .join("\n\n")
   const credits = options.credits ? (project.credits ?? []) : []
   return credits.length > 0 ? `${credits.join("\n")}\n\n${body}` : body
+}
+
+export function exportGrid(project: Project, fill = "X"): string {
+  return project.sections
+    .map((section) => {
+      const lines = section.sentences.map((sentence) => {
+        const line = sentence.pattern.map((size) => fill.repeat(size)).join(" ")
+        return sentence.role === "harmony" ? `（${line}）` : line
+      })
+      return [`[${section.name || "段落"}]`, ...lines].join("\n")
+    })
+    .join("\n\n")
 }
 
 export const autosaveState = { at: null as string | null }

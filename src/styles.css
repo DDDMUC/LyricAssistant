@@ -21,6 +21,7 @@
   --section-line: rgba(192, 73, 42, 0.3);
   --grid-line: rgba(128, 112, 88, 0.22);
   --cell-empty-bg: rgba(255, 254, 251, 0.5);
+  --select-bg: rgba(96, 132, 196, 0.22);
   --topbar-bg: rgba(246, 241, 230, 0.92);
   --shadow-dialog: rgba(60, 45, 30, 0.25);
   --sidebar-width: 188px;
@@ -60,6 +61,7 @@ html[data-theme="dark"] {
   --section-line: rgba(224, 118, 79, 0.3);
   --grid-line: rgba(214, 200, 175, 0.16);
   --cell-empty-bg: rgba(42, 37, 31, 0.45);
+  --select-bg: rgba(120, 160, 220, 0.3);
   --topbar-bg: rgba(33, 29, 24, 0.94);
   --shadow-dialog: rgba(0, 0, 0, 0.5);
   color-scheme: dark;
@@ -486,6 +488,10 @@ button:disabled {
   gap: 6px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.topbar #btn-clear-all {
+  margin-left: auto;
 }
 
 .editor-actions {
@@ -982,6 +988,12 @@ html[data-theme="dark"] .rhyme-badge.locked {
   border-color: var(--accent);
 }
 
+.cell.selected,
+.cell-input.selected {
+  background-color: var(--select-bg);
+  border-color: var(--accent);
+}
+
 .cell-input {
   width: 54px;
   height: 54px;
@@ -1001,6 +1013,38 @@ html[data-theme="dark"] .rhyme-badge.locked {
 .cell-input::placeholder {
   color: var(--text);
   opacity: 0.45;
+}
+
+.sentence.harmony {
+  padding-left: 22px;
+}
+
+.sentence.harmony .cell,
+.sentence.harmony .cell-input {
+  width: 44px;
+  height: 44px;
+  font-size: 22px;
+  color: var(--text-secondary);
+}
+
+.sentence.harmony .cell-input {
+  padding-left: 9px;
+}
+
+.harmony-tag {
+  align-self: center;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.harmony-toggle.on {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .cell,
@@ -1169,6 +1213,38 @@ dialog::backdrop {
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.export-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 124px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.14);
+}
+
+.export-menu[hidden] {
+  display: none;
+}
+
+.export-menu button {
+  text-align: left;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 7px;
 }
 
 @media (max-width: 720px) {

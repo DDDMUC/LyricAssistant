@@ -12,6 +12,8 @@ export interface Sentence {
   note: string
   overflow: string
   rhymeLock?: string
+  rhymeHint?: string
+  role?: "harmony"
 }
 
 export interface Section {
