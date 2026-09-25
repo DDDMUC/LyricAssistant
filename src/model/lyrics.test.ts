@@ -201,9 +201,67 @@ describe("parseLyrics", () => {
     expect(parsed.sections[0].lines).toHaveLength(1)
   })
 
+  it("调教/曲绘/PV/动画/视频/分镜/字幕都算 credit，不当歌词", () => {
+    const parsed = parseLyrics(
+      "调教：瑞安 Ryan\n曲绘：某画师\nPV：某人\n动画：某组\n视频：某人\n分镜：某人\n字幕：某人\n古琴：南一\n音效：KBShinya\n一夜春风赴雨润如酥",
+    )
+    expect(parsed.credits).toEqual([
+      "调教：瑞安 Ryan",
+      "曲绘：某画师",
+      "PV：某人",
+      "动画：某组",
+      "视频：某人",
+      "分镜：某人",
+      "字幕：某人",
+      "古琴：南一",
+      "音效：KBShinya",
+    ])
+    expect(parsed.sections).toHaveLength(1)
+    expect(parsed.sections[0].lines).toHaveLength(1)
+    expect(parsed.sections[0].lines[0].cells.join("")).toBe("一夜春风赴雨润如酥")
+  })
+
   it("跳过注释行与空文本", () => {
     const parsed = parseLyrics("# 注释\n// 注释2\n……\n真的")
     expect(parsed.sections[0].lines).toHaveLength(1)
     expect(parsed.sections[0].lines[0].cells).toEqual(["真", "的"])
+  })
+
+  it("整行括号 → 和声句，不再被丢掉", () => {
+    const parsed = parseLyrics(
+      "也许皆非我意 解作大道无情\n（煌煌国运华盖将倾 分说不尽且待星移）\n红尘扶乩",
+    )
+    const lines = parsed.sections[0].lines
+    expect(lines).toHaveLength(3)
+    expect(lines[0].harmony).toBeUndefined()
+    expect(lines[1].harmony).toBe(true)
+    expect(lines[1].pattern).toEqual([8, 8])
+    expect(lines[1].cells.join("")).toBe("煌煌国运华盖将倾分说不尽且待星移")
+    expect(lines[2].harmony).toBeUndefined()
+    expect(lines[2].cells.join("")).toBe("红尘扶乩")
+  })
+
+  it("和声句不占自动分段的名额", () => {
+    const text = [
+      "一",
+      "（一）",
+      "二",
+      "三",
+      "四",
+      "五",
+      "六",
+    ].join("\n")
+    const parsed = parseLyrics(text)
+    expect(parsed.sections).toHaveLength(2)
+    expect(parsed.sections[0].lines).toHaveLength(5)
+    expect(parsed.sections[0].lines[1].harmony).toBe(true)
+    expect(parsed.sections[1].lines).toHaveLength(2)
+  })
+
+  it("词里的 X 也当空格子（和导出对齐）", () => {
+    const parsed = parseLyrics("你X X好")
+    const line = parsed.sections[0].lines[0]
+    expect(line.pattern).toEqual([2, 2])
+    expect(line.cells).toEqual(["你", "", "", "好"])
   })
 })

@@ -6,6 +6,7 @@ export interface ParsedLine {
   cells: string[]
   alts: string[][]
   note: string
+  harmony?: boolean
 }
 
 export interface ParsedSection {
@@ -20,11 +21,13 @@ export interface ParsedLyrics {
 }
 
 const NOTE_RE = /[（(]\s*([^（）()]*?)\s*[)）]\s*$/
+const FULL_PAREN_RE = /^[（(]\s*(.+?)\s*[)）]$/
 const TITLE_RE = /^《\s*(.+?)\s*》$/
 const PURE_PATTERN_RE = /^\d+(\s*[/,，、+\-\s]\s*\d+)*$/
 const ALT_SEP = /\s*[|｜※]\s*/
 const GROUP_SPLIT_RE = /[\s，。、；：？！]+/u
 const PLACEHOLDER_RE = /^[XxＸｘ×✕✖]+$/
+const PLACEHOLDER_CHAR_RE = /^[XxＸｘ×✕✖]$/
 const LINES_PER_SECTION = 4
 
 const SECTION_WORDS = new Set([
@@ -72,6 +75,7 @@ const CREDIT_WORDS = [
   "原唱",
   "翻唱",
   "后期",
+  "音效",
   "统筹",
   "企划",
   "策划",
@@ -79,6 +83,12 @@ const CREDIT_WORDS = [
   "出品",
   "封面",
   "海报",
+  "曲绘",
+  "动画",
+  "视频",
+  "分镜",
+  "字幕",
+  "调教",
   "调校",
   "修音",
   "鸣谢",
@@ -86,6 +96,7 @@ const CREDIT_WORDS = [
   "演唱",
   "乐器",
   "二胡",
+  "古琴",
   "琵琶",
   "竹笛",
   "笛子",
@@ -145,6 +156,7 @@ const CREDIT_WORDS_EN = [
   "recorded",
   "mix",
   "master",
+  "pv",
   "op",
   "sp",
 ]
@@ -234,12 +246,24 @@ function sectionNameOf(line: string): string | null {
 
 function chunkLines(lines: ParsedLine[]): ParsedSection[] {
   const groups: ParsedLine[][] = []
-  for (let i = 0; i < lines.length; i += LINES_PER_SECTION) {
-    groups.push(lines.slice(i, i + LINES_PER_SECTION))
+  let group: ParsedLine[] = []
+  let mains = 0
+  for (const line of lines) {
+    if (!line.harmony && mains >= LINES_PER_SECTION) {
+      groups.push(group)
+      group = []
+      mains = 0
+    }
+    group.push(line)
+    if (!line.harmony) mains += 1
   }
-  if (groups.length > 1 && groups[groups.length - 1].length === 1) {
-    const last = groups.pop()
-    if (last) groups[groups.length - 1].push(...last)
+  if (group.length) groups.push(group)
+  if (groups.length > 1) {
+    const last = groups[groups.length - 1]
+    if (last.filter((line) => !line.harmony).length === 1) {
+      groups.pop()
+      groups[groups.length - 1].push(...last)
+    }
   }
   return groups.map((group) => ({ name: "", lines: group }))
 }
@@ -255,7 +279,9 @@ function splitLine(line: string): { pattern: number[]; cells: string[] } | null 
       cells.push(...new Array<string>(size).fill(""))
       continue
     }
-    const chars = contentChars(token)
+    const chars = contentChars(token).map((char) =>
+      PLACEHOLDER_CHAR_RE.test(char) ? "" : char,
+    )
     if (chars.length === 0) continue
     pattern.push(chars.length)
     cells.push(...chars)
@@ -263,7 +289,37 @@ function splitLine(line: string): { pattern: number[]; cells: string[] } | null 
   return pattern.length > 0 ? { pattern, cells } : null
 }
 
+function parseLineContent(
+  text: string,
+): { pattern: number[]; cells: string[]; alts: string[][] } | null {
+  if (PURE_PATTERN_RE.test(text)) {
+    const pattern = text
+      .split(/\D+/)
+      .map(Number)
+      .filter((n) => n > 0)
+    if (pattern.length === 0) return null
+    const total = pattern.reduce((a, b) => a + b, 0)
+    return { pattern, cells: new Array<string>(total).fill(""), alts: [] }
+  }
+
+  const [primaryPart, ...altParts] = text.split(ALT_SEP)
+  const primary = splitLine(primaryPart ?? "")
+  if (!primary) return null
+  const alts = altParts
+    .map(splitLine)
+    .filter((part): part is { pattern: number[]; cells: string[] } => part !== null)
+    .map((part) => resizeToPattern(primary.pattern, part.cells))
+  return { pattern: primary.pattern, cells: primary.cells, alts }
+}
+
 function parseContentLine(line: string): ParsedLine | null {
+  const full = line.match(FULL_PAREN_RE)
+  if (full) {
+    const inner = full[1].trim()
+    const content = inner ? parseLineContent(inner) : null
+    if (content) return { ...content, note: "", harmony: true }
+  }
+
   let note = ""
   const noteMatch = line.match(NOTE_RE)
   if (noteMatch) {
@@ -272,24 +328,8 @@ function parseContentLine(line: string): ParsedLine | null {
   }
   if (!line) return null
 
-  if (PURE_PATTERN_RE.test(line)) {
-    const pattern = line
-      .split(/\D+/)
-      .map(Number)
-      .filter((n) => n > 0)
-    if (pattern.length === 0) return null
-    const total = pattern.reduce((a, b) => a + b, 0)
-    return { pattern, cells: new Array<string>(total).fill(""), alts: [], note }
-  }
-
-  const [primaryPart, ...altParts] = line.split(ALT_SEP)
-  const primary = splitLine(primaryPart ?? "")
-  if (!primary) return null
-  const alts = altParts
-    .map(splitLine)
-    .filter((part): part is { pattern: number[]; cells: string[] } => part !== null)
-    .map((part) => resizeToPattern(primary.pattern, part.cells))
-  return { pattern: primary.pattern, cells: primary.cells, alts, note }
+  const content = parseLineContent(line)
+  return content ? { ...content, note } : null
 }
 
 export function parseLyrics(text: string): ParsedLyrics {

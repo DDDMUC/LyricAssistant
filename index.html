@@ -4,20 +4,20 @@
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>词格</title>
+    <title>作词助手</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
   <body>
     <div class="titlebar" data-tauri-drag-region>
-      <span class="titlebar-title" data-tauri-drag-region>词格</span>
+      <span class="titlebar-title" data-tauri-drag-region>作词助手</span>
       <button id="btn-theme" type="button" title="切换主题" aria-label="切换主题">☁️</button>
     </div>
 
     <div class="workspace">
       <aside class="sidebar">
         <div class="sidebar-head">
-          <span class="brand-badge">词格</span>
+          <span class="brand-badge">作词助手</span>
           <button id="btn-sidebar" type="button" title="收起侧边栏" aria-label="收起侧边栏">
             <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
               <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.4" />
@@ -55,19 +55,32 @@
               词格
               <input id="new-pattern" class="pattern-input" value="4/4" />
             </label>
-            <button id="btn-import-lyrics" type="button">导入歌词</button>
+            <button id="btn-import-lyrics" type="button">导入</button>
             <button id="btn-open" type="button">打开工程</button>
             <div id="editor-actions" class="editor-actions">
               <button id="btn-add-sentence" type="button">新句</button>
               <button id="btn-reflow" type="button" hidden>整理溢出</button>
               <button id="btn-save" type="button">保存工程</button>
               <button id="btn-save-as" type="button">另存为</button>
-              <button id="btn-export" class="primary" type="button">导出歌词</button>
-              <button id="btn-copy-lyrics" type="button">复制歌词</button>
+              <span class="menu-wrap">
+                <button id="btn-export" class="primary" type="button" aria-haspopup="true" aria-expanded="false" title="导出歌词 / 词格">导出</button>
+                <div id="export-menu" class="export-menu" hidden>
+                  <button id="menu-export-lyrics" type="button">歌词</button>
+                  <button id="menu-export-grid" type="button">词格</button>
+                </div>
+              </span>
+              <span class="menu-wrap">
+                <button id="btn-copy" type="button" aria-haspopup="true" aria-expanded="false" title="复制歌词 / 词格">复制</button>
+                <div id="copy-menu" class="export-menu" hidden>
+                  <button id="menu-copy-lyrics" type="button">歌词</button>
+                  <button id="menu-copy-grid" type="button">词格</button>
+                </div>
+              </span>
               <button id="btn-undo" type="button">撤销</button>
               <button id="btn-redo" type="button">重做</button>
             </div>
           </div>
+          <button id="btn-clear-all" class="danger" type="button" title="清空所有格子（韵辙、歌名、备注保留，可撤销）">清空</button>
         </header>
 
         <main id="sentences" class="sentences"></main>
@@ -83,7 +96,7 @@
 
     <footer class="statusbar">
       <span id="status-stats" class="status-stats"></span>
-      <span id="status-hint">点格子输入 · Backspace 原地删 · Alt+←/→ 整句挪动 · Ctrl/Cmd+S 保存 · Ctrl/Cmd+Z 撤销 · Shift+Cmd+Z 重做</span>
+      <span id="status-hint">点格子输入 · Backspace 删当前格 · Alt+←/→ 整句挪动 · Ctrl/Cmd+S 保存 · Ctrl/Cmd+Z 撤销 · Shift+Cmd+Z 重做</span>
       <span class="status-right">
         <span id="status-rhyme"></span>
         <span id="status-path"></span>

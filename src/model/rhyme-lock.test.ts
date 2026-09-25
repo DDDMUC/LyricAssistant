@@ -60,10 +60,22 @@ describe("charFitsRhyme", () => {
     expect(charFitsRhyme("国", "不存在的辙")).toBe(true)
   })
 
-  it("非汉字不拦", () => {
-    expect(charFitsRhyme("1", "jiangyang")).toBe(true)
+  it("汉字按韵母判", () => {
     expect(charFitsRhyme("啊", "jiangyang")).toBe(false)
     expect(charFitsRhyme("啊", "fahua")).toBe(true)
+  })
+
+  it("锁定后非汉字一律拦下", () => {
+    expect(charFitsRhyme("1", "jiangyang")).toBe(false)
+    expect(charFitsRhyme("a", "jiangyang")).toBe(false)
+    expect(charFitsRhyme("A", "jiangyang")).toBe(false)
+    expect(charFitsRhyme("3", "yiqi")).toBe(false)
+    expect(charFitsRhyme("，", "jiangyang")).toBe(false)
+  })
+
+  it("未上锁时任何字符都放行", () => {
+    expect(charFitsRhyme("1", "")).toBe(true)
+    expect(charFitsRhyme("a", "")).toBe(true)
   })
 
   it("ü 系字按真实韵母判", () => {
