@@ -1,6 +1,41 @@
-import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog"
-import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs"
 import { copyText, readClipboardText } from "./clipboard"
+import {
+  canOverwriteInPlace,
+  isDesktop,
+  onFileDrop,
+  pickFile,
+  saveBytes,
+  saveText,
+  type FileSource,
+  type SavedFile,
+} from "./platform"
+import {
+  EFFORT_LEVELS,
+  loadAiSettings,
+  maxTokensFor,
+  modelLabel,
+  requestChat,
+  resolveTarget,
+  saveAiSettings,
+  supportsEffortFor,
+  testAiConnection,
+  type AiProvider,
+  type ChatMessage,
+} from "./ai-client"
+import {
+  applyAiResults,
+  buildBrief,
+  buildChatSystemPrompt,
+  buildFixPrompt,
+  buildSystemPrompt,
+  parseAiSentences,
+  previewAiResults,
+  sentencePlace,
+  splitByPattern,
+  validateAiResults,
+  type AiIssue,
+  type AiSentenceResult,
+} from "./model/ai"
 import {
   addCellAt,
   clearCell,
@@ -19,11 +54,23 @@ import {
   type DocRecord,
 } from "./docs"
 import { parseLyrics } from "./model/lyrics"
+import {
+  KEYSWITCH,
+  buildLyricMidi,
+  keyswitchCount,
+  midiToSections,
+  noteTracks,
+  parseMidi,
+  pickMelodyTrack,
+  type MidiFile,
+  type MidiSection,
+} from "./model/midi"
 import { parsePattern, patternToString, totalCells } from "./model/pattern"
 import {
   RHYME_LABEL_BY_KEY,
   charFitsRhyme,
   isEndingFilled,
+  isHanChar,
   rhymeHue,
   rhymeOfCells,
 } from "./model/rhyme"
@@ -61,6 +108,7 @@ import {
 import { cycleTheme, initTheme, themeIcon, themeLabel, themeState } from "./theme"
 
 const sentencesEl = document.querySelector("#sentences") as HTMLElement
+const scrollProgressEl = document.querySelector("#scroll-progress") as HTMLElement
 const titleEl = document.querySelector("#project-title") as HTMLInputElement
 const newPatternEl = document.querySelector("#new-pattern") as HTMLInputElement
 const statusStatsEl = document.querySelector("#status-stats") as HTMLElement
@@ -86,6 +134,16 @@ const sidebarToggleBtns = ["#btn-sidebar", "#btn-sidebar-expand"]
 const undoBtn = document.querySelector("#btn-undo") as HTMLButtonElement
 const redoBtn = document.querySelector("#btn-redo") as HTMLButtonElement
 const clearAllBtn = document.querySelector("#btn-clear-all") as HTMLButtonElement
+const btnAi = document.querySelector("#btn-ai") as HTMLButtonElement
+const aiPanel = document.querySelector("#ai-panel") as HTMLElement
+const aiResizer = document.querySelector("#ai-resizer") as HTMLElement
+const aiMessagesEl = document.querySelector("#ai-messages") as HTMLElement
+const aiInput = document.querySelector("#ai-input") as HTMLTextAreaElement
+const aiScopeChip = document.querySelector("#ai-scope-chip") as HTMLButtonElement
+const aiModelChip = document.querySelector("#ai-model-chip") as HTMLButtonElement
+const aiEffortChip = document.querySelector("#ai-effort-chip") as HTMLButtonElement
+const btnAiSend = document.querySelector("#btn-ai-send") as HTMLButtonElement
+const aiHint = document.querySelector("#ai-hint") as HTMLElement
 
 let composing = false
 // 组字刚结束置 true：紧接着的第一次 Backspace 原地不动、什么都不做，
@@ -97,11 +155,25 @@ let statusOverrideTimer: ReturnType<typeof setTimeout> | null = null
 let selection: { from: { sentenceId: string; cell: number }; to: { sentenceId: string; cell: number } } | null = null
 let dragStart: { sentenceId: string; index: number; moved: boolean } | null = null
 let justDragged = false
+let midiSession: {
+  file: MidiFile
+  trackIndex: number
+  offset: number
+  sections: MidiSection[]
+  skipPitches: number[]
+} | null = null
 
 const docsState = loadDocs()
+const saveTargets = new Map<string, SavedFile>()
 const initialDoc = docsState.docs.find((doc) => doc.id === docsState.activeId)
 const store = new Store(initialDoc ? initialDoc.project : createProject())
 if (initialDoc?.filePath) store.filePath = initialDoc.filePath
+
+function updateScrollProgress(): void {
+  const max = document.documentElement.scrollHeight - window.innerHeight
+  const ratio = max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0
+  scrollProgressEl.style.transform = `scaleX(${ratio})`
+}
 
 function setStatus(text: string, isError = false): void {
   statusOverride = { text, isError }
@@ -119,7 +191,11 @@ function updatePathStatus(): void {
     statusPathEl.classList.toggle("dirty", store.dirty)
     return
   }
-  statusPathEl.textContent = "草稿自动保存中 · 尚未保存为工程文件"
+  statusPathEl.textContent = isDesktop()
+    ? "草稿自动保存中 · 尚未保存为工程文件"
+    : canOverwriteInPlace()
+      ? "网页版 · 草稿自动保存中（保存可直接覆盖）"
+      : "网页版 · 草稿自动保存中（保存=下载文件）"
   statusPathEl.classList.remove("dirty")
 }
 
@@ -153,7 +229,7 @@ function renderStatusBar(): void {
   statusAutosaveEl.textContent = autosaveState.at
     ? `已自动保存 ${autosaveState.at}`
     : "自动保存已开启"
-  document.title = `${store.dirty ? "● " : ""}${store.project.title || "词格"} · 词格`
+  document.title = `${store.dirty ? "● " : ""}${store.project.title || "未命名"} · 作词助手`
 }
 
 function rhymeSummaryText(): string {
@@ -400,6 +476,7 @@ function performDeleteDoc(id: string, name: string): void {
 }
 
 function openSourcePanel(): void {
+  closeAiPanel()
   sourcePanel.hidden = false
   sourceTextEl.value = store.project.source ?? ""
 }
@@ -457,12 +534,14 @@ function render(): void {
   renderStatusBar()
   renderDocList()
   syncSourcePanel()
+  updateAiHint()
   if (selection && (!store.findSentence(selection.from.sentenceId) || !store.findSentence(selection.to.sentenceId))) {
     selection = null
   }
   paintSelection()
   // replaceChildren 会先清空容器，高度瞬间归零导致 scrollTop 被钳到 0，这里补回
   if (window.scrollY !== prevScrollY) window.scrollTo(0, prevScrollY)
+  updateScrollProgress()
 }
 
 function clearSelection(): void {
@@ -715,14 +794,28 @@ function renderSection(section: Section, sectionIdx: number): HTMLElement {
     root.appendChild(renderSentence(sentence, indexBase + i))
   })
 
-  const addInline = document.createElement("button")
-  addInline.type = "button"
-  addInline.textContent = "+ 新增一句"
-  addInline.className = "add-sentence-inline"
-  addInline.addEventListener("click", () => addSentenceToSection(section.id))
-  root.appendChild(addInline)
-
   return root
+}
+
+function addSentenceAfter(sentenceId: string): void {
+  try {
+    const pattern = parsePattern(newPatternEl.value)
+    newPatternEl.classList.remove("invalid")
+    mutate(() => {
+      const section = findSectionBySentence(store.project, sentenceId)
+      if (!section) return
+      const index = section.sentences.findIndex((s) => s.id === sentenceId)
+      if (index < 0) return
+      const sentence = createSentence(pattern)
+      section.sentences.splice(index + 1, 0, sentence)
+      store.cursor = { sentenceId: sentence.id, cell: 0 }
+    })
+    focusCellInput()
+    setStatus("已加句")
+  } catch (err) {
+    newPatternEl.classList.add("invalid")
+    setStatus(err instanceof Error ? err.message : String(err), true)
+  }
 }
 
 function addSentenceToSection(sectionId: string): void {
@@ -1083,6 +1176,14 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
     row.appendChild(overflowEl)
   }
 
+  const addAfterBtn = document.createElement("button")
+  addAfterBtn.type = "button"
+  addAfterBtn.className = "add-sentence-inline sentence-add"
+  addAfterBtn.textContent = "+ 新增一句"
+  addAfterBtn.title = "在这一句下面新增一句"
+  addAfterBtn.addEventListener("click", () => addSentenceAfter(sentence.id))
+  grid.appendChild(addAfterBtn)
+
   const sideRight = document.createElement("div")
   sideRight.className = "sentence-side-right"
 
@@ -1424,7 +1525,10 @@ function commitInput(input: HTMLInputElement): void {
     return
   }
   if (base && raw === base) return
-  const text = base ? raw.replace(base, "") : raw
+  // 只收汉字：打字/粘贴里夹带的英文、拼音、数字一律跳过
+  const text = [...(base ? raw.replace(base, "") : raw)]
+    .filter((char) => isHanChar(char))
+    .join("")
   if (!text) {
     input.value = base
     return
@@ -1611,9 +1715,10 @@ async function pasteSentence(sentenceId: string): Promise<void> {
     setStatus("读取剪贴板失败", true)
     return
   }
-  const chars = Array.from(text.replace(/\s+/gu, ""))
+  // 只收汉字：英文、拼音、数字、标点一律跳过
+  const chars = Array.from(text).filter((char) => isHanChar(char))
   if (chars.length === 0) {
-    setStatus("剪贴板没有可用文字", true)
+    setStatus("剪贴板里没有汉字", true)
     return
   }
   const sentence = store.findSentence(sentenceId)
@@ -1657,35 +1762,45 @@ async function saveProject(saveAs: boolean): Promise<void> {
     return
   }
   try {
-    let path = store.filePath
-    if (saveAs || !path) {
-      const chosen = await saveFileDialog({
-        filters: [{ name: "词格工程", extensions: ["json"] }],
-        defaultPath: path ?? `${store.project.title || "未命名"}.json`,
-      })
-      if (!chosen) return
-      path = chosen
-    }
+    const docId = docsState.activeId
     store.project.updatedAt = new Date().toISOString()
-    await writeTextFile(path, JSON.stringify(store.project, null, 2))
-    store.filePath = path
+    const saved = await saveText({
+      suggestedName: store.filePath ?? `${store.project.title || "未命名"}.json`,
+      description: "词格工程",
+      extensions: ["json"],
+      pickerId: "cige-project",
+      contents: JSON.stringify(store.project, null, 2),
+      target: saveAs ? null : (saveTargets.get(docId) ?? null),
+      forcePicker: saveAs,
+    })
+    if (!saved) return
+    saveTargets.set(docId, saved)
+    store.filePath = saved.kind === "path" && saved.path ? saved.path : saved.name
     store.markSaved()
     store.persist()
     renderStatusBar()
-    setStatus("已保存工程")
+    setStatus(
+      saved.kind === "download"
+        ? `已下载「${saved.name}」（网页版没有覆盖权限，再次保存会再下载一份）`
+        : "已保存工程",
+    )
   } catch (err) {
     setStatus(`保存失败: ${err instanceof Error ? err.message : err}`, true)
   }
 }
 
-async function openProject(): Promise<void> {
+async function openProject(source?: FileSource): Promise<void> {
   try {
-    const chosen = await openFileDialog({
-      multiple: false,
-      filters: [{ name: "词格文件（工程 / 草稿备份）", extensions: ["json"] }],
-    })
-    if (!chosen || Array.isArray(chosen)) return
-    const raw = await readTextFile(chosen)
+    let src = source
+    if (!src) {
+      src = (await pickFile({
+        description: "词格文件（工程 / 草稿备份）",
+        extensions: ["json"],
+        allFiles: false,
+      })) ?? undefined
+      if (!src) return
+    }
+    const raw = await src.readText()
     const backup = parseDocsBackup(raw)
     if (backup) {
       docsState.docs = backup.docs
@@ -1701,7 +1816,7 @@ async function openProject(): Promise<void> {
     }
     const project = parseProject(raw)
     syncActiveDoc()
-    const doc = createDocFrom(project, chosen)
+    const doc = createDocFrom(project, src.path ?? src.name)
     docsState.docs.push(doc)
     docsState.activeId = doc.id
     activateDoc(doc)
@@ -1744,13 +1859,19 @@ function saveExportOptions(options: ExportOptions): void {
 async function exportDraftsBackup(): Promise<void> {
   try {
     syncActiveDoc()
-    const chosen = await saveFileDialog({
-      filters: [{ name: "词格草稿备份", extensions: ["json"] }],
-      defaultPath: "词格草稿备份.json",
+    const saved = await saveText({
+      suggestedName: "词格草稿备份.json",
+      description: "词格草稿备份",
+      extensions: ["json"],
+      pickerId: "cige-backup",
+      contents: JSON.stringify(buildDocsBackup(docsState), null, 2),
     })
-    if (!chosen) return
-    await writeTextFile(chosen, JSON.stringify(buildDocsBackup(docsState), null, 2))
-    setStatus(`已导出 ${docsState.docs.length} 个歌词文件的草稿备份`)
+    if (!saved) return
+    setStatus(
+      saved.kind === "download"
+        ? `已下载 ${docsState.docs.length} 个歌词文件的草稿备份`
+        : `已导出 ${docsState.docs.length} 个歌词文件的草稿备份`,
+    )
   } catch (err) {
     setStatus(`导出失败: ${err instanceof Error ? err.message : err}`, true)
   }
@@ -1949,13 +2070,15 @@ async function exportText(): Promise<void> {
   const options = await askExportOptions()
   if (!options) return
   try {
-    const chosen = await saveFileDialog({
-      filters: [{ name: "歌词文本", extensions: ["txt"] }],
-      defaultPath: `${store.project.title || "歌词"}.txt`,
+    const saved = await saveText({
+      suggestedName: `${store.project.title || "歌词"}.txt`,
+      description: "歌词文本",
+      extensions: ["txt"],
+      pickerId: "cige-export",
+      contents: exportLyrics(store.project, options),
     })
-    if (!chosen) return
-    await writeTextFile(chosen, exportLyrics(store.project, options))
-    setStatus("已导出歌词")
+    if (!saved) return
+    setStatus(saved.kind === "download" ? "已下载歌词" : "已导出歌词")
   } catch (err) {
     setStatus(`导出失败: ${err instanceof Error ? err.message : err}`, true)
   }
@@ -1963,13 +2086,126 @@ async function exportText(): Promise<void> {
 
 async function exportGridText(): Promise<void> {
   try {
-    const chosen = await saveFileDialog({
-      filters: [{ name: "词格文本", extensions: ["txt"] }],
-      defaultPath: `${store.project.title || "未命名"} 词格.txt`,
+    const saved = await saveText({
+      suggestedName: `${store.project.title || "未命名"} 词格.txt`,
+      description: "词格文本",
+      extensions: ["txt"],
+      pickerId: "cige-export",
+      contents: exportGrid(store.project),
     })
-    if (!chosen) return
-    await writeTextFile(chosen, exportGrid(store.project))
-    setStatus("已导出词格")
+    if (!saved) return
+    setStatus(saved.kind === "download" ? "已下载词格" : "已导出词格")
+  } catch (err) {
+    setStatus(`导出失败: ${err instanceof Error ? err.message : err}`, true)
+  }
+}
+
+function askMidiExportOptions(): Promise<{ stripMarkers: boolean } | null> {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog")
+    const form = document.createElement("form")
+    form.method = "dialog"
+    form.className = "dialog-body"
+
+    const title = document.createElement("strong")
+    title.textContent = "导出带歌词 MIDI"
+
+    const hint = document.createElement("p")
+    hint.textContent =
+      "这份 MIDI 里有词格酱的切分标记音（C0/C#0/D0）。默认原样保留，继续拿回词格酱或 DAW 里都还能用。"
+
+    const label = document.createElement("label")
+    label.className = "dialog-check"
+    const check = document.createElement("input")
+    check.type = "checkbox"
+    label.append(check, document.createTextNode("去掉切分标记音（整个删掉，导出一份干净文件）"))
+
+    const actions = document.createElement("div")
+    actions.className = "dialog-actions"
+    const cancel = document.createElement("button")
+    cancel.type = "submit"
+    cancel.value = "cancel"
+    cancel.textContent = "取消"
+    const ok = document.createElement("button")
+    ok.type = "submit"
+    ok.value = "ok"
+    ok.textContent = "导出"
+    actions.append(cancel, ok)
+
+    form.append(title, hint, label, actions)
+    dialog.appendChild(form)
+    document.body.appendChild(dialog)
+    dialog.addEventListener("close", () => {
+      const action = dialog.returnValue
+      dialog.remove()
+      resolve(action === "ok" ? { stripMarkers: check.checked } : null)
+    })
+    dialog.showModal()
+  })
+}
+
+async function exportLyricMidi(): Promise<void> {
+  const session = midiSession
+  if (!session) {
+    setStatus("这次会话还没导入过 MIDI，先「导入 → 选择 MIDI…」", true)
+    return
+  }
+  const current = store.project.sections.slice(session.offset)
+  if (current.length !== session.sections.length) {
+    setStatus(
+      `词格和导入的 MIDI 对不上：现在是 ${current.length} 段，导入时是 ${session.sections.length} 段`,
+      true,
+    )
+    return
+  }
+  for (let si = 0; si < session.sections.length; si++) {
+    const currentLines = current[si].sentences
+    const baseLines = session.sections[si].lines
+    if (currentLines.length !== baseLines.length) {
+      setStatus(
+        `词格和导入的 MIDI 对不上：第 ${si + 1} 段现在是 ${currentLines.length} 句，导入时是 ${baseLines.length} 句`,
+        true,
+      )
+      return
+    }
+    for (let li = 0; li < baseLines.length; li++) {
+      const currentCells = totalCells(currentLines[li].pattern)
+      const baseCells = baseLines[li].pattern.reduce((sum, size) => sum + size, 0)
+      if (currentCells !== baseCells) {
+        setStatus(
+          `词格和导入的 MIDI 对不上：第 ${si + 1} 段第 ${li + 1} 句现在是 ${currentCells} 格，导入时是 ${baseCells} 格`,
+          true,
+        )
+        return
+      }
+    }
+  }
+  const lyrics: string[] = []
+  for (const section of current) {
+    for (const sentence of section.sentences) {
+      for (const cell of getCells(sentence)) lyrics.push(cell)
+    }
+  }
+  const exportOptions =
+    session.skipPitches.length > 0 ? await askMidiExportOptions() : { stripMarkers: false }
+  if (!exportOptions) return
+  try {
+    const saved = await saveBytes({
+      suggestedName: `${store.project.title || "未命名"} 带歌词.mid`,
+      description: "MIDI 文件",
+      extensions: ["mid"],
+      pickerId: "cige-export",
+      bytes: buildLyricMidi(session.file, session.trackIndex, lyrics, {
+        skipPitches: session.skipPitches,
+        stripMarkers: exportOptions.stripMarkers,
+      }),
+    })
+    if (!saved) return
+    setStatus(
+      saved.kind === "download"
+        ? `已下载带歌词 MIDI（${lyrics.filter(Boolean).length} 个字）`
+        : `已导出带歌词 MIDI（${lyrics.filter(Boolean).length} 个字）`,
+    )
   } catch (err) {
     setStatus(`导出失败: ${err instanceof Error ? err.message : err}`, true)
   }
@@ -2037,7 +2273,15 @@ function applyLyricsText(
   }
 }
 
-function openImportDialog(): void {
+/** 打开新的应用弹窗前，先把还开着的旧弹窗收掉（等同替用户按「取消」），避免叠成两层 */
+function dismissOpenDialogs(): void {
+  document
+    .querySelectorAll<HTMLDialogElement>("dialog[open]")
+    .forEach((item) => item.close("cancel"))
+}
+
+function openImportDialog(initialText?: string, fileTitle?: string): void {
+  dismissOpenDialogs()
   const dialog = document.createElement("dialog")
   dialog.innerHTML = `
     <form method="dialog" class="dialog-body">
@@ -2056,12 +2300,17 @@ function openImportDialog(): void {
       <div class="dialog-actions">
         <button value="clip" type="submit">从剪贴板</button>
         <button value="file" type="submit">选择文件…</button>
+        <button value="midi" type="submit">选择 MIDI…</button>
         <button value="ok" type="submit">导入</button>
       </div>
     </form>
   `
   document.body.appendChild(dialog)
   const textarea = dialog.querySelector("textarea")!
+  if (initialText !== undefined) {
+    textarea.value = initialText
+    if (fileTitle) textarea.dataset.fileTitle = fileTitle
+  }
   const mergeInput = dialog.querySelector<HTMLInputElement>("#import-merge")!
   const modeInputs = Array.from(
     dialog.querySelectorAll<HTMLInputElement>('input[name="import-mode"]'),
@@ -2087,6 +2336,11 @@ function openImportDialog(): void {
       })
       return
     }
+    if (action === "midi") {
+      dialog.remove()
+      void pickMidiFile()
+      return
+    }
     const merge = mergeInput.checked
     const fillLyrics = modeInputs.find((el) => el.checked)?.value !== "grid"
     dialog.remove()
@@ -2106,24 +2360,1429 @@ function openImportDialog(): void {
 
 async function pickLyricsFileInto(textarea: HTMLTextAreaElement): Promise<void> {
   try {
-    const chosen = await openFileDialog({
-      multiple: false,
-      filters: [
-        { name: "歌词文本", extensions: ["txt", "lrc", "md", "text"] },
-        { name: "所有文件", extensions: ["*"] },
-      ],
+    const source = await pickFile({
+      description: "歌词文本",
+      extensions: ["txt", "lrc", "md", "text"],
     })
-    if (!chosen || Array.isArray(chosen)) return
-    const raw = await readTextFile(chosen)
+    if (!source) return
+    const raw = await source.readText()
     textarea.value = raw
-    textarea.dataset.filePath = chosen
-    const base = chosen.split("/").pop() ?? ""
-    const title = base.replace(/\.(txt|lrc|md|text)$/i, "")
+    textarea.dataset.filePath = source.path ?? source.name
+    const title = source.name.replace(/\.(txt|lrc|md|text)$/i, "")
     if (title) textarea.dataset.fileTitle = title
-    setStatus(`已读入 ${base}，确认后点「导入」`)
+    setStatus(`已读入 ${source.name}，确认后点「导入」`)
   } catch (err) {
     setStatus(`读取失败: ${err instanceof Error ? err.message : err}`, true)
   }
+}
+
+async function pickMidiFile(): Promise<void> {
+  try {
+    const source = await pickFile({
+      description: "MIDI 文件",
+      extensions: ["mid", "midi"],
+    })
+    if (!source) return
+    await loadMidiFromSource(source)
+  } catch (err) {
+    setStatus(`读取 MIDI 失败: ${err instanceof Error ? err.message : err}`, true)
+  }
+}
+
+async function loadMidiFromSource(source: FileSource): Promise<void> {
+  try {
+    const bytes = await source.readBytes()
+    const file = parseMidi(bytes)
+    openMidiDialog(file, source.name)
+  } catch (err) {
+    setStatus(`读取 MIDI 失败: ${err instanceof Error ? err.message : err}`, true)
+  }
+}
+
+function bindDrop(): void {
+  const hint = document.createElement("div")
+  hint.className = "drop-hint"
+  hint.textContent = "松手导入：.mid / .txt / .lrc / .md / .json"
+  hint.hidden = true
+  document.body.appendChild(hint)
+  onFileDrop({
+    onEnter: () => {
+      hint.hidden = false
+    },
+    onLeave: () => {
+      hint.hidden = true
+    },
+    onDrop: (sources) => {
+      hint.hidden = true
+      void handleDropSources(sources)
+    },
+  })
+}
+
+async function handleDropSources(sources: FileSource[]): Promise<void> {
+  const source = sources[0]
+  if (!source) return
+  const name = source.name
+  const ext = name.split(".").pop()?.toLowerCase() ?? ""
+  if (ext === "mid" || ext === "midi") {
+    await loadMidiFromSource(source)
+    return
+  }
+  if (ext === "json") {
+    await openProject(source)
+    return
+  }
+  if (["txt", "lrc", "md", "text"].includes(ext)) {
+    try {
+      const raw = await source.readText()
+      openImportDialog(raw, name.replace(/\.[^.]+$/, ""))
+    } catch (err) {
+      setStatus(`读取失败: ${err instanceof Error ? err.message : err}`, true)
+    }
+    return
+  }
+  setStatus(`不认识的文件：${name}`, true)
+}
+
+function openMidiDialog(file: MidiFile, baseName: string): void {
+  dismissOpenDialogs()
+  const tracks = noteTracks(file)
+  if (tracks.length === 0) {
+    setStatus("这个 MIDI 里没有音符", true)
+    return
+  }
+  const markerCount = file.tracks.reduce((n, track) => n + track.markers.length, 0)
+
+  const dialog = document.createElement("dialog")
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body"
+
+  const title = document.createElement("strong")
+  title.textContent = baseName ? `导入 MIDI：${baseName}` : "导入 MIDI"
+
+  const trackLabel = document.createElement("label")
+  trackLabel.className = "dialog-field"
+  trackLabel.append(document.createTextNode("轨道"))
+  const trackSelect = document.createElement("select")
+  for (const track of tracks) {
+    const option = document.createElement("option")
+    option.value = String(track.index)
+    option.textContent = `${track.name}（${track.count} 个音）`
+    trackSelect.appendChild(option)
+  }
+  trackSelect.value = String(pickMelodyTrack(file))
+  trackLabel.appendChild(trackSelect)
+
+  const modeLabel = document.createElement("label")
+  modeLabel.className = "dialog-field"
+  modeLabel.append(document.createTextNode("分段依据"))
+  const modeSelect = document.createElement("select")
+  const modeOptions: [string, string][] = [
+    ["auto", "自动（有 C0/C#0/D0 就按标记）"],
+    ["rest", "休止 + Marker"],
+    ["keyswitch", "词格酱标记（C0/C#0/D0）"],
+  ]
+  for (const [value, label] of modeOptions) {
+    const option = document.createElement("option")
+    option.value = value
+    option.textContent = label
+    modeSelect.appendChild(option)
+  }
+  modeLabel.appendChild(modeSelect)
+
+  const modeNote = document.createElement("p")
+  modeNote.className = "dialog-note"
+
+  const restLabel = document.createElement("label")
+  restLabel.className = "dialog-field"
+  restLabel.append(document.createTextNode("换句休止"))
+  const restSelect = document.createElement("select")
+  const restOptions: [string, string][] = [
+    ["1", "≥ 1 拍"],
+    ["2", "≥ 2 拍"],
+    ["0.5", "≥ 半拍"],
+    ["0", "不按休止换句"],
+  ]
+  for (const [value, label] of restOptions) {
+    const option = document.createElement("option")
+    option.value = value
+    option.textContent = label
+    restSelect.appendChild(option)
+  }
+  restLabel.appendChild(restSelect)
+
+  const markerLabel = document.createElement("label")
+  markerLabel.className = "dialog-check"
+  const markerCheck = document.createElement("input")
+  markerCheck.type = "checkbox"
+  markerCheck.checked = markerCount > 0
+  markerCheck.disabled = markerCount === 0
+  markerLabel.append(
+    markerCheck,
+    document.createTextNode(
+      markerCount > 0
+        ? `用 Marker 分段落（文件里有 ${markerCount} 个标记）`
+        : "用 Marker 分段落（文件里没有标记）",
+    ),
+  )
+
+  const mergeLabel = document.createElement("label")
+  mergeLabel.className = "dialog-check"
+  const mergeCheck = document.createElement("input")
+  mergeCheck.type = "checkbox"
+  mergeLabel.append(mergeCheck, document.createTextNode("合并到现有歌词（不覆盖）"))
+
+  const preview = document.createElement("div")
+  preview.className = "midi-preview"
+
+  const build = (): MidiSection[] =>
+    midiToSections(file, {
+      trackIndex: Number(trackSelect.value),
+      sentenceRestBeats: Number(restSelect.value),
+      useMarkers: markerCheck.checked,
+      mode: modeSelect.value as "auto" | "rest" | "keyswitch",
+    })
+
+  const usesKeyswitch = (): boolean =>
+    modeSelect.value === "keyswitch" ||
+    (modeSelect.value === "auto" &&
+      keyswitchCount(file, Number(trackSelect.value)) > 0)
+
+  const refresh = (): void => {
+    const sections = build()
+    const lines = sections.reduce((n, section) => n + section.lines.length, 0)
+    const cells = sections.reduce(
+      (n, section) =>
+        n +
+        section.lines.reduce(
+          (m, line) => m + line.pattern.reduce((sum, size) => sum + size, 0),
+          0,
+        ),
+      0,
+    )
+    const sample = sections
+      .flatMap((section) => section.lines)
+      .slice(0, 4)
+      .map((line) => line.pattern.map((size) => "X".repeat(size)).join(" "))
+      .join("　")
+    preview.textContent = `${sections.length} 段 · ${lines} 句 · ${cells} 格${sample ? `　${sample}` : ""}`
+
+    const count = keyswitchCount(file, Number(trackSelect.value))
+    const keyswitch = usesKeyswitch()
+    restSelect.disabled = keyswitch
+    markerCheck.disabled = keyswitch || markerCount === 0
+    if (keyswitch) {
+      modeNote.textContent =
+        count > 0
+          ? `已识别 ${count} 个切分标记（C0=分句、C#0=换句、D0=换段，即绝对音高 24/25/26）；「换句休止」和 Marker 不参与`
+          : "没找到 C0/C#0/D0 标记（绝对音高 24/25/26，按 Middle C=C3 的 DAW 显示）；将整段作为一句导入"
+    } else if (modeSelect.value === "auto" && count === 0) {
+      modeNote.textContent = "文件里没有 C0/C#0/D0 标记，按「休止 + Marker」切"
+    } else {
+      modeNote.textContent = ""
+    }
+  }
+  trackSelect.addEventListener("change", refresh)
+  modeSelect.addEventListener("change", refresh)
+  restSelect.addEventListener("change", refresh)
+  markerCheck.addEventListener("change", refresh)
+
+  const actions = document.createElement("div")
+  actions.className = "dialog-actions"
+  const cancel = document.createElement("button")
+  cancel.type = "submit"
+  cancel.value = "cancel"
+  cancel.textContent = "取消"
+  const ok = document.createElement("button")
+  ok.type = "submit"
+  ok.value = "ok"
+  ok.textContent = "导入"
+  actions.append(cancel, ok)
+
+  form.append(title, trackLabel, modeLabel, restLabel, markerLabel, modeNote, mergeLabel, preview, actions)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  refresh()
+  dialog.addEventListener("close", () => {
+    const action = dialog.returnValue
+    const sections = build()
+    const trackIndex = Number(trackSelect.value)
+    const skipPitches =
+      usesKeyswitch() && keyswitchCount(file, trackIndex) > 0
+        ? [KEYSWITCH.group, KEYSWITCH.sentence, KEYSWITCH.section]
+        : []
+    dialog.remove()
+    if (action !== "ok") return
+    applyMidiSections(file, trackIndex, sections, mergeCheck.checked, skipPitches)
+  })
+  dialog.showModal()
+}
+
+function applyMidiSections(
+  file: MidiFile,
+  trackIndex: number,
+  sections: MidiSection[],
+  merge: boolean,
+  skipPitches: number[] = [],
+): void {
+  const total = sections.reduce((n, section) => n + section.lines.length, 0)
+  if (total === 0) {
+    setStatus("没有可导入的音符", true)
+    return
+  }
+  let offset = 0
+  mutate(() => {
+    if (docsState.docs.length === 0) {
+      const doc = createDoc()
+      docsState.docs.push(doc)
+      docsState.activeId = doc.id
+      store.project = doc.project
+      store.filePath = null
+      store.undoStack = []
+      store.redoStack = []
+      store.cursor = { sentenceId: "", cell: 0 }
+    }
+    const imported = sections.map((section, index) => {
+      const sentences = section.lines.map((line) => {
+        const sentence = createSentence(line.pattern)
+        setCells(sentence, line.cells)
+        return sentence
+      })
+      return createSection(section.name || `段落 ${index + 1}`, sentences)
+    })
+    if (merge) {
+      offset = store.project.sections.length
+      store.project.sections.push(...imported)
+    } else {
+      offset = 0
+      store.project.sections = imported
+    }
+    const first = imported[0]?.sentences[0]
+    if (first) store.cursor = { sentenceId: first.id, cell: 0 }
+  })
+  midiSession = { file, trackIndex, offset, sections, skipPitches }
+  focusCellInput()
+  setStatus(`已从 MIDI 导入 ${total} 句词格（填完字可「导出 → 带歌词 MIDI」）`)
+}
+
+const AI_WIDTH_KEY = "cige-grid-ai-width"
+const AI_SCOPE_KEY = "cige-grid-ai-scope"
+
+type AiScope = "all" | "empty" | "section" | "selected"
+
+const AI_SCOPE_OPTIONS: { value: AiScope; label: string }[] = [
+  { value: "all", label: "整首" },
+  { value: "empty", label: "只填空句" },
+  { value: "section", label: "当前段" },
+  { value: "selected", label: "选中的句子" },
+]
+
+function loadAiScope(): AiScope {
+  const stored = localStorage.getItem(AI_SCOPE_KEY)
+  return AI_SCOPE_OPTIONS.some((option) => option.value === stored)
+    ? (stored as AiScope)
+    : "all"
+}
+
+let aiScope: AiScope = loadAiScope()
+
+function setAiScope(scope: AiScope): void {
+  aiScope = scope
+  localStorage.setItem(AI_SCOPE_KEY, scope)
+  renderAiChips()
+  updateAiHint()
+}
+const AI_OPEN_KEY = "cige-grid-ai-open"
+const AI_DEFAULT_WIDTH = 320
+const AI_MIN_WIDTH = 260
+const AI_MAX_WIDTH = 520
+
+interface AiVersion {
+  text: string
+  thinkingText?: string
+  thinkingMs?: number
+  finishReason?: string
+  note?: string
+  parsed?: AiSentenceResult[]
+  ok?: AiSentenceResult[]
+  issues?: AiIssue[]
+  applied?: boolean
+}
+
+interface AiBubble {
+  role: "user" | "assistant" | "system"
+  text: string
+  streaming?: boolean
+  error?: string
+  thinkingOpen?: boolean
+  request?: string
+  versions: AiVersion[]
+  versionIndex: number
+}
+
+let aiBubbles: AiBubble[] = []
+let aiBusy = false
+let aiAbort: AbortController | null = null
+let aiStreamEl: HTMLElement | null = null
+let aiStreamThinkEl: HTMLElement | null = null
+let aiStreamThinkLabelEl: HTMLElement | null = null
+
+let aiSettings = loadAiSettings()
+
+function currentProvider(): AiProvider {
+  return (
+    aiSettings.providers.find((provider) => provider.id === aiSettings.providerId) ??
+    aiSettings.providers[0]
+  )
+}
+
+function setChip(button: HTMLButtonElement, label: string, title: string): void {
+  button.replaceChildren()
+  const text = document.createElement("span")
+  text.className = "ai-chip-text"
+  text.textContent = label
+  const caret = document.createElement("span")
+  caret.className = "ai-chip-caret"
+  caret.textContent = "⌄"
+  button.append(text, caret)
+  button.title = title
+}
+
+function renderAiChips(): void {
+  const provider = currentProvider()
+  const model = aiSettings.model
+  setChip(
+    aiModelChip,
+    model ? modelLabel(model) : "选择模型",
+    provider
+      ? `${provider.name} · ${model || "未选模型"} · 点击切换模型`
+      : "点击切换模型",
+  )
+  const effort = EFFORT_LEVELS.find((level) => level.value === aiSettings.effort)
+  setChip(aiEffortChip, effort ? effort.label : "Default", "推理等级")
+  const scope = AI_SCOPE_OPTIONS.find((option) => option.value === aiScope)
+  setChip(aiScopeChip, scope ? scope.label : "整首", "生成范围")
+}
+
+function openScopePop(): void {
+  openAiPop(aiScopeChip, (pop) => {
+    for (const option of AI_SCOPE_OPTIONS) {
+      const item = document.createElement("button")
+      item.type = "button"
+      item.textContent = option.label
+      if (option.value === aiScope) {
+        item.classList.add("current")
+        const tick = document.createElement("span")
+        tick.className = "tick"
+        tick.textContent = "✓"
+        item.appendChild(tick)
+      }
+      item.addEventListener("click", () => {
+        setAiScope(option.value)
+        closeAiPops()
+      })
+      pop.appendChild(item)
+    }
+  })
+}
+
+function closeAiPops(): void {
+  document.querySelectorAll(".ai-pop").forEach((el) => el.remove())
+  document
+    .querySelectorAll<HTMLElement>(".ai-chip")
+    .forEach((el) => delete el.dataset.open)
+}
+
+function openAiPop(anchor: HTMLElement, build: (pop: HTMLElement) => void): void {
+  const wasOpen = anchor.dataset.open === "1"
+  closeAiPops()
+  if (wasOpen) return
+  anchor.dataset.open = "1"
+  const pop = document.createElement("div")
+  pop.className = "ai-pop"
+  build(pop)
+  document.querySelector(".ai-composer")?.appendChild(pop)
+  const onDocClick = (event: MouseEvent) => {
+    const target = event.target as HTMLElement
+    if (pop.contains(target) || anchor.contains(target)) return
+    closeAiPops()
+    document.removeEventListener("click", onDocClick)
+  }
+  setTimeout(() => document.addEventListener("click", onDocClick), 0)
+}
+
+function chooseModel(providerId: string, model: string): void {
+  aiSettings = { ...aiSettings, providerId, model }
+  saveAiSettings(aiSettings)
+  renderAiChips()
+  closeAiPops()
+}
+
+function openModelPop(): void {
+  openAiPop(aiModelChip, (pop) => {
+    const search = document.createElement("input")
+    search.type = "text"
+    search.placeholder = "搜索模型"
+    pop.appendChild(search)
+    const list = document.createElement("div")
+    pop.appendChild(list)
+    const render = () => {
+      const keyword = search.value.trim().toLowerCase()
+      list.replaceChildren()
+      for (const provider of aiSettings.providers) {
+        const models = provider.models.filter(
+          (model) =>
+            model.toLowerCase().includes(keyword) ||
+            modelLabel(model).toLowerCase().includes(keyword),
+        )
+        if (models.length === 0) continue
+        const title = document.createElement("div")
+        title.className = "ai-pop-title"
+        title.textContent = provider.name
+        list.appendChild(title)
+        for (const model of models) {
+          const item = document.createElement("button")
+          item.type = "button"
+          item.textContent = modelLabel(model)
+          item.title = model
+          if (provider.id === aiSettings.providerId && model === aiSettings.model) {
+            item.classList.add("current")
+            const tick = document.createElement("span")
+            tick.className = "tick"
+            tick.textContent = "✓"
+            item.appendChild(tick)
+          }
+          item.addEventListener("click", () => chooseModel(provider.id, model))
+          list.appendChild(item)
+        }
+      }
+      if (list.childElementCount === 0) {
+        const empty = document.createElement("div")
+        empty.className = "ai-pop-title"
+        empty.textContent = "没有匹配的模型，去「管理模型」加"
+        list.appendChild(empty)
+      }
+    }
+    search.addEventListener("input", render)
+    render()
+    const foot = document.createElement("div")
+    foot.className = "ai-pop-foot"
+    const manage = document.createElement("button")
+    manage.type = "button"
+    manage.textContent = "管理模型"
+    manage.addEventListener("click", () => {
+      closeAiPops()
+      openAiSettings()
+    })
+    foot.appendChild(manage)
+    pop.appendChild(foot)
+    search.focus()
+  })
+}
+
+function openEffortPop(): void {
+  openAiPop(aiEffortChip, (pop) => {
+    const provider = currentProvider()
+    for (const level of EFFORT_LEVELS) {
+      const item = document.createElement("button")
+      item.type = "button"
+      item.textContent = level.label
+      if (level.value === aiSettings.effort) {
+        item.classList.add("current")
+        const tick = document.createElement("span")
+        tick.className = "tick"
+        tick.textContent = "✓"
+        item.appendChild(tick)
+      }
+      item.addEventListener("click", () => {
+        aiSettings = { ...aiSettings, effort: level.value }
+        saveAiSettings(aiSettings)
+        renderAiChips()
+        closeAiPops()
+      })
+      pop.appendChild(item)
+    }
+    const note = document.createElement("div")
+    note.className = "ai-pop-title"
+    if (!provider?.supportsThinking) {
+      note.textContent = "这个接口没勾「思考参数」，选了也不会发（去 ⚙ 勾上）"
+    } else if (!supportsEffortFor(aiSettings.model, provider.supportsEffort)) {
+      note.textContent = `${modelLabel(aiSettings.model) || "当前模型"} 只支持开关思考：Low / High / Max 都按「开启」发，None 关掉`
+    } else {
+      note.textContent = "会按 thinking + reasoning_effort 一起传"
+    }
+    pop.appendChild(note)
+  })
+}
+
+function setAiWidth(width: number): void {
+  const clamped = Math.max(AI_MIN_WIDTH, Math.min(AI_MAX_WIDTH, Math.round(width)))
+  document.documentElement.style.setProperty("--ai-width", `${clamped}px`)
+  localStorage.setItem(AI_WIDTH_KEY, String(clamped))
+}
+
+function openAiPanel(): void {
+  closeSourcePanel()
+  aiPanel.hidden = false
+  aiResizer.hidden = false
+  btnAi.setAttribute("aria-expanded", "true")
+  localStorage.setItem(AI_OPEN_KEY, "1")
+  updateAiHint()
+  renderAiMessages()
+  aiInput.focus()
+}
+
+function closeAiPanel(): void {
+  closeAiPops()
+  aiPanel.hidden = true
+  aiResizer.hidden = true
+  btnAi.setAttribute("aria-expanded", "false")
+  localStorage.setItem(AI_OPEN_KEY, "0")
+}
+
+function toggleAiPanel(): void {
+  if (aiPanel.hidden) openAiPanel()
+  else closeAiPanel()
+}
+
+function initAiResizer(): void {
+  const stored = Number(localStorage.getItem(AI_WIDTH_KEY))
+  setAiWidth(Number.isFinite(stored) && stored > 0 ? stored : AI_DEFAULT_WIDTH)
+  aiResizer.addEventListener("dblclick", () => setAiWidth(AI_DEFAULT_WIDTH))
+  aiResizer.addEventListener("pointerdown", (event) => {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = aiPanel.getBoundingClientRect().width
+    aiResizer.classList.add("dragging")
+    const onMove = (move: PointerEvent) => setAiWidth(startWidth - (move.clientX - startX))
+    const onUp = () => {
+      aiResizer.classList.remove("dragging")
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", onUp)
+    }
+    window.addEventListener("pointermove", onMove)
+    window.addEventListener("pointerup", onUp)
+  })
+}
+
+function aiTargetIds(): string[] | null {
+  const scope = aiScope
+  const sentences = allSentences(store.project)
+  if (scope === "empty") {
+    return sentences
+      .filter((sentence) => getCells(sentence).every((cell) => !cell))
+      .map((sentence) => sentence.id)
+  }
+  if (scope === "section") {
+    const section = findSectionBySentence(store.project, store.cursor.sentenceId)
+    return section ? section.sentences.map((sentence) => sentence.id) : null
+  }
+  if (scope === "selected") return selectionSpans().map((span) => span.sentence.id)
+  return null
+}
+
+function updateAiHint(): void {
+  const scope = aiScope
+  const ids = aiTargetIds()
+  if (scope === "selected") {
+    aiHint.textContent =
+      ids && ids.length > 0
+        ? `选中 ${ids.length} 句（连同整首词格一起发给模型）`
+        : "先在格子里框选要写的句子"
+    return
+  }
+  const count = ids ? ids.length : allSentences(store.project).length
+  const label = scope === "all" ? "整首" : scope === "empty" ? "只填空句" : "当前段"
+  aiHint.textContent = `已自动附上词格：${label} ${count} 句`
+}
+
+function scrollAiToBottom(): void {
+  aiMessagesEl.scrollTop = aiMessagesEl.scrollHeight
+}
+
+function updateStreamText(bubble: AiBubble): void {
+  const version = aiVersionOf(bubble)
+  const text = version?.text ?? ""
+  if (aiStreamEl?.classList.contains("ai-lines")) {
+    const items = previewAiResults(text)
+    fillAiLines(aiStreamEl, aiLineViews(version, items))
+  } else if (aiStreamEl) {
+    aiStreamEl.textContent = text || "…"
+  }
+  scrollAiToBottom()
+}
+
+function aiLineViews(
+  version: AiVersion | null,
+  items: AiSentenceResult[],
+): {
+  groups: string[]
+  label: string
+  section: string
+  bad: boolean
+}[] {
+  const bad = new Set((version?.issues ?? []).map((issue) => issue.sentenceId))
+  return items.map((item) => {
+    const place = item.id ? sentencePlace(store.project, item.id) : null
+    const sentence = item.id ? store.findSentence(item.id) : undefined
+    return {
+      groups: sentence ? splitByPattern(item.text, sentence.pattern) : [item.text],
+      label: place ? String(place.line) : "",
+      section: place ? place.section : "",
+      bad: bad.has(item.id),
+    }
+  })
+}
+
+function fillAiLines(
+  container: HTMLElement,
+  views: { groups: string[]; label: string; section: string; bad: boolean }[],
+): void {
+  container.replaceChildren()
+  if (views.length === 0) {
+    const pending = document.createElement("div")
+    pending.className = "ai-line pending"
+    pending.textContent = "…"
+    container.appendChild(pending)
+    return
+  }
+  let currentSection = ""
+  for (const view of views) {
+    if (view.section && view.section !== currentSection) {
+      currentSection = view.section
+      const head = document.createElement("div")
+      head.className = "ai-line-section"
+      head.textContent = currentSection
+      container.appendChild(head)
+    }
+    const line = document.createElement("div")
+    line.className = `ai-line${view.bad ? " bad" : ""}`
+    const label = document.createElement("span")
+    label.className = "ai-line-label"
+    label.textContent = view.label
+    const text = document.createElement("span")
+    text.className = "ai-line-text"
+    const groups = view.groups.length > 0 ? view.groups : [""]
+    groups.forEach((group, index) => {
+      if (index > 0) {
+        const gap = document.createElement("span")
+        gap.className = "ai-line-gap"
+        text.appendChild(gap)
+      }
+      text.appendChild(document.createTextNode(group))
+    })
+    line.append(label, text)
+    container.appendChild(line)
+  }
+}
+
+function thinkingLabel(version: AiVersion, streaming: boolean): string {
+  const seconds = Math.max(1, Math.round((version.thinkingMs ?? 0) / 1000))
+  return streaming ? `思考中… ${seconds} 秒` : `已思考（用时 ${seconds} 秒）`
+}
+
+function aiIconButton(label: string, paths: string, onClick: () => void): HTMLButtonElement {
+  const button = document.createElement("button")
+  button.type = "button"
+  button.className = "ai-icon-btn"
+  button.title = label
+  button.setAttribute("aria-label", label)
+  button.innerHTML = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`
+  button.addEventListener("click", onClick)
+  return button
+}
+
+function renderAiMessages(): void {
+  aiStreamEl = null
+  aiStreamThinkEl = null
+  aiStreamThinkLabelEl = null
+  aiMessagesEl.replaceChildren()
+  if (aiBubbles.length === 0) {
+    const empty = document.createElement("div")
+    empty.className = "ai-msg system"
+    empty.textContent = "说要求（比如「写一段古风」），或点上面的「按词格写整首」。"
+    aiMessagesEl.appendChild(empty)
+    return
+  }
+  aiBubbles.forEach((bubble) => {
+    const el = document.createElement("div")
+    el.className = `ai-msg ${bubble.role}`
+    if (bubble.error) el.classList.add("error")
+    const version = aiVersionOf(bubble)
+    const bodyText = version ? version.text : bubble.text
+    if (bubble.role === "assistant" && version && (version.thinkingText ?? "") !== "") {
+      const toggle = document.createElement("button")
+      toggle.type = "button"
+      toggle.className = `ai-think-toggle${bubble.thinkingOpen ? " open" : ""}`
+      const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg")
+      icon.setAttribute("viewBox", "0 0 16 16")
+      icon.setAttribute("width", "13")
+      icon.setAttribute("height", "13")
+      icon.setAttribute("aria-hidden", "true")
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path")
+      path.setAttribute("d", "M8 1.4l1.6 4.2 4.2 1.6-4.2 1.6L8 13l-1.6-4.2L2.2 7.2l4.2-1.6z")
+      path.setAttribute("fill", "currentColor")
+      icon.appendChild(path)
+      const label = document.createElement("span")
+      label.textContent = thinkingLabel(version, Boolean(bubble.streaming))
+      const caret = document.createElement("span")
+      caret.className = "caret"
+      caret.textContent = "›"
+      toggle.append(icon, label, caret)
+      toggle.addEventListener("click", () => {
+        bubble.thinkingOpen = !bubble.thinkingOpen
+        renderAiMessages()
+      })
+      el.appendChild(toggle)
+      if (bubble.streaming) {
+        aiStreamThinkEl = toggle
+        aiStreamThinkLabelEl = label
+      }
+      if (bubble.thinkingOpen) {
+        const body = document.createElement("div")
+        body.className = "ai-think"
+        body.textContent = version.thinkingText ?? ""
+        el.appendChild(body)
+      }
+    }
+    const useLines =
+      bubble.role === "assistant" &&
+      !bubble.error &&
+      ((version?.parsed?.length ?? 0) > 0 ||
+        (bubble.streaming && bodyText.trimStart().startsWith("{")))
+    if (useLines && version) {
+      const items: AiSentenceResult[] =
+        version.parsed && version.parsed.length > 0
+          ? version.parsed
+          : previewAiResults(bodyText)
+      const list = document.createElement("div")
+      list.className = "ai-lines"
+      fillAiLines(list, aiLineViews(version, items))
+      el.appendChild(list)
+      if (bubble.streaming) aiStreamEl = list
+    } else {
+      const text = document.createElement("div")
+      text.textContent = bubble.error
+        ? `出错了：${bubble.error}`
+        : bodyText || (bubble.streaming ? "…" : "")
+      el.appendChild(text)
+      if (bubble.streaming) aiStreamEl = text
+    }
+    if (version?.note) {
+      const note = document.createElement("div")
+      note.className = "ai-note"
+      note.textContent = version.note
+      el.appendChild(note)
+    }
+    if (version?.issues && version.issues.length > 0) {
+      const issues = document.createElement("div")
+      issues.className = "ai-note"
+      issues.textContent = `没过的句子：${version.issues.map((issue) => `${issue.label} ${issue.message}`).join("；")}`
+      el.appendChild(issues)
+    }
+    if (
+      bubble.role === "assistant" &&
+      !bubble.error &&
+      version &&
+      (version.text.trim() !== "" || bubble.versions.length > 1)
+    ) {
+      const actions = document.createElement("div")
+      actions.className = "ai-actions"
+      if (version.ok && version.ok.length > 0) {
+        const apply = document.createElement("button")
+        apply.type = "button"
+        apply.className = "ai-apply"
+        apply.textContent = version.applied ? "已填入" : "填入词格"
+        apply.disabled = !!version.applied
+        apply.addEventListener("click", () => applyAiBubble(bubble))
+        actions.appendChild(apply)
+      }
+      actions.appendChild(
+        aiIconButton(
+          "复制",
+          '<rect x="9" y="9" width="13" height="13" rx="2.6"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+          () => {
+            void copyText(version.text).then((ok) => setStatus(ok ? "已复制" : "复制失败", !ok))
+          },
+        ),
+      )
+      actions.appendChild(aiVersionNav(bubble))
+      if (bubble.request) {
+        actions.appendChild(
+          aiIconButton(
+            "重跑",
+            '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
+            () => void rerunAi(bubble),
+          ),
+        )
+      }
+      el.appendChild(actions)
+    }
+    aiMessagesEl.appendChild(el)
+  })
+  scrollAiToBottom()
+}
+
+function aiVersionNav(bubble: AiBubble): HTMLElement {
+  const nav = document.createElement("span")
+  nav.className = "ai-versions"
+  const total = bubble.versions.length
+  if (total <= 1) return nav
+  const back = document.createElement("button")
+  back.type = "button"
+  back.textContent = "‹"
+  back.disabled = bubble.versionIndex <= 0
+  back.title = "上一版"
+  back.addEventListener("click", () => {
+    if (bubble.versionIndex <= 0) return
+    bubble.versionIndex -= 1
+    bubble.error = undefined
+    renderAiMessages()
+  })
+  const count = document.createElement("span")
+  count.textContent = `${bubble.versionIndex + 1}/${total}`
+  const forward = document.createElement("button")
+  forward.type = "button"
+  forward.textContent = "›"
+  forward.disabled = bubble.versionIndex >= total - 1
+  forward.title = "下一版"
+  forward.addEventListener("click", () => {
+    if (bubble.versionIndex >= total - 1) return
+    bubble.versionIndex += 1
+    bubble.error = undefined
+    renderAiMessages()
+  })
+  nav.append(back, count, forward)
+  return nav
+}
+
+function pushAiBubble(partial: Partial<AiBubble> & Pick<AiBubble, "role" | "text">): AiBubble {
+  const bubble: AiBubble = { versions: [], versionIndex: 0, ...partial }
+  aiBubbles.push(bubble)
+  renderAiMessages()
+  return bubble
+}
+
+function aiVersionOf(bubble: AiBubble): AiVersion | null {
+  return bubble.role === "assistant" ? bubble.versions[bubble.versionIndex] ?? null : null
+}
+
+function aiHistoryUntil(target?: AiBubble): ChatMessage[] {
+  const list = target ? aiBubbles.slice(0, aiBubbles.indexOf(target)) : aiBubbles
+  return list
+    .filter((bubble) => bubble.role === "user" || bubble.role === "assistant")
+    .slice(-6)
+    .map((bubble) => ({
+      role: bubble.role as "user" | "assistant",
+      content: (bubble.role === "assistant" ? aiVersionOf(bubble)?.text ?? "" : bubble.text).slice(0, 2000),
+    }))
+    .filter((message) => message.content.trim() !== "")
+}
+
+function applyAiBubble(bubble: AiBubble): void {
+  const version = aiVersionOf(bubble)
+  if (!version || !version.ok || version.ok.length === 0 || version.applied) return
+  let filled = 0
+  let alternatives = 0
+  mutate(() => {
+    const summary = applyAiResults(store.project, version.ok ?? [])
+    filled = summary.filled
+    alternatives = summary.alternatives
+  })
+  version.applied = true
+  renderAiMessages()
+  focusCellInput()
+  setStatus(
+    `AI 已填 ${filled} 句${alternatives > 0 ? `，其中 ${alternatives} 句进了「AI」备选` : ""}（可撤销）`,
+  )
+}
+
+function updateAiSendButton(): void {
+  btnAiSend.textContent = aiBusy ? "■" : "↑"
+  btnAiSend.title = aiBusy ? "停止" : "发送（Enter）"
+}
+
+function requireAiTarget(): boolean {
+  const target = resolveTarget(aiSettings)
+  if (!target) {
+    setStatus("先在 ⚙ 里填接口地址 / 模型", true)
+    openAiSettings()
+    return false
+  }
+  const provider = currentProvider()
+  if (provider?.builtin && !target.apiKey.trim()) {
+    setStatus(`还没填 ${provider.name} 的 API Key（点 ⚙ 设置）`, true)
+    openAiSettings()
+    return false
+  }
+  return true
+}
+
+async function sendAi(text: string): Promise<void> {
+  if (!isDesktop()) {
+    setStatus("AI 填词仅桌面版可用（网页版暂不支持）", true)
+    return
+  }
+  const trimmed = text.trim()
+  if (!trimmed || aiBusy) return
+  if (!requireAiTarget()) return
+  const history = aiHistoryUntil()
+  pushAiBubble({ role: "user", text: trimmed })
+  aiInput.value = ""
+  const reply = pushAiBubble({
+    role: "assistant",
+    text: "",
+    streaming: true,
+    request: trimmed,
+    versions: [{ text: "" }],
+  })
+  await runAiGeneration(reply, reply.versions[0], trimmed, history)
+}
+
+async function rerunAi(bubble: AiBubble): Promise<void> {
+  if (aiBusy || bubble.role !== "assistant" || !bubble.request) return
+  if (!requireAiTarget()) return
+  const history = aiHistoryUntil(bubble)
+  bubble.versions.push({ text: "" })
+  bubble.versionIndex = bubble.versions.length - 1
+  bubble.error = undefined
+  bubble.thinkingOpen = false
+  renderAiMessages()
+  await runAiGeneration(bubble, bubble.versions[bubble.versionIndex], bubble.request, history)
+}
+
+async function runAiGeneration(
+  bubble: AiBubble,
+  version: AiVersion,
+  requestText: string,
+  history: ChatMessage[],
+): Promise<void> {
+  const target = resolveTarget(aiSettings)
+  if (!target) return
+  const targets = aiTargetIds()
+  bubble.streaming = true
+  aiBusy = true
+  aiAbort = new AbortController()
+  updateAiSendButton()
+  const started = Date.now()
+  const scopeIds =
+    targets && targets.length > 0
+      ? targets
+      : allSentences(store.project).map((sentence) => sentence.id)
+  const cells = allSentences(store.project)
+    .filter((sentence) => scopeIds.includes(sentence.id))
+    .reduce((total, sentence) => total + totalCells(sentence.pattern), 0)
+  const thinkingOn = target.supportsThinking && aiSettings.effort !== "none"
+  const maxTokens = maxTokensFor(cells, thinkingOn, aiSettings.effort, aiSettings.maxOutput)
+  let thinkingStart = 0
+  const onReasoning = (delta: string) => {
+    const now = Date.now()
+    if (!thinkingStart) thinkingStart = now
+    version.thinkingMs = now - thinkingStart
+    version.thinkingText = (version.thinkingText ?? "") + delta
+    if (!aiStreamThinkEl) renderAiMessages()
+    if (aiStreamThinkLabelEl) aiStreamThinkLabelEl.textContent = thinkingLabel(version, true)
+  }
+  try {
+    const writing = targets === null || targets.length > 0
+    const messages: ChatMessage[] = [
+      { role: "system", content: writing ? buildSystemPrompt() : buildChatSystemPrompt() },
+      ...history,
+      {
+        role: "user",
+        content: writing
+          ? `${requestText}\n\n${buildBrief(store.project, targets, requestText)}`
+          : requestText,
+      },
+    ]
+    let raw = await requestChat(target, messages, {
+      signal: aiAbort.signal,
+      maxTokens,
+      onReasoning,
+      onFinish: (reason) => {
+        version.finishReason = reason
+      },
+      onDelta: (delta) => {
+        version.text += delta
+        updateStreamText(bubble)
+      },
+    })
+    let results = parseAiSentences(raw)
+    let validation = validateAiResults(store.project, results)
+    let rounds = 0
+    while (validation.issues.length > 0 && rounds < 3) {
+      rounds += 1
+      version.note = `校验没过，第 ${rounds} 次修正中…`
+      version.text = ""
+      renderAiMessages()
+      raw = await requestChat(
+        target,
+        [
+          ...messages,
+          { role: "assistant", content: raw },
+          { role: "user", content: buildFixPrompt(validation.issues, results) },
+        ],
+        {
+          signal: aiAbort.signal,
+          maxTokens,
+          onReasoning,
+          onFinish: (reason) => {
+            version.finishReason = reason
+          },
+          onDelta: (delta) => {
+            version.text += delta
+            updateStreamText(bubble)
+          },
+        },
+      )
+      const fixed = parseAiSentences(raw)
+      if (fixed.length === 0) break
+      const issueIds = validation.issues.map((issue) => issue.sentenceId)
+      const byId = new Map(results.map((result) => [result.id, result]))
+      fixed.forEach((result, index) => {
+        const id = result.id || issueIds[index] || ""
+        if (id) byId.set(id, { id, text: result.text })
+      })
+      results = [...byId.values()]
+      validation = validateAiResults(store.project, results)
+    }
+    bubble.streaming = false
+    version.parsed = results
+    version.ok = validation.ok
+    version.issues = validation.issues
+    const seconds = ((Date.now() - started) / 1000).toFixed(1)
+    const model = ` · ${target.model}`
+    const thinkCount = [...(version.thinkingText ?? "")].length
+    const thinking = thinkCount > 0 ? ` · 思考 ${thinkCount} 字` : ""
+    const truncated = version.finishReason === "length" ? " · ⚠ 输出被额度截断" : ""
+    if (results.length === 0) {
+      version.note = `没解析到句子，原样显示${model}${thinking}${truncated} · 用时 ${seconds}s`
+    } else {
+      version.note = `✓ ${validation.ok.length} 句通过${
+        validation.issues.length > 0 ? `，${validation.issues.length} 句仍没过` : ""
+      }${rounds > 0 ? ` · 自动修正 ${rounds} 次` : ""}${model}${thinking}${truncated} · 用时 ${seconds}s`
+    }
+    renderAiMessages()
+  } catch (err) {
+    bubble.streaming = false
+    if (aiAbort?.signal.aborted) {
+      version.note = "已停止"
+    } else {
+      bubble.error = err instanceof Error ? err.message : String(err)
+      setStatus(`AI 出错：${bubble.error}`, true)
+    }
+    renderAiMessages()
+  } finally {
+    aiBusy = false
+    aiAbort = null
+    updateAiSendButton()
+  }
+}
+
+function parseList(value: string): string[] {
+  return value
+    .split(/[,，\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function openAiSettings(): void {
+  closeAiPops()
+  const dialog = document.createElement("dialog")
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body"
+
+  const title = document.createElement("strong")
+  title.textContent = "AI 接口设置"
+  const intro = document.createElement("p")
+  intro.textContent =
+    "内置 DeepSeek 和小米 MiMo：填上对应的 API Key 就能用；也能改用自定义接口。Key 只存在这台电脑上。"
+  form.append(title, intro)
+
+  const rows: {
+    provider: AiProvider
+    baseEl: HTMLInputElement
+    modelsEl: HTMLInputElement
+    keyEl: HTMLInputElement
+    resultEl: HTMLElement
+    thinkEl?: HTMLInputElement
+    effortEl?: HTMLInputElement
+  }[] = []
+
+  for (const provider of aiSettings.providers) {
+    const block = document.createElement("div")
+    block.className = "ai-provider"
+    const name = document.createElement("strong")
+    name.textContent = provider.name
+    block.appendChild(name)
+
+    let thinkEl: HTMLInputElement | undefined
+    let effortEl: HTMLInputElement | undefined
+    if (provider.builtin) {
+      const note = document.createElement("div")
+      note.className = "ai-provider-note"
+      note.textContent = provider.supportsEffort
+        ? "思考：开关 + 强度（low / high / max）"
+        : "思考：仅开关（没有强度档）"
+      block.appendChild(note)
+    } else {
+      const thinkLabel = document.createElement("label")
+      thinkLabel.className = "dialog-check"
+      thinkEl = document.createElement("input")
+      thinkEl.type = "checkbox"
+      thinkEl.checked = provider.supportsThinking
+      thinkLabel.append(
+        thinkEl,
+        document.createTextNode("支持 thinking 开关（thinking: enabled / disabled）"),
+      )
+      const effortLabel = document.createElement("label")
+      effortLabel.className = "dialog-check"
+      effortEl = document.createElement("input")
+      effortEl.type = "checkbox"
+      effortEl.checked = provider.supportsEffort
+      effortLabel.append(
+        effortEl,
+        document.createTextNode("支持 reasoning_effort（low / high / max）"),
+      )
+      block.append(thinkLabel, effortLabel)
+    }
+
+    const baseEl = document.createElement("input")
+    baseEl.type = "text"
+    baseEl.placeholder = "接口地址"
+    baseEl.value = provider.baseUrl
+    const baseLabel = document.createElement("label")
+    baseLabel.className = "dialog-field"
+    baseLabel.append(document.createTextNode("地址"), baseEl)
+
+    const modelsEl = document.createElement("input")
+    modelsEl.type = "text"
+    modelsEl.placeholder = "模型，逗号分隔"
+    modelsEl.value = provider.models.join(", ")
+    const modelsLabel = document.createElement("label")
+    modelsLabel.className = "dialog-field"
+    modelsLabel.append(document.createTextNode("模型"), modelsEl)
+
+    const keyEl = document.createElement("input")
+    keyEl.type = "password"
+    keyEl.placeholder = provider.builtin ? "API Key（sk-…）" : "API Key（可留空）"
+    keyEl.value = provider.apiKey
+    const keyLabel = document.createElement("label")
+    keyLabel.className = "dialog-field"
+    keyLabel.append(document.createTextNode("Key"), keyEl)
+
+    const resultEl = document.createElement("p")
+    const testBtn = document.createElement("button")
+    testBtn.type = "button"
+    testBtn.className = "ai-provider-test"
+    testBtn.textContent = "测试"
+    const testRow = document.createElement("div")
+    testRow.className = "ai-provider-testrow"
+    testRow.append(testBtn, resultEl)
+
+    const temperature = aiSettings.temperature
+    testBtn.addEventListener("click", () => {
+      const models = parseList(modelsEl.value)
+      resultEl.textContent = "连接中…"
+      void testAiConnection({
+        baseUrl: baseEl.value,
+        apiKey: keyEl.value,
+        model: models[0] ?? "",
+        effort: "default",
+        auth: provider.auth,
+        tokenParam: provider.tokenParam,
+        supportsThinking: thinkEl ? thinkEl.checked : provider.supportsThinking,
+        supportsEffort: effortEl ? effortEl.checked : provider.supportsEffort,
+        temperature,
+      })
+        .then((message) => {
+          resultEl.textContent = message
+        })
+        .catch((err) => {
+          resultEl.textContent = err instanceof Error ? err.message : String(err)
+        })
+    })
+
+    block.append(baseLabel, modelsLabel, keyLabel, testRow)
+    form.appendChild(block)
+    rows.push({ provider, baseEl, modelsEl, keyEl, resultEl, thinkEl, effortEl })
+  }
+
+  const tempEl = document.createElement("input")
+  tempEl.type = "number"
+  tempEl.min = "0"
+  tempEl.max = "2"
+  tempEl.step = "0.1"
+  tempEl.value = String(aiSettings.temperature)
+  const tempLabel = document.createElement("label")
+  tempLabel.className = "dialog-field"
+  tempLabel.append(document.createTextNode("温度"), tempEl)
+
+  const limitEl = document.createElement("select")
+  const limitOptions: [string, string][] = [
+    ["none", "不限制（交给接口默认）"],
+    ["auto", "自动（按词格估一个保险丝）"],
+  ]
+  for (const [value, label] of limitOptions) {
+    const option = document.createElement("option")
+    option.value = value
+    option.textContent = label
+    limitEl.appendChild(option)
+  }
+  limitEl.value = aiSettings.maxOutput
+  const limitLabel = document.createElement("label")
+  limitLabel.className = "dialog-field"
+  limitLabel.append(document.createTextNode("输出上限"), limitEl)
+
+  const actions = document.createElement("div")
+  actions.className = "dialog-actions"
+  const cancel = document.createElement("button")
+  cancel.type = "submit"
+  cancel.value = "cancel"
+  cancel.textContent = "取消"
+  const ok = document.createElement("button")
+  ok.type = "submit"
+  ok.value = "ok"
+  ok.textContent = "保存"
+  actions.append(cancel, ok)
+
+  form.append(tempLabel, limitLabel, actions)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  dialog.addEventListener("close", () => {
+    dialog.remove()
+    if (dialog.returnValue !== "ok") return
+    const providers = rows.map(
+      ({ provider, baseEl, modelsEl, keyEl, thinkEl, effortEl }) => ({
+        ...provider,
+        baseUrl: baseEl.value.trim(),
+        models: parseList(modelsEl.value),
+        apiKey: keyEl.value.trim(),
+        supportsThinking: thinkEl ? thinkEl.checked : provider.supportsThinking,
+        supportsEffort: effortEl ? effortEl.checked : provider.supportsEffort,
+      }),
+    )
+    let providerId = aiSettings.providerId
+    let model = aiSettings.model
+    const currentProvider = providers.find((item) => item.id === providerId)
+    if (currentProvider && !currentProvider.models.includes(model)) {
+      model = currentProvider.models[0] ?? ""
+    }
+    if (!currentProvider || !model) {
+      const fallback = providers.find(
+        (item) => item.models.length > 0 && item.baseUrl.trim() !== "",
+      )
+      if (fallback) {
+        providerId = fallback.id
+        model = fallback.models[0]
+      }
+    }
+    aiSettings = {
+      providers,
+      providerId,
+      model,
+      effort: aiSettings.effort,
+      temperature: Number(tempEl.value) || 0.8,
+      maxOutput: limitEl.value === "auto" ? "auto" : "none",
+    }
+    saveAiSettings(aiSettings)
+    renderAiChips()
+    setStatus("AI 设置已保存")
+  })
+  dialog.showModal()
+}
+
+function openAiPromptView(): void {
+  const targets = aiTargetIds()
+  const userText = aiInput.value.trim() || "（这里会带上你在输入框里写的要求）"
+  const scopeLabel = AI_SCOPE_OPTIONS.find((option) => option.value === aiScope)?.label ?? "整首"
+  const target = resolveTarget(aiSettings)
+  const dialog = document.createElement("dialog")
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body"
+
+  const title = document.createElement("strong")
+  title.textContent = "发给模型的提示词"
+
+  const hint = document.createElement("p")
+  hint.textContent = `系统提示词每次都一样；范围「${scopeLabel}」只影响下面第二段——标「→ 要写」的句子会让模型生成，其余只作上下文。当前模型：${
+    target ? modelLabel(target.model) : "（还没配）"
+  }`
+
+  const sysTitle = document.createElement("div")
+  sysTitle.className = "ai-provider-note"
+  sysTitle.textContent = "① 系统提示词（固定）"
+  const sysArea = document.createElement("textarea")
+  sysArea.readOnly = true
+  sysArea.className = "ai-pre"
+  sysArea.value = buildSystemPrompt()
+
+  const userTitle = document.createElement("div")
+  userTitle.className = "ai-provider-note"
+  userTitle.textContent = "② 本次请求（附在你说的话后面）"
+  const userArea = document.createElement("textarea")
+  userArea.readOnly = true
+  userArea.className = "ai-pre"
+  userArea.value = buildBrief(store.project, targets, userText)
+
+  const actions = document.createElement("div")
+  actions.className = "dialog-actions"
+  const close = document.createElement("button")
+  close.type = "submit"
+  close.value = "ok"
+  close.textContent = "知道了"
+  actions.appendChild(close)
+
+  form.append(title, hint, sysTitle, sysArea, userTitle, userArea, actions)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  dialog.addEventListener("close", () => dialog.remove())
+  dialog.showModal()
+}
+
+function initAiPanel(): void {
+  if (!isDesktop()) {
+    btnAi.disabled = true
+    btnAi.title = "AI 填词仅桌面版可用（网页版暂不支持）"
+    btnAi.setAttribute("aria-label", btnAi.title)
+    return
+  }
+  initAiResizer()
+  renderAiChips()
+  updateAiSendButton()
+  updateAiHint()
+  btnAi.addEventListener("click", toggleAiPanel)
+  document.querySelector("#btn-ai-close")?.addEventListener("click", closeAiPanel)
+  document.querySelector("#btn-ai-settings")?.addEventListener("click", openAiSettings)
+  document.querySelector("#btn-ai-prompt")?.addEventListener("click", openAiPromptView)
+  aiModelChip.addEventListener("click", openModelPop)
+  aiEffortChip.addEventListener("click", openEffortPop)
+  document.querySelector("#btn-ai-clear")?.addEventListener("click", () => {
+    aiBubbles = []
+    renderAiMessages()
+    setStatus("AI 对话已清空")
+  })
+  document.querySelector("#btn-ai-write-all")?.addEventListener("click", () => {
+    setAiScope("all")
+    void sendAi(aiInput.value.trim() || "按词格写完整首歌词。")
+  })
+  aiScopeChip.addEventListener("click", openScopePop)
+  btnAiSend.addEventListener("click", () => {
+    if (aiBusy) {
+      aiAbort?.abort()
+      return
+    }
+    void sendAi(aiInput.value)
+  })
+  aiInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return
+    event.preventDefault()
+    if (!aiBusy) void sendAi(aiInput.value)
+  })
+  if (localStorage.getItem(AI_OPEN_KEY) === "1") openAiPanel()
 }
 
 function refreshThemeButton(): void {
@@ -2177,7 +3836,7 @@ function bindToolbar(): void {
     if (sectionId) addSentenceToSection(sectionId)
   })
 
-  document.querySelector("#btn-import-lyrics")?.addEventListener("click", openImportDialog)
+  document.querySelector("#btn-import-lyrics")?.addEventListener("click", () => openImportDialog())
   newDocBtn.addEventListener("click", addDoc)
   creditsBtn.addEventListener("click", openCreditsDialog)
   sourceBtn.addEventListener("click", () => {
@@ -2185,7 +3844,9 @@ function bindToolbar(): void {
     else closeSourcePanel()
   })
   sourceCloseBtn.addEventListener("click", closeSourcePanel)
-  statusPathEl.title = "点这里保存草稿备份（全部歌词文件）"
+  statusPathEl.title = isDesktop()
+    ? "点这里保存草稿备份（全部歌词文件）"
+    : "点这里把全部歌词文件的草稿备份下载下来"
   statusPathEl.addEventListener("click", () => void exportDraftsBackup())
   reflowBtn.addEventListener("click", () => {
     store.pushUndo()
@@ -2207,6 +3868,7 @@ function bindToolbar(): void {
   setupMenu("#btn-export", "#export-menu", (id) => {
     if (id === "menu-export-lyrics") void exportText()
     else if (id === "menu-export-grid") void exportGridText()
+    else if (id === "menu-export-midi") void exportLyricMidi()
   })
   setupMenu("#btn-copy", "#copy-menu", (id) => {
     if (id === "menu-copy-lyrics") void copyLyrics()
@@ -2293,6 +3955,10 @@ onAutosaveWrite((s) => {
 bindToolbar()
 initSidebarResizer()
 bindSelection()
+bindDrop()
+initAiPanel()
+window.addEventListener("scroll", updateScrollProgress, { passive: true })
+window.addEventListener("resize", updateScrollProgress)
 render()
 focusCellInput()
 

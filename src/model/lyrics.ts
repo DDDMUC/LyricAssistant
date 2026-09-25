@@ -1,5 +1,6 @@
 import { resizeToPattern } from "./grid"
 import { contentChars } from "./pattern"
+import { isHanChar } from "./rhyme"
 
 export interface ParsedLine {
   pattern: number[]
@@ -279,9 +280,12 @@ function splitLine(line: string): { pattern: number[]; cells: string[] } | null 
       cells.push(...new Array<string>(size).fill(""))
       continue
     }
-    const chars = contentChars(token).map((char) =>
-      PLACEHOLDER_CHAR_RE.test(char) ? "" : char,
-    )
+    const chars: string[] = []
+    for (const char of contentChars(token)) {
+      if (PLACEHOLDER_CHAR_RE.test(char)) chars.push("")
+      else if (isHanChar(char)) chars.push(char)
+      // 汉字以外（英文、拼音、数字……）一律跳过，不占格
+    }
     if (chars.length === 0) continue
     pattern.push(chars.length)
     cells.push(...chars)
