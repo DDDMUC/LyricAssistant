@@ -22,9 +22,11 @@
   --grid-line: rgba(128, 112, 88, 0.22);
   --cell-empty-bg: rgba(255, 254, 251, 0.5);
   --select-bg: rgba(96, 132, 196, 0.22);
+  --find-bg: rgba(192, 73, 42, 0.14);
+  --find-bg-current: rgba(192, 73, 42, 0.34);
   --topbar-bg: rgba(246, 241, 230, 0.92);
   --shadow-dialog: rgba(60, 45, 30, 0.25);
-  --sidebar-width: 188px;
+  --sidebar-width: 240px;
   --statusbar-height: 35px;
 
   font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Inter, sans-serif;
@@ -62,6 +64,8 @@ html[data-theme="dark"] {
   --grid-line: rgba(214, 200, 175, 0.16);
   --cell-empty-bg: rgba(42, 37, 31, 0.45);
   --select-bg: rgba(120, 160, 220, 0.3);
+  --find-bg: rgba(224, 118, 79, 0.18);
+  --find-bg-current: rgba(224, 118, 79, 0.38);
   --topbar-bg: rgba(33, 29, 24, 0.94);
   --shadow-dialog: rgba(0, 0, 0, 0.5);
   color-scheme: dark;
@@ -154,7 +158,7 @@ select {
 }
 
 .sidebar {
-  width: var(--sidebar-width, 188px);
+  width: var(--sidebar-width, 240px);
   flex-shrink: 0;
   position: sticky;
   top: 28px;
@@ -194,7 +198,7 @@ html.sidebar-collapsed .sidebar-resizer {
   display: none;
 }
 
-html.sidebar-collapsed .main-col {
+html.sidebar-collapsed .workbench {
   border-left-color: transparent;
 }
 
@@ -252,7 +256,7 @@ html:not(.sidebar-collapsed) #btn-sidebar-expand {
 .doc-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
 }
 
 .doc-item {
@@ -343,7 +347,7 @@ html:not(.sidebar-collapsed) #btn-sidebar-expand {
   background: var(--accent-soft);
 }
 
-.main-col {
+.workbench {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -351,18 +355,33 @@ html:not(.sidebar-collapsed) #btn-sidebar-expand {
   border-left: 1px solid var(--border);
 }
 
+.workbench-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.main-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* AI 面板拉宽盖过来时，作词区内容不往外渗 */
+  overflow-x: clip;
+}
+
 .source-panel {
   width: 280px;
   flex-shrink: 0;
   align-self: flex-start;
   position: sticky;
-  top: 28px;
+  top: calc(28px + var(--topbar-h, 64px));
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 10px 8px 12px;
   border-left: 1px solid var(--border);
-  height: calc(100vh - 28px - var(--statusbar-height, 35px));
+  height: calc(100vh - 28px - var(--topbar-h, 64px) - var(--statusbar-height, 35px));
 }
 
 .source-panel[hidden] {
@@ -512,7 +531,7 @@ button:disabled {
   flex-wrap: wrap;
 }
 
-.topbar #btn-clear-all {
+.topbar #btn-ai {
   margin-left: auto;
 }
 
@@ -1023,6 +1042,119 @@ html[data-theme="dark"] .rhyme-badge.locked {
   border-color: var(--accent);
 }
 
+.cell.find-hit,
+.cell-input.find-hit {
+  background-color: var(--find-bg);
+}
+
+.cell.find-hit.current,
+.cell-input.find-hit.current {
+  background-color: var(--find-bg-current);
+  border-color: var(--accent);
+}
+
+.find-panel {
+  position: fixed;
+  top: 56px;
+  right: 20px;
+  z-index: 70;
+  width: 400px;
+  max-width: calc(100vw - 40px);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.16);
+  padding: 10px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.find-panel[hidden] {
+  display: none;
+}
+
+.find-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.find-label {
+  flex: none;
+  width: 32px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.find-row input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 6px 9px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--field-bg);
+}
+
+.find-row input:focus {
+  outline: none;
+  background: var(--bg-input);
+  border-color: var(--accent);
+}
+
+.find-panel button {
+  flex: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--field-bg);
+}
+
+.find-panel button:hover {
+  border-color: var(--border);
+}
+
+.find-panel button.primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.find-panel button.primary:hover {
+  filter: brightness(1.08);
+}
+
+.find-panel button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.find-prev,
+.find-next,
+.find-close {
+  min-width: 26px;
+  padding: 5px 6px;
+}
+
+.find-count {
+  flex: none;
+  min-width: 44px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.find-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  opacity: 0.85;
+}
+
 .cell-input {
   width: 54px;
   height: 54px;
@@ -1331,14 +1463,14 @@ dialog::backdrop {
 }
 
 .ai-panel {
-  width: var(--ai-width, 320px);
+  width: var(--ai-width, 400px);
   flex-shrink: 0;
   align-self: flex-start;
   position: sticky;
-  top: 28px;
+  top: calc(28px + var(--topbar-h, 64px));
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 28px - var(--statusbar-height, 35px));
+  height: calc(100vh - 28px - var(--topbar-h, 64px) - var(--statusbar-height, 35px));
   border-left: 1px solid var(--border);
   background: var(--bg);
 }
@@ -1364,6 +1496,20 @@ dialog::backdrop {
   color: var(--text-secondary);
 }
 
+.ai-head button svg {
+  display: block;
+}
+
+/* 展开按钮在最左，把「提示词」顶到右边 */
+.ai-head #btn-ai-expand {
+  margin-right: auto;
+}
+
+/* 图标转 90°：从副对角线（↗↙）变成正对角线（↖↘） */
+.ai-head #btn-ai-expand svg {
+  transform: rotate(90deg);
+}
+
 .ai-messages {
   flex: 1;
   overflow-y: auto;
@@ -1372,6 +1518,240 @@ dialog::backdrop {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+/* 工作区：歌词做组、每组一张卡片 */
+.work-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 2px 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.work-head span {
+  flex: 1;
+}
+
+.work-head button {
+  flex: none;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.work-head button:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.work-head button svg {
+  display: block;
+}
+
+/* 每首歌一张卡片（组头 = 歌词行） */
+.doc-card {
+  padding: 3px;
+}
+
+.doc-folder {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+/* 组头小图标：平时文件夹，悬停/折叠时换成三角（同一个位置） */
+.doc-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.doc-toggle .doc-folder,
+.doc-toggle .doc-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.doc-toggle .doc-caret {
+  display: none;
+}
+
+.doc-item:hover .doc-toggle .doc-folder,
+.doc-toggle.collapsed .doc-folder {
+  display: none;
+}
+
+.doc-item:hover .doc-toggle .doc-caret,
+.doc-toggle.collapsed .doc-caret {
+  display: inline-flex;
+}
+
+.doc-toggle .doc-caret svg {
+  transform: rotate(0deg);
+}
+
+.doc-toggle:not(.collapsed) .doc-caret svg {
+  transform: rotate(90deg);
+}
+
+.doc-toggle:hover {
+  color: var(--text);
+}
+
+.doc-item.static {
+  cursor: default;
+}
+
+.doc-item.static:hover {
+  background: transparent;
+}
+
+.convo-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0 3px;
+}
+
+.ai-convo-group .folder {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.ai-convo-group .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-convo-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 3px;
+  background: transparent;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.ai-convo-group .caret {
+  font-size: 12px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.ai-convo-group.collapsed .caret {
+  transform: rotate(-90deg);
+}
+
+.ai-convo-group .count {
+  margin-left: auto;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+.ai-convo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 27px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.ai-convo-row:hover {
+  background: var(--bg-hover);
+}
+
+.ai-convo-row.active {
+  background: var(--select-bg);
+}
+
+.ai-convo-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-convo-time {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ai-convo-del {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0;
+}
+
+.ai-convo-row:hover .ai-convo-del {
+  opacity: 1;
+}
+
+.ai-convo-del:hover {
+  color: var(--danger);
+  background: var(--bg-hover);
+}
+
+.ai-convo-more {
+  align-self: flex-start;
+  padding: 3px 8px 3px 27px;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.ai-convo-more:hover {
+  color: var(--text);
+  background: transparent;
+}
+
+.ai-convo-rename {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 1px 6px;
+  outline: none;
+}
+
+/* 一轮对话：输入行 + 助手行 */
+.ai-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .ai-msg {
@@ -1384,10 +1764,94 @@ dialog::backdrop {
 
 .ai-msg.user {
   align-self: flex-end;
-  background: var(--accent-bg);
-  border: 1px solid var(--accent-soft);
-  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  white-space: normal;
+}
+
+/* 用户消息：气泡直接显示全文（照参考，没有编号圈） */
+.ai-user-text {
+  max-width: 78%;
+  box-sizing: border-box;
+  background: var(--bg-soft);
+  border-radius: 14px;
   padding: 7px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.ai-user-edit-box {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1.5px solid var(--accent);
+  border-radius: 12px;
+  padding: 8px 10px 6px;
+  background: var(--bg-input);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ai-user-edit {
+  width: 100%;
+  box-sizing: border-box;
+  border: none;
+  background: transparent;
+  resize: none;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  min-height: 24px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.ai-user-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-user-edit-actions button {
+  border: none;
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.ai-edit-cancel {
+  background: var(--field-bg);
+  color: var(--text);
+}
+
+.ai-edit-cancel:hover {
+  background: var(--field-bg-hover);
+}
+
+.ai-edit-send {
+  background: var(--accent);
+  color: #fff;
+}
+
+.ai-edit-send:hover {
+  filter: brightness(1.08);
+}
+
+.ai-msg.user .ai-actions {
+  margin: 0;
+  justify-content: flex-end;
 }
 
 .ai-msg.assistant {
@@ -1488,7 +1952,7 @@ dialog::backdrop {
 }
 
 .ai-think-toggle.open .caret {
-  transform: rotate(90deg);
+  transform: rotate(180deg);
 }
 
 .ai-think-toggle:hover {
@@ -1514,10 +1978,10 @@ dialog::backdrop {
 
 .ai-actions {
   display: flex;
-  gap: 2px;
+  gap: 4px;
   align-items: center;
   flex-wrap: wrap;
-  margin: 10px 0 0 -6px;
+  margin: 8px 0 0 -6px;
 }
 
 .ai-actions button {
@@ -1539,26 +2003,35 @@ dialog::backdrop {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   padding: 0;
-  color: var(--text-muted);
+  border-radius: 8px;
+  color: var(--text-secondary);
+}
+
+.ai-actions .ai-icon-btn:hover {
+  color: var(--text);
+  background: var(--bg-hover);
 }
 
 .ai-versions {
   display: inline-flex;
   align-items: center;
-  gap: 1px;
-  margin: 0 2px;
+  gap: 0;
+  margin: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 4px;
 }
 
 .ai-versions button {
   width: 20px;
   height: 20px;
   padding: 0;
-  border-radius: 6px;
+  border-radius: 999px;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1;
 }
 
@@ -1641,7 +2114,15 @@ dialog::backdrop {
 
 .ai-chip:hover {
   background: var(--bg-hover);
-  color: var(--text);
+}
+
+.ai-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ai-chip:disabled:hover {
+  background: transparent;
 }
 
 #ai-model-chip {
@@ -1767,6 +2248,20 @@ dialog::backdrop {
   font-size: 12px;
   padding: 0.2em 0.7em;
   flex-shrink: 0;
+}
+
+.dialog-field .dialog-inline-btn {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--field-bg);
+}
+
+.dialog-field .dialog-inline-btn:hover {
+  background: var(--field-bg-hover);
 }
 
 #btn-ai-send {

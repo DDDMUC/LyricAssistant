@@ -150,6 +150,22 @@ describe("midiToSections", () => {
     expect(sections[0].lines[0].cells).toEqual(["一", "夜"])
   })
 
+  it("Lyric 里的标点 / 符号不占格", () => {
+    const events = [
+      meta(0, 0x05, text("一，")),
+      on(0, 60),
+      off(480, 60),
+      meta(0, 0x05, text("夜！")),
+      on(0, 62),
+      off(480, 62),
+      meta(240, 0x2f, []),
+    ]
+    const file = parseMidi(build([events]))
+    const sections = midiToSections(file)
+    expect(sections[0].lines[0].pattern).toEqual([2])
+    expect(sections[0].lines[0].cells).toEqual(["一", "夜"])
+  })
+
   it("鼓轨（第 10 通道）不计入", () => {
     const file = parseMidi(
       build([

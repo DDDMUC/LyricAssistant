@@ -166,6 +166,11 @@ export function isHanChar(char: string): boolean {
   return CJK.test(char)
 }
 
+/** 只留汉字：标点、符号、英文、数字一律丢掉（所有写入格子的入口都该先过这里） */
+export function hanOnly(text: string): string {
+  return [...text].filter((char) => isHanChar(char)).join("")
+}
+
 export function rhymeHue(key: string): number {
   const index = RHYME_GROUPS.findIndex((group) => group.key === key)
   if (index < 0) return 210

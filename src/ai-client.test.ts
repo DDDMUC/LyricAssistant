@@ -5,6 +5,8 @@ vi.mock("@tauri-apps/plugin-http", () => ({ fetch: fetchMock }))
 
 import {
   defaultAiSettings,
+  effortLevelsFor,
+  effortOf,
   loadAiSettings,
   maxTokensFor,
   modelLabel,
@@ -13,6 +15,8 @@ import {
   saveAiSettings,
   supportsEffortFor,
   testAiConnection,
+  withEffort,
+  type EffortLevel,
 } from "./ai-client"
 
 beforeEach(() => {
@@ -30,7 +34,8 @@ describe("AI 设置", () => {
     ])
     expect(settings.providerId).toBe("deepseek")
     expect(settings.model).toBe("deepseek-flash")
-    expect(settings.effort).toBe("default")
+    expect(settings.efforts).toEqual({})
+    expect(effortOf(settings)).toBe("default")
     expect(settings.maxOutput).toBe("none")
 
     const deepseek = settings.providers[0]
@@ -42,7 +47,11 @@ describe("AI 设置", () => {
 
     const mimo = settings.providers[1]
     expect(mimo.baseUrl).toBe("https://api.xiaomimimo.com/v1")
-    expect(mimo.models).toEqual(["mimo-v2.6-flash", "mimo-v2.6-pro"])
+    expect(mimo.models).toEqual([
+      "mimo-v2.6-flash",
+      "mimo-v2.6-pro",
+      "mimo-v2.6-pro-ultraspeed",
+    ])
     expect(mimo.auth).toBe("both")
     expect(mimo.tokenParam).toBe("max_completion_tokens")
     expect(mimo.supportsEffort).toBe(false)
@@ -53,7 +62,7 @@ describe("AI 设置", () => {
     settings.providers[0].apiKey = "sk-test"
     settings.providers[0].models = ["deepseek-flash", "my-model"]
     settings.model = "my-model"
-    settings.effort = "max"
+    settings.efforts["my-model"] = "max"
     settings.maxOutput = "auto"
     saveAiSettings(settings)
 
@@ -61,7 +70,7 @@ describe("AI 设置", () => {
     expect(loaded.providers[0].apiKey).toBe("sk-test")
     expect(loaded.providers[0].models).toEqual(["deepseek-flash", "my-model"])
     expect(loaded.model).toBe("my-model")
-    expect(loaded.effort).toBe("max")
+    expect(effortOf(loaded)).toBe("max")
     expect(loaded.maxOutput).toBe("auto")
 
     const raw = JSON.parse(localStorage.getItem("cige-grid-ai") ?? "{}") as Record<
@@ -72,9 +81,9 @@ describe("AI 设置", () => {
     localStorage.setItem("cige-grid-ai", JSON.stringify(raw))
     expect(loadAiSettings().model).toBe("deepseek-flash")
 
-    raw.effort = "ultra"
+    raw.efforts = { "deepseek-flash": "ultra" }
     localStorage.setItem("cige-grid-ai", JSON.stringify(raw))
-    expect(loadAiSettings().effort).toBe("default")
+    expect(effortOf(loadAiSettings())).toBe("default")
 
     raw.providerId = "nope"
     localStorage.setItem("cige-grid-ai", JSON.stringify(raw))
@@ -87,6 +96,26 @@ describe("AI 设置", () => {
     expect(settings.providerId).toBe("deepseek")
     expect(settings.providers[0].apiKey).toBe("")
     expect(settings.model).toBe("deepseek-flash")
+  })
+
+  it("推理等级按模型各记各的；老格式（单个 effort）自动迁移", () => {
+    let settings = defaultAiSettings()
+    settings = withEffort(settings, "max")
+    expect(effortOf(settings)).toBe("max")
+
+    settings = { ...settings, model: "mimo-v2.6-pro" }
+    expect(effortOf(settings)).toBe("default")
+    settings = withEffort(settings, "none")
+    expect(effortOf(settings)).toBe("none")
+
+    settings = { ...settings, model: "deepseek-flash" }
+    expect(effortOf(settings)).toBe("max")
+
+    localStorage.setItem(
+      "cige-grid-ai",
+      JSON.stringify({ model: "deepseek-flash", effort: "high", providers: [] }),
+    )
+    expect(effortOf(loadAiSettings())).toBe("high")
   })
 })
 
@@ -105,11 +134,11 @@ describe("resolveTarget", () => {
     const settings = defaultAiSettings()
     settings.providerId = "mimo"
     settings.model = "mimo-v2.6-pro"
-    settings.effort = "high"
+    settings.efforts["mimo-v2.6-pro"] = "high"
     const mimo = resolveTarget(settings)
     expect(mimo?.auth).toBe("both")
     expect(mimo?.tokenParam).toBe("max_completion_tokens")
-    expect(mimo?.supportsEffort).toBe(false)
+    expect(mimo?.supportsEffort).toBe(true)
     expect(mimo?.effort).toBe("high")
     expect(mimo?.model).toBe("mimo-v2.6-pro")
   })
@@ -126,11 +155,11 @@ function sseResponse(chunks: string[]): Response {
   return new Response(body, { status: 200 })
 }
 
-function targetOf(providerId: string, model: string, effort: "default" | "none" | "low" | "high" | "max") {
+function targetOf(providerId: string, model: string, effort: EffortLevel) {
   const settings = defaultAiSettings()
   settings.providerId = providerId
   settings.model = model
-  settings.effort = effort
+  settings.efforts[model] = effort
   settings.providers.forEach((provider) => {
     provider.apiKey = `sk-${provider.id}`
   })
@@ -171,7 +200,7 @@ describe("requestChat", () => {
     expect(init.headers["api-key"]).toBeUndefined()
   })
 
-  it("MiMo：双鉴权头 + max_completion_tokens，不发 reasoning_effort", async () => {
+  it("MiMo：双鉴权头 + max_completion_tokens；实测支持的档位照发，非法档位不发", async () => {
     fetchMock.mockResolvedValue(sseResponse(["data: [DONE]\n\n"]))
     await requestChat(
       targetOf("mimo", "mimo-v2.6-pro", "high"),
@@ -184,9 +213,32 @@ describe("requestChat", () => {
     expect(body.max_completion_tokens).toBe(777)
     expect(body.max_tokens).toBeUndefined()
     expect(body.thinking).toEqual({ type: "enabled" })
-    expect(body.reasoning_effort).toBeUndefined()
+    expect(body.reasoning_effort).toBe("high")
     expect(init.headers.Authorization).toBe("Bearer sk-mimo")
     expect(init.headers["api-key"]).toBe("sk-mimo")
+
+    // 老数据里的 xhigh（官方别名）读回时迁移成 high
+    localStorage.setItem(
+      "cige-grid-ai",
+      JSON.stringify({
+        providerId: "mimo",
+        model: "mimo-v2.6-pro",
+        efforts: { "mimo-v2.6-pro": "xhigh" },
+        providers: [],
+      }),
+    )
+    expect(effortOf(loadAiSettings())).toBe("high")
+
+    // max 不是 MiMo 合法值（会被接口 400）——夹回 default，什么都不发
+    fetchMock.mockResolvedValue(sseResponse(["data: [DONE]\n\n"]))
+    await requestChat(targetOf("mimo", "mimo-v2.6-pro", "max"), [{ role: "user", content: "hi" }], {
+      onDelta: () => {},
+    })
+    const maxBody = JSON.parse(
+      (fetchMock.mock.calls[1] as [string, { body: string }])[1].body,
+    ) as Record<string, unknown>
+    expect(maxBody.reasoning_effort).toBeUndefined()
+    expect(maxBody.thinking).toBeUndefined()
   })
 
   it("Default 等级：不塞 thinking / reasoning_effort；None 只关思考", async () => {
@@ -281,12 +333,14 @@ describe("模型能力（不是写死在 UI 上）", () => {
     expect(modelLabel("deepseek-flash")).toBe("DeepSeek V4.1 Flash")
     expect(modelLabel("deepseek-v4-pro")).toBe("DeepSeek V4 Pro")
     expect(modelLabel("mimo-v2.6-pro")).toBe("MiMo V2.6 Pro")
+    expect(modelLabel("mimo-v2.6-pro-ultraspeed")).toBe("MiMo V2.6 Pro UltraSpeed")
     expect(modelLabel("my-own-model")).toBe("my-own-model")
   })
 
   it("已知模型覆盖 provider 的强度开关，未知模型按 provider 走", () => {
     expect(supportsEffortFor("deepseek-flash", false)).toBe(true)
-    expect(supportsEffortFor("mimo-v2.6-pro", true)).toBe(false)
+    expect(supportsEffortFor("mimo-v2.6-pro", true)).toBe(true)
+    expect(supportsEffortFor("mimo-v2.6-pro-ultraspeed", true)).toBe(true)
     expect(supportsEffortFor("brand-new-model", true)).toBe(true)
     expect(supportsEffortFor("brand-new-model", false)).toBe(false)
 
@@ -306,7 +360,7 @@ describe("模型能力（不是写死在 UI 上）", () => {
     custom.supportsEffort = false
     settings.providerId = "custom"
     settings.model = "whatever"
-    settings.effort = "max"
+    settings.efforts["whatever"] = "max"
     fetchMock.mockResolvedValue(sseResponse(["data: [DONE]\n\n"]))
     await requestChat(resolveTarget(settings)!, [{ role: "user", content: "hi" }], {
       onDelta: () => {},
@@ -318,6 +372,25 @@ describe("模型能力（不是写死在 UI 上）", () => {
     expect(body.reasoning_effort).toBeUndefined()
   })
 
+  it("每个模型的合法档位按接口实测给（MiMo 最高 high、没有 max，多了 medium）", () => {
+    expect(effortLevelsFor("mimo-v2.6-pro", true).map((level) => level.value)).toEqual([
+      "default",
+      "none",
+      "low",
+      "medium",
+      "high",
+    ])
+    expect(effortLevelsFor("deepseek-flash", true).map((level) => level.value)).toEqual([
+      "default",
+      "none",
+      "low",
+      "high",
+      "max",
+    ])
+    expect(effortLevelsFor("brand-new-model", false)).toEqual([])
+    expect(effortLevelsFor("brand-new-model", true).map((level) => level.value)).toContain("medium")
+  })
+
   it("自定义接口：勾了 thinking 就只发开关", async () => {
     const settings = defaultAiSettings()
     const custom = settings.providers.find((provider) => provider.id === "custom")!
@@ -327,7 +400,7 @@ describe("模型能力（不是写死在 UI 上）", () => {
     custom.supportsEffort = false
     settings.providerId = "custom"
     settings.model = "whatever"
-    settings.effort = "low"
+    settings.efforts["whatever"] = "low"
     fetchMock.mockResolvedValue(sseResponse(["data: [DONE]\n\n"]))
     await requestChat(resolveTarget(settings)!, [{ role: "user", content: "hi" }], {
       onDelta: () => {},

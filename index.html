@@ -26,6 +26,16 @@
           </button>
         </div>
         <button id="btn-new-doc" class="new-doc" type="button" title="新建歌词文件" aria-label="新建歌词文件">＋ 新建歌词</button>
+        <div class="work-head">
+          <span>工作区</span>
+          <button id="btn-new-convo" type="button" title="新建对话" aria-label="新建对话">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" />
+              <path d="M8 12h8" />
+              <path d="M12 8v8" />
+            </svg>
+          </button>
+        </div>
         <div id="doc-list" class="doc-list"></div>
       </aside>
       <div
@@ -37,7 +47,7 @@
         title="拖动调整宽度（双击恢复默认）"
       ></div>
 
-      <div class="main-col">
+      <div class="workbench">
         <header class="topbar">
           <button id="btn-sidebar-expand" type="button" title="展开侧边栏" aria-label="展开侧边栏">
             <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
@@ -57,7 +67,6 @@
             </label>
             <button id="btn-import-lyrics" type="button">导入</button>
             <button id="btn-open" type="button">打开工程</button>
-            <button id="btn-ai" type="button" aria-expanded="false">AI 填词</button>
             <div id="editor-actions" class="editor-actions">
               <button id="btn-add-sentence" type="button">新句</button>
               <button id="btn-reflow" type="button" hidden>整理溢出</button>
@@ -78,16 +87,20 @@
                   <button id="menu-copy-grid" type="button">词格</button>
                 </div>
               </span>
+              <button id="btn-find" type="button" title="查找 / 替换（Cmd/Ctrl+F）">查找</button>
               <button id="btn-undo" type="button">撤销</button>
               <button id="btn-redo" type="button">重做</button>
+              <button id="btn-clear-all" class="danger" type="button" title="清空所有格子（韵辙、歌名、备注保留，可撤销）">清空</button>
             </div>
           </div>
-          <button id="btn-clear-all" class="danger" type="button" title="清空所有格子（韵辙、歌名、备注保留，可撤销）">清空</button>
+          <button id="btn-ai" type="button" aria-expanded="false">AI</button>
           <div id="scroll-progress" class="scroll-progress" aria-hidden="true"></div>
         </header>
 
-        <main id="sentences" class="sentences"></main>
-      </div>
+        <div class="workbench-body">
+          <div class="main-col">
+            <main id="sentences" class="sentences"></main>
+          </div>
       <aside id="source-panel" class="source-panel" hidden>
         <div class="source-head">
           <span>导入原文（核对用）</span>
@@ -98,11 +111,15 @@
       <div id="ai-resizer" class="ai-resizer" role="separator" aria-orientation="vertical" aria-label="调整 AI 面板宽度" title="拖动调整宽度（双击恢复默认）" hidden></div>
       <aside id="ai-panel" class="ai-panel" hidden>
         <div class="ai-head">
-          <span class="ai-title">AI 填词</span>
-          <button id="btn-ai-prompt" type="button" title="看发给模型的提示词">提示词</button>
-          <button id="btn-ai-settings" type="button" title="接口设置">⚙</button>
-          <button id="btn-ai-clear" type="button" title="清空对话">清空</button>
-          <button id="btn-ai-close" type="button" title="关闭" aria-label="关闭">✕</button>
+          <button id="btn-ai-expand" type="button" title="铺满工作区" aria-label="铺满工作区">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="15 3 21 3 21 9" />
+              <polyline points="9 21 3 21 3 15" />
+              <line x1="21" y1="3" x2="14.5" y2="9.5" />
+              <line x1="3" y1="21" x2="9.5" y2="14.5" />
+            </svg>
+          </button>
+          <button id="btn-ai-prompt" type="button" title="看发给模型的提示词">系统提示词</button>
         </div>
         <div id="ai-messages" class="ai-messages"></div>
         <div class="ai-tools">
@@ -119,6 +136,8 @@
         </div>
         <div id="ai-hint" class="ai-hint">已自动附上词格</div>
       </aside>
+        </div>
+      </div>
     </div>
 
     <footer class="statusbar">

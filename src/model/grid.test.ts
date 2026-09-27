@@ -4,8 +4,10 @@ import {
   cellsFromPattern,
   clearCell,
   flatIndex,
+  insertCells,
   locate,
   removeCellAt,
+  removeCellsAt,
   resizeToPattern,
   shiftSentence,
   splitOrMergePattern,
@@ -170,5 +172,36 @@ describe("resizeToPattern", () => {
 describe("cellsFromPattern", () => {
   it("生成空格", () => {
     expect(cellsFromPattern([2, 3])).toEqual(["", "", "", "", ""])
+  })
+})
+
+describe("insertCells / removeCellsAt（句中插删）", () => {
+  it("插入：后面的格子右移，新格子归插入点前一个格子的分组", () => {
+    const mid = insertCells([2, 2], ["a", "b", "c", "d"], 2, 2)
+    expect(mid.pattern).toEqual([4, 2])
+    expect(mid.cells).toEqual(["a", "b", "", "", "c", "d"])
+    const end = insertCells([2, 2], ["a", "b", "c", "d"], 4, 1)
+    expect(end.pattern).toEqual([2, 3])
+    expect(end.cells).toEqual(["a", "b", "c", "d", ""])
+    const head = insertCells([2, 2], ["a", "b", "c", "d"], 0, 1)
+    expect(head.pattern).toEqual([3, 2])
+    expect(head.cells).toEqual(["", "a", "b", "c", "d"])
+  })
+
+  it("删除：后面的格子左移，分组减 1、减到 0 的分组消失", () => {
+    const res = removeCellsAt([2, 2, 3], ["a", "b", "c", "d", "e", "f", "g"], 4, 3)
+    expect(res?.pattern).toEqual([2, 2])
+    expect(res?.cells).toEqual(["a", "b", "c", "d"])
+  })
+
+  it("跨分组删除时各组分别记账", () => {
+    const res = removeCellsAt([2, 2], ["a", "b", "c", "d"], 1, 2)
+    expect(res?.pattern).toEqual([1, 1])
+    expect(res?.cells).toEqual(["a", "d"])
+  })
+
+  it("不允许把整句删空", () => {
+    expect(removeCellsAt([1, 1], ["a", "b"], 0, 2)).toBeNull()
+    expect(removeCellsAt([3], ["a", "b", "c"], 2, 5)?.pattern).toEqual([2])
   })
 })
