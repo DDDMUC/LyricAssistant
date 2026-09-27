@@ -1,6 +1,7 @@
 import type { Alternative, Cursor, Project, ProjectStats, Section, Sentence } from "./model/types"
 import { cellsFromPattern, resizeToPattern } from "./model/grid"
 import { totalCells } from "./model/pattern"
+import { hanOnly } from "./model/rhyme"
 
 let idCounter = 0
 
@@ -187,13 +188,15 @@ export function parseProject(raw: string): Project {
     }
     for (const sentence of legacy.sentences) normalizeSentence(sentence)
     const section = createSection("歌词", legacy.sentences)
-    return {
+    const project: Project = {
       version: 2,
       title: legacy.title || "未命名",
       sections: [section],
       updatedAt: legacy.updatedAt || new Date().toISOString(),
       credits: [],
     }
+    sanitizeProject(project)
+    return project
   }
 
   const project = data as Project
@@ -213,7 +216,31 @@ export function parseProject(raw: string): Project {
   project.credits = Array.isArray(project.credits)
     ? project.credits.filter((credit): credit is string => typeof credit === "string" && credit.trim() !== "")
     : []
+  sanitizeProject(project)
   return project
+}
+
+/** 老数据兜底：所有备选的格子和溢出里只留汉字（早年版本可能混进过标点、符号、英文） */
+export function sanitizeProject(project: Project): number {
+  let cleaned = 0
+  for (const section of project.sections) {
+    for (const sentence of section.sentences) {
+      for (const alt of sentence.alternatives) {
+        alt.cells = alt.cells.map((cell) => {
+          const han = hanOnly(cell)
+          if (han !== cell) cleaned += 1
+          return han
+        })
+      }
+      const over = sentence.overflow ?? ""
+      const han = hanOnly(over)
+      if (han !== over) {
+        cleaned += 1
+        sentence.overflow = han
+      }
+    }
+  }
+  return cleaned
 }
 
 export function cellsToLine(cells: string[], pattern: number[], fill = "X"): string {

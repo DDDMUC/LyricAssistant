@@ -1,3 +1,5 @@
+import { hanOnly } from "./rhyme"
+
 export interface MidiNote {
   midi: number
   start: number
@@ -354,9 +356,7 @@ export function midiToSections(file: MidiFile, options: MidiImportOptions = {}):
 
   const charQueue: string[] = []
   for (const event of track.lyrics.slice().sort((a, b) => a.tick - b.tick)) {
-    for (const char of event.text) {
-      if (char.trim() !== "") charQueue.push(char)
-    }
+    for (const char of hanOnly(event.text)) charQueue.push(char)
   }
   let cursor = 0
 

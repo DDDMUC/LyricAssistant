@@ -59,6 +59,38 @@ describe("parseProject", () => {
     expect(() => parseProject('{"version":9}')).toThrow()
   })
 
+  it("老数据清洗：格子和溢出里混入的非汉字一律清掉", () => {
+    const raw = {
+      version: 2,
+      title: "旧数据",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      sections: [
+        {
+          id: "sec1",
+          name: "段落",
+          sentences: [
+            {
+              id: "s1",
+              pattern: [3, 2],
+              alternatives: [
+                { id: "a1", name: "备选 1", cells: ["人", "-", "间,-", "！", "好"] },
+                { id: "a2", name: "备选 2", cells: ["a", "b", "c", "d", "e"] },
+              ],
+              activeAlt: 0,
+              note: "",
+              overflow: "abc，-",
+            },
+          ],
+        },
+      ],
+    }
+    const project = parseProject(JSON.stringify(raw))
+    const sentence = project.sections[0].sentences[0]
+    expect(sentence.alternatives[0].cells).toEqual(["人", "", "间", "", "好"])
+    expect(sentence.alternatives[1].cells).toEqual(["", "", "", "", ""])
+    expect(sentence.overflow).toBe("")
+  })
+
   it("截断过长 cells 并补齐过短", () => {
     const raw = {
       version: 2,
@@ -72,7 +104,7 @@ describe("parseProject", () => {
             {
               id: "s1",
               pattern: [3],
-              alternatives: [{ id: "a", name: "1", cells: ["a", "b", "c", "d", "e"] }],
+              alternatives: [{ id: "a", name: "1", cells: ["你", "好", "吗", "再", "见"] }],
               activeAlt: 0,
               note: "",
             },
@@ -85,7 +117,7 @@ describe("parseProject", () => {
             {
               id: "s2",
               pattern: [4],
-              alternatives: [{ id: "a2", name: "1", cells: ["x"] }],
+              alternatives: [{ id: "a2", name: "1", cells: ["再"] }],
               activeAlt: 0,
               note: "n",
             },
@@ -94,8 +126,8 @@ describe("parseProject", () => {
       ],
     }
     const project = parseProject(JSON.stringify(raw))
-    expect(getCells(project.sections[0].sentences[0])).toEqual(["a", "b", "c"])
-    expect(getCells(project.sections[1].sentences[0])).toEqual(["x", "", "", ""])
+    expect(getCells(project.sections[0].sentences[0])).toEqual(["你", "好", "吗"])
+    expect(getCells(project.sections[1].sentences[0])).toEqual(["再", "", "", ""])
   })
 })
 

@@ -47,10 +47,12 @@ describe("网页环境", () => {
     await import("./main")
   })
 
-  it("能加载主程序，AI 按钮禁用", () => {
+  it("能加载主程序，AI 按钮禁用；工具栏横跨工作区（面板铺满也挡不住）", () => {
     const btn = document.querySelector<HTMLButtonElement>("#btn-ai")
     expect(btn?.disabled).toBe(true)
     expect(document.querySelector("#grid") ?? document.querySelector(".grid")).toBeTruthy()
+    expect(document.querySelector(".workbench > .topbar")).toBeTruthy()
+    expect(document.querySelector(".workbench-body > .main-col")).toBeTruthy()
   })
 
   it("「导入 → 选择 MIDI…」会关掉导入弹窗，不留两层", async () => {
@@ -86,5 +88,47 @@ describe("网页环境", () => {
     ok.click()
     await new Promise((resolve) => setTimeout(resolve, 30))
     expect(document.querySelector("dialog[open]")).toBeNull()
+  })
+
+  it("查找替换：计数 → 替换一处 → 全曲替换 → 变长自动插格子", async () => {
+    document.querySelector<HTMLButtonElement>("#btn-import-lyrics")!.click()
+    const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
+    dialog.querySelector("textarea")!.value = "人间 天上\n人间 云间"
+    const importOk = Array.from(dialog.querySelectorAll("button")).find(
+      (button) => button.textContent === "导入",
+    )!
+    importOk.click()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    document.querySelector<HTMLButtonElement>("#btn-find")!.click()
+    const findInput = document.querySelector<HTMLInputElement>(".find-input")!
+    const replaceInput = document.querySelector<HTMLInputElement>(".find-replace")!
+    const count = (): string => document.querySelector(".find-count")!.textContent ?? ""
+    findInput.value = "间"
+    findInput.dispatchEvent(new Event("input"))
+    expect(count()).toBe("1/3")
+
+    replaceInput.value = "内"
+    document.querySelector<HTMLButtonElement>(".find-replace-one")!.click()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(count()).toBe("1/2")
+
+    document.querySelector<HTMLButtonElement>(".find-replace-all")!.click()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(count()).toBe("0/0")
+
+    const cellCount = (index: number): number =>
+      document.querySelectorAll(".sentence")[index].querySelectorAll(".cell, .cell-input").length
+    expect(cellCount(0)).toBe(4)
+    expect(cellCount(1)).toBe(4)
+
+    findInput.value = "云"
+    findInput.dispatchEvent(new Event("input"))
+    replaceInput.value = "月牙"
+    document.querySelector<HTMLButtonElement>(".find-replace-one")!.click()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(cellCount(1)).toBe(5)
+    document.querySelector<HTMLButtonElement>(".find-close")!.click()
+    expect(document.querySelector(".find-panel")!.hasAttribute("hidden")).toBe(true)
   })
 })

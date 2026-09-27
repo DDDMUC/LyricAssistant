@@ -109,6 +109,54 @@ export function removeCellAt(
   }
 }
 
+/** 在 flat 处插入 count 个空格子（后面的格子右移）；新格子加入插入点前一个格子所在的分组 */
+export function insertCells(
+  pattern: number[],
+  cells: string[],
+  flat: number,
+  count: number,
+): { pattern: number[]; cells: string[] } {
+  const total = totalCells(pattern)
+  const at = Math.min(Math.max(0, flat), total)
+  const nextPattern = pattern.slice()
+  const anchor = Math.max(0, Math.min(at - 1, total - 1))
+  const { g } = locate(nextPattern, anchor)
+  nextPattern[g] += count
+  const nextCells = cells.slice()
+  for (let i = 0; i < count; i++) nextCells.splice(at, 0, "")
+  return { pattern: nextPattern, cells: nextCells }
+}
+
+/** 删除从 flat 开始的 count 个格子（后面的格子左移）；分组依次减 1，减到 0 的分组消失。
+    不允许把整句删空——会删空时返回 null（调用方自行决定兜底） */
+export function removeCellsAt(
+  pattern: number[],
+  cells: string[],
+  flat: number,
+  count: number,
+): { pattern: number[]; cells: string[] } | null {
+  const total = totalCells(pattern)
+  if (total === 0) return null
+  const start = Math.max(0, Math.min(flat, total - 1))
+  const removable = Math.min(count, total - start)
+  if (removable <= 0) return { pattern: pattern.slice(), cells: cells.slice() }
+  const nextPattern = pattern.slice()
+  const nextCells = cells.slice()
+  for (let i = 0; i < removable; i++) {
+    if (totalCells(nextPattern) === 0) return null
+    const { g } = locate(nextPattern, start)
+    if (nextPattern[g] > 1) {
+      nextPattern[g] -= 1
+    } else if (nextPattern.length > 1) {
+      nextPattern.splice(g, 1)
+    } else {
+      return null
+    }
+    nextCells.splice(start, 1)
+  }
+  return { pattern: nextPattern, cells: nextCells }
+}
+
 export function splitOrMergePattern(pattern: number[], flat: number): number[] | null {
   const total = totalCells(pattern)
   if (total === 0) return null

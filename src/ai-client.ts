@@ -1,13 +1,23 @@
 import { fetch } from "@tauri-apps/plugin-http"
 
-export type EffortLevel = "default" | "none" | "low" | "high" | "max"
+export type EffortLevel = "default" | "none" | "low" | "medium" | "high" | "max"
 
 export const EFFORT_LEVELS: { value: EffortLevel; label: string }[] = [
   { value: "default", label: "Default" },
   { value: "none", label: "None" },
   { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
   { value: "max", label: "Max" },
+]
+
+/** 自定义接口的档位（保守：不给需要官方映射的值，避免对方不认） */
+const CUSTOM_EFFORT_VALUES: EffortLevel[] = ["none", "low", "medium", "high", "max"]
+
+/** 只有思考开关、没有强度档的模型（如 MiMo）：官方 thinking.type = enabled / disabled，默认开启 */
+export const THINKING_LEVELS: { value: EffortLevel; label: string }[] = [
+  { value: "high", label: "思考开" },
+  { value: "none", label: "思考关" },
 ]
 
 export interface AiProvider {
@@ -29,10 +39,25 @@ export interface AiSettings {
   providers: AiProvider[]
   providerId: string
   model: string
-  effort: EffortLevel
+  /** 推理等级按模型各记各的（每个模型能力不一样，别互相串） */
+  efforts: Record<string, EffortLevel>
   temperature: number
   /** 输出上限：auto = 按词格估额度（保险丝）；none = 不传，交给接口默认 */
   maxOutput: "auto" | "none"
+}
+
+export function effortOf(settings: AiSettings): EffortLevel {
+  const stored = settings.efforts[settings.model] ?? "default"
+  const provider = settings.providers.find((item) => item.id === settings.providerId)
+  const levels = effortLevelsFor(settings.model, provider?.supportsEffort ?? false)
+  // 有档位表：夹到合法值（比如 MiMo 不支持 max，就回退成不传）
+  // 没有档位表（思考开关型 / 什么都不发）：原样保留，请求那边会自己映射
+  if (levels.length === 0) return stored
+  return levels.some((level) => level.value === stored) ? stored : "default"
+}
+
+export function withEffort(settings: AiSettings, effort: EffortLevel): AiSettings {
+  return { ...settings, efforts: { ...settings.efforts, [settings.model]: effort } }
 }
 
 export interface AiTarget {
@@ -60,23 +85,55 @@ export const MODEL_LABELS: Record<string, string> = {
   "deepseek-v4-pro": "DeepSeek V4 Pro",
   "mimo-v2.6-flash": "MiMo V2.6 Flash",
   "mimo-v2.6-pro": "MiMo V2.6 Pro",
+  "mimo-v2.6-pro-ultraspeed": "MiMo V2.6 Pro UltraSpeed",
 }
 
 export function modelLabel(model: string): string {
   return MODEL_LABELS[model] ?? model
 }
 
-/** 已知模型能不能吃 reasoning_effort（没登记的按 provider 的设置走） */
-const MODEL_EFFORT: Record<string, boolean> = {
-  "deepseek-flash": true,
-  "deepseek-v4-pro": true,
-  "mimo-v2.6-flash": false,
-  "mimo-v2.6-pro": false,
+/**
+ * 每个模型实际支持的强度档（不含 default）。全部对着官方文档 + 直连接口实测（2026-09）：
+ *
+ * DeepSeek（官方 Chat Completions 文档）：
+ *   reasoning_effort = none / low / high / max；默认 high；none 关思考、其余开。
+ *   minimal 被映射为 low，medium / xhigh 被映射为 high（官方兼容别名，不额外暴露）。
+ *
+ * MiMo（官方 Chat Completions 端点，实测）：
+ *   thinking.type = enabled / disabled，默认开启；reasoning_effort 只认 none / low / medium / high
+ *   （minimal / max / xhigh / ultra 会 400）。
+ *   官方 Responses API 词汇里的 xhigh / max / ultra 都只是映射成 high、minimal 映射成 low，
+ *   且官方明确"现阶段暂未对推理强度做区分"——所以最高只给到 High，别名一律不暴露。
+ *
+ * MiMo Pro UltraSpeed 的两个实测怪癖：
+ *   ① reasoning_effort=none 关不掉思考（仍出思维链）——关思考必须走 thinking.type（我们正是这么发的）；
+ *   ② minimal 返回的是 500 而不是 400。我们不给用户暴露这两个值，所以踩不到。
+ */
+const MODEL_EFFORT_VALUES: Record<string, EffortLevel[]> = {
+  "deepseek-flash": ["none", "low", "high", "max"],
+  "deepseek-v4-pro": ["none", "low", "high", "max"],
+  "mimo-v2.6-flash": ["none", "low", "medium", "high"],
+  "mimo-v2.6-pro": ["none", "low", "medium", "high"],
+  "mimo-v2.6-pro-ultraspeed": ["none", "low", "medium", "high"],
 }
 
+
 export function supportsEffortFor(model: string, providerSupports: boolean): boolean {
-  return MODEL_EFFORT[model] ?? providerSupports
+  return MODEL_EFFORT_VALUES[model] ? true : providerSupports
 }
+
+/** 这个模型能选的等级列表（含 default）；空数组 = 不支持强度档 */
+export function effortLevelsFor(
+  model: string,
+  providerSupports: boolean,
+): { value: EffortLevel; label: string }[] {
+  const values = MODEL_EFFORT_VALUES[model] ?? (providerSupports ? CUSTOM_EFFORT_VALUES : null)
+  if (!values) return []
+  return (["default", ...values] as EffortLevel[]).map(
+    (value) => EFFORT_LEVELS.find((level) => level.value === value) ?? { value, label: value },
+  )
+}
+
 
 /**
  * 估算这次请求该给多少输出额度。
@@ -113,7 +170,7 @@ export const BUILTIN_PROVIDERS: AiProvider[] = [
     id: "mimo",
     name: "MiMo（小米）",
     baseUrl: "https://api.xiaomimimo.com/v1",
-    models: ["mimo-v2.6-flash", "mimo-v2.6-pro"],
+    models: ["mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed"],
     apiKey: "",
     auth: "both",
     tokenParam: "max_completion_tokens",
@@ -144,7 +201,7 @@ export function defaultAiSettings(): AiSettings {
     providers: cloneProviders(),
     providerId: "deepseek",
     model: "deepseek-flash",
-    effort: "default",
+    efforts: {},
     temperature: 0.8,
     maxOutput: "none",
   }
@@ -191,12 +248,26 @@ export function loadAiSettings(): AiSettings {
       typeof data.model === "string" && provider.models.includes(data.model)
         ? data.model
         : provider.models[0] ?? ""
-    const effort = EFFORT_LEVELS.some((level) => level.value === data.effort)
-      ? (data.effort as EffortLevel)
-      : "default"
+    // 推理等级按模型存；老版本是单个 effort 字段，迁移到当前模型名下
+    const efforts: Record<string, EffortLevel> = {}
+    if (data.efforts && typeof data.efforts === "object") {
+      for (const [key, value] of Object.entries(data.efforts as Record<string, string>)) {
+        const normalized = value === "xhigh" ? "high" : value
+        if (EFFORT_LEVELS.some((level) => level.value === normalized)) {
+          efforts[key] = normalized as EffortLevel
+        }
+      }
+    }
+    if (
+      Object.keys(efforts).length === 0 &&
+      model &&
+      EFFORT_LEVELS.some((level) => level.value === (data as { effort?: unknown }).effort)
+    ) {
+      efforts[model] = (data as { effort?: EffortLevel }).effort ?? "default"
+    }
     const temperature = typeof data.temperature === "number" ? data.temperature : 0.8
     const maxOutput = data.maxOutput === "auto" ? "auto" : "none"
-    return { providers, providerId, model, effort, temperature, maxOutput }
+    return { providers, providerId, model, efforts, temperature, maxOutput }
   } catch {
     return defaults
   }
@@ -214,7 +285,7 @@ export function resolveTarget(settings: AiSettings): AiTarget | null {
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
     model,
-    effort: settings.effort,
+    effort: effortOf(settings),
     auth: provider.auth,
     tokenParam: provider.tokenParam,
     supportsThinking: provider.supportsThinking,
