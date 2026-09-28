@@ -102,6 +102,19 @@ html::-webkit-scrollbar {
   pointer-events: none;
 }
 
+/* AI 面板 / 导入原文开着时，进度条只盖作词区：面板多宽，进度条就收多窄（拖动时实时跟） */
+html.ai-open .scroll-progress {
+  right: var(--ai-width, 0px);
+}
+
+html.source-open .scroll-progress {
+  right: 280px;
+}
+
+html.ai-open.source-open .scroll-progress {
+  right: calc(var(--ai-width, 0px) + 280px);
+}
+
 button,
 input,
 textarea,
@@ -562,14 +575,6 @@ button:disabled {
 
 .empty-hint {
   margin: 0;
-  font-size: 13px;
-}
-
-.pattern-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -1559,6 +1564,61 @@ dialog::backdrop {
   padding: 3px;
 }
 
+/* 帮助弹窗 */
+.help-dialog {
+  width: min(640px, 92vw);
+}
+
+.help-title {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.help-list {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--text-secondary);
+}
+
+.help-list b {
+  color: var(--text);
+}
+
+.help-list code,
+.help-list kbd {
+  font-family: inherit;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.help-actions {
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* 框选时同步系统选区的隐藏镜像（右键→复制能拿到选中的字） */
+.copy-mirror {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  white-space: pre;
+  pointer-events: none;
+}
+
 .doc-folder {
   display: inline-flex;
   color: var(--text-muted);
@@ -1763,7 +1823,9 @@ dialog::backdrop {
 }
 
 .ai-msg.user {
-  align-self: flex-end;
+  /* 占满一行、内容右对齐：这样气泡的百分比 max-width 才有确定参照
+     （以前 align-self: flex-end 让容器收缩，78% 被算成 0，短句会逐字换行） */
+  align-self: stretch;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -1776,6 +1838,7 @@ dialog::backdrop {
 
 /* 用户消息：气泡直接显示全文（照参考，没有编号圈） */
 .ai-user-text {
+  width: fit-content;
   max-width: 78%;
   box-sizing: border-box;
   background: var(--bg-soft);

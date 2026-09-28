@@ -1,4 +1,5 @@
 import { hanOnly } from "./rhyme"
+import { splitPatternForImport } from "./lyrics"
 
 export interface MidiNote {
   midi: number
@@ -19,6 +20,8 @@ export interface MidiRawEvent {
 
 export interface MidiTrack {
   name: string
+  /** 版权声明（meta 0x02）：不少文件拿来写 ©/署名，导入时进"创作信息" */
+  copyright: string
   notes: MidiNote[]
   markers: MidiTextEvent[]
   lyrics: MidiTextEvent[]
@@ -34,6 +37,8 @@ export interface MidiFile {
 export interface MidiLine {
   pattern: number[]
   cells: string[]
+  /** 和声句（与上一句同时唱的背景人声） */
+  harmony?: boolean
 }
 
 export interface MidiSection {
@@ -61,13 +66,80 @@ export const KEYSWITCH = { group: 24, sentence: 25, section: 26 } as const
 
 const KEYSWITCH_PITCHES = new Set<number>([KEYSWITCH.group, KEYSWITCH.sentence, KEYSWITCH.section])
 
-/** 这条轨里有几个切分标记音（不含鼓轨） */
-export function keyswitchCount(file: MidiFile, trackIndex: number): number {
-  const track = file.tracks[trackIndex]
-  if (!track) return 0
-  return track.notes.filter(
-    (note) => note.channel !== 9 && KEYSWITCH_PITCHES.has(note.midi),
-  ).length
+function notesOf(track: MidiTrack): MidiNote[] {
+  return track.notes.filter((note) => note.channel !== 9)
+}
+
+function lyricCharCount(track: MidiTrack): number {
+  return track.lyrics.reduce((total, event) => total + [...hanOnly(event.text)].length, 0)
+}
+
+/** 两条轨的音符在时间上有没有重叠（双指针） */
+function tracksOverlap(a: MidiTrack, b: MidiTrack): boolean {
+  const left = notesOf(a).slice().sort((x, y) => x.start - y.start)
+  const right = notesOf(b).slice().sort((x, y) => x.start - y.start)
+  let i = 0
+  let j = 0
+  while (i < left.length && j < right.length) {
+    const x = left[i]
+    const y = right[j]
+    if (x.start < y.start + y.dur && y.start < x.start + x.dur) return true
+    if (x.start + x.dur <= y.start) i += 1
+    else j += 1
+  }
+  return false
+}
+
+/** 自动模式下每条轨的角色：时间重叠的轨里**字数最多的当主歌，其余当和声**；
+ *  不重叠的轨都当主歌（合并成一条循序读字） */
+export function pickTrackRoles(file: MidiFile): { index: number; harmony: boolean }[] {
+  const candidates = noteTracks(file)
+  const withLyrics = candidates.filter((item) => file.tracks[item.index].lyrics.length > 0)
+  const pool = withLyrics.length > 0 ? withLyrics : candidates
+  if (pool.length === 0) return []
+  if (pool.length === 1) return [{ index: pool[0].index, harmony: false }]
+  const parent = pool.map((_, index) => index)
+  const find = (x: number): number => (parent[x] === x ? x : (parent[x] = find(parent[x])))
+  for (let i = 0; i < pool.length; i++) {
+    for (let j = i + 1; j < pool.length; j++) {
+      if (tracksOverlap(file.tracks[pool[i].index], file.tracks[pool[j].index])) {
+        parent[find(i)] = find(j)
+      }
+    }
+  }
+  const clusters = new Map<number, number[]>()
+  pool.forEach((_, index) => {
+    const root = find(index)
+    clusters.set(root, [...(clusters.get(root) ?? []), index])
+  })
+  const roles: { index: number; harmony: boolean }[] = []
+  for (const members of clusters.values()) {
+    const ranked = [...members].sort((a, b) => {
+      const charsA = lyricCharCount(file.tracks[pool[a].index])
+      const charsB = lyricCharCount(file.tracks[pool[b].index])
+      if (charsA !== charsB) return charsB - charsA
+      return pool[b].count - pool[a].count
+    })
+    ranked.forEach((member, rank) => {
+      roles.push({ index: pool[member].index, harmony: rank > 0 })
+    })
+  }
+  return roles
+}
+
+/** 这条轨（或所有轨）里有几个切分标记音（不含鼓轨） */
+export function keyswitchCount(file: MidiFile, trackIndex?: number): number {
+  const tracks =
+    trackIndex !== undefined && trackIndex >= 0
+      ? [file.tracks[trackIndex]].filter((track): track is MidiTrack => Boolean(track))
+      : file.tracks
+  let count = 0
+  for (const track of tracks) {
+    for (const note of track.notes) {
+      if (note.channel !== 9 && KEYSWITCH_PITCHES.has(note.midi)) count += 1
+    }
+  }
+  return count
 }
 
 class Reader {
@@ -122,7 +194,14 @@ function decodeText(data: Uint8Array): string {
 }
 
 function parseTrack(reader: Reader, end: number): MidiTrack {
-  const track: MidiTrack = { name: "", notes: [], markers: [], lyrics: [], events: [] }
+  const track: MidiTrack = {
+    name: "",
+    copyright: "",
+    notes: [],
+    markers: [],
+    lyrics: [],
+    events: [],
+  }
   const open = new Map<number, { midi: number; start: number }>()
   let tick = 0
   let running = 0
@@ -141,6 +220,7 @@ function parseTrack(reader: Reader, end: number): MidiTrack {
       const data = reader.take(length)
       track.events.push({ tick, raw: [0xff, type, ...vlqBytes(length), ...data] })
       if (type === 0x03) track.name = decodeText(data)
+      else if (type === 0x02) track.copyright = decodeText(data)
       else if (type === 0x06) track.markers.push({ tick, text: decodeText(data) })
       else if (type === 0x05) track.lyrics.push({ tick, text: decodeText(data) })
       continue
@@ -204,6 +284,11 @@ export function parseMidi(bytes: Uint8Array): MidiFile {
 
 const MELODY_NAME_RE = /vocal|melody|lead|唱|人声|主旋/i
 
+/** 按 MIDI 惯例取歌名：第 1 轨（序列轨）的轨名；没有就空 */
+export function midiTitle(file: MidiFile): string {
+  return file.tracks[0]?.name?.trim() ?? ""
+}
+
 export function noteTracks(file: MidiFile): { index: number; name: string; count: number }[] {
   return file.tracks
     .map((track, index) => ({
@@ -222,12 +307,21 @@ export function pickMelodyTrack(file: MidiFile): number {
   return candidates.reduce((best, track) => (track.count > best.count ? track : best)).index
 }
 
-function splitNotes(notes: MidiNote[], sentenceTicks: number): number[][] {
-  const lines: number[][] = []
+interface NoteLine {
+  pattern: number[]
+  start: number
+  end: number
+}
+
+function splitNotes(notes: MidiNote[], sentenceTicks: number): NoteLine[] {
+  const lines: NoteLine[] = []
   let pattern: number[] = []
   let group = 0
   let prevEnd = -Infinity
   let started = false
+  let lineStart = 0
+  let lineEnd = 0
+  let lineSet = false
   const flushGroup = () => {
     if (group > 0) {
       pattern.push(group)
@@ -236,10 +330,9 @@ function splitNotes(notes: MidiNote[], sentenceTicks: number): number[][] {
   }
   const flushLine = () => {
     flushGroup()
-    if (pattern.length > 0) {
-      lines.push(pattern)
-      pattern = []
-    }
+    if (pattern.length > 0) lines.push({ pattern, start: lineStart, end: lineEnd })
+    pattern = []
+    lineSet = false
   }
   for (const note of notes) {
     if (started) {
@@ -247,9 +340,16 @@ function splitNotes(notes: MidiNote[], sentenceTicks: number): number[][] {
       if (sentenceTicks > 0 && gap >= sentenceTicks) flushLine()
       else if (gap > 0) flushGroup()
     }
+    const noteEnd = note.start + note.dur
+    if (!lineSet) {
+      lineStart = note.start
+      lineEnd = noteEnd
+      lineSet = true
+    } else if (noteEnd > lineEnd) {
+      lineEnd = noteEnd
+    }
     group += 1
-    const end = note.start + note.dur
-    if (end > prevEnd) prevEnd = end
+    if (noteEnd > prevEnd) prevEnd = noteEnd
     started = true
   }
   flushLine()
@@ -257,23 +357,25 @@ function splitNotes(notes: MidiNote[], sentenceTicks: number): number[][] {
 }
 
 /** 按词格酱的 C0/C#0/D0 切分（空组/空句/空段不生成） */
-function keyswitchDraft(notes: MidiNote[]): { name: string; lines: number[][] }[] {
-  const sections: { name: string; lines: number[][] }[] = []
-  let section: { name: string; lines: number[][] } = { name: "", lines: [] }
-  let line: number[] = []
+function keyswitchDraft(notes: MidiNote[]): { name: string; lines: NoteLine[] }[] {
+  const sections: { name: string; lines: NoteLine[] }[] = []
+  let section: { name: string; lines: NoteLine[] } = { name: "", lines: [] }
+  let pattern: number[] = []
   let group = 0
+  let lineStart = 0
+  let lineEnd = 0
+  let lineSet = false
   const flushGroup = () => {
     if (group > 0) {
-      line.push(group)
+      pattern.push(group)
       group = 0
     }
   }
   const flushLine = () => {
     flushGroup()
-    if (line.length > 0) {
-      section.lines.push(line)
-      line = []
-    }
+    if (pattern.length > 0) section.lines.push({ pattern, start: lineStart, end: lineEnd })
+    pattern = []
+    lineSet = false
   }
   const flushSection = () => {
     flushLine()
@@ -293,6 +395,14 @@ function keyswitchDraft(notes: MidiNote[]): { name: string; lines: number[][] }[
       flushGroup()
       continue
     }
+    const noteEnd = note.start + note.dur
+    if (!lineSet) {
+      lineStart = note.start
+      lineEnd = noteEnd
+      lineSet = true
+    } else if (noteEnd > lineEnd) {
+      lineEnd = noteEnd
+    }
     group += 1
   }
   flushSection()
@@ -303,7 +413,7 @@ function restDraft(
   notes: MidiNote[],
   markers: MidiTextEvent[],
   sentenceTicks: number,
-): { name: string; lines: number[][] }[] {
+): { name: string; lines: NoteLine[] }[] {
   const segments: { name: string; notes: MidiNote[] }[] = []
   if (markers.length > 0) {
     const before = notes.filter((note) => note.start < markers[0].tick)
@@ -324,55 +434,135 @@ function restDraft(
   }))
 }
 
-export function midiToSections(file: MidiFile, options: MidiImportOptions = {}): MidiSection[] {
-  const trackIndex = options.trackIndex ?? pickMelodyTrack(file)
-  const track = file.tracks[trackIndex]
-  if (!track) return []
-  const beat = file.division > 0 ? file.division : 480
-  const sentenceTicks = (options.sentenceRestBeats ?? 1) * beat
-  const notes = track.notes
-    .filter((note) => note.channel !== 9)
-    .sort((a, b) => a.start - b.start || a.midi - b.midi)
-  if (notes.length === 0) return []
+type FilledLine = MidiLine & NoteLine
+interface FilledSection {
+  name: string
+  lines: FilledLine[]
+}
 
-  const mode = options.mode ?? "auto"
-  const hasKeyswitch = notes.some((note) => KEYSWITCH_PITCHES.has(note.midi))
-  const useKeyswitch = mode === "keyswitch" || (mode === "auto" && hasKeyswitch)
-
-  const draft = useKeyswitch
-    ? keyswitchDraft(notes)
-    : restDraft(
-        notes,
-        options.useMarkers === false
-          ? []
-          : file.tracks
-              .flatMap((item) => item.markers)
-              .sort((a, b) => a.tick - b.tick)
-              .filter(
-                (marker, index, all) => index === 0 || marker.tick !== all[index - 1].tick,
-              ),
-        sentenceTicks,
-      )
-
-  const charQueue: string[] = []
-  for (const event of track.lyrics.slice().sort((a, b) => a.tick - b.tick)) {
-    for (const char of hanOnly(event.text)) charQueue.push(char)
+/** 把草稿配上这条轨自己的歌词（逐轨，不混轨） */
+function fillDraft(
+  draft: { name: string; lines: NoteLine[] }[],
+  lyricEvents: MidiTextEvent[],
+  harmony: boolean,
+): FilledSection[] {
+  const queue: string[] = []
+  for (const event of lyricEvents.slice().sort((a, b) => a.tick - b.tick)) {
+    for (const char of hanOnly(event.text)) queue.push(char)
   }
   let cursor = 0
-
-  return draft
-    .map((section) => ({
-      name: section.name,
-      lines: section.lines.map((pattern) => {
+  return draft.map((section) => ({
+    name: section.name,
+    // 导入保险丝：一小节 ≤16 格、一句 ≤32 格（文本导入同一套）
+    lines: section.lines.flatMap((line) =>
+      splitPatternForImport(line.pattern).map((pattern) => {
         const total = pattern.reduce((sum, size) => sum + size, 0)
         const cells: string[] = []
         for (let i = 0; i < total; i++) {
-          cells.push(cursor < charQueue.length ? charQueue[cursor++] : "")
+          cells.push(cursor < queue.length ? queue[cursor++] : "")
         }
-        return { pattern, cells }
+        return { pattern, start: line.start, end: line.end, cells, harmony }
       }),
-    }))
-    .filter((section) => section.lines.length > 0)
+    ),
+  }))
+}
+
+/** 把一条和声行插到时间上重叠最多的主句后面（没有重叠就挂在前一条主句后；在主句之前就当主句） */
+function insertHarmonyLine(sections: FilledSection[], line: FilledLine): void {
+  const positions: { section: FilledSection; index: number }[] = []
+  sections.forEach((section) => {
+    section.lines.forEach((_, index) => positions.push({ section, index }))
+  })
+  if (positions.length === 0) {
+    line.harmony = false
+    sections.push({ name: "", lines: [line] })
+    return
+  }
+  let best = -1
+  let bestOverlap = 0
+  positions.forEach((position, order) => {
+    const item = position.section.lines[position.index]
+    const overlap = Math.min(item.end, line.end) - Math.max(item.start, line.start)
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap
+      best = order
+    }
+  })
+  if (best < 0) {
+    line.harmony = false
+    for (let order = positions.length - 1; order >= 0; order--) {
+      const item = positions[order].section.lines[positions[order].index]
+      if (item.start <= line.start) {
+        best = order
+        break
+      }
+    }
+    if (best < 0) best = 0
+    const position = positions[best]
+    position.section.lines.splice(position.index, 0, line)
+    return
+  }
+  const position = positions[best]
+  position.section.lines.splice(position.index + 1, 0, line)
+}
+
+export function midiToSections(file: MidiFile, options: MidiImportOptions = {}): MidiSection[] {
+  const beat = file.division > 0 ? file.division : 480
+  const sentenceTicks = (options.sentenceRestBeats ?? 1) * beat
+  const mode = options.mode ?? "auto"
+  const markers =
+    options.useMarkers === false
+      ? []
+      : file.tracks
+          .flatMap((item) => item.markers)
+          .sort((a, b) => a.tick - b.tick)
+          .filter((marker, index, all) => index === 0 || marker.tick !== all[index - 1].tick)
+  const sortedNotes = (track: MidiTrack) =>
+    notesOf(track).slice().sort((a, b) => a.start - b.start || a.midi - b.midi)
+  const draftFor = (notes: MidiNote[]): { name: string; lines: NoteLine[] }[] => {
+    const keyswitch =
+      mode === "keyswitch" || (mode === "auto" && notes.some((note) => KEYSWITCH_PITCHES.has(note.midi)))
+    return keyswitch ? keyswitchDraft(notes) : restDraft(notes, markers, sentenceTicks)
+  }
+
+  // 明确选了轨：只读那轨（当主歌）
+  if (options.trackIndex !== undefined && options.trackIndex >= 0) {
+    const track = file.tracks[options.trackIndex]
+    if (!track) return []
+    const notes = sortedNotes(track)
+    if (notes.length === 0) return []
+    return fillDraft(draftFor(notes), track.lyrics, false).filter(
+      (section) => section.lines.length > 0,
+    )
+  }
+
+  // 自动：不重叠的轨合并循序渐进；时间重叠的轨里字数最多的当主歌，其余当和声
+  const roles = pickTrackRoles(file)
+  if (roles.length === 0) return []
+  const mainTracks = roles
+    .filter((role) => !role.harmony)
+    .map((role) => file.tracks[role.index])
+    .filter((track): track is MidiTrack => Boolean(track))
+  const mainNotes = mainTracks
+    .flatMap((track) => notesOf(track))
+    .sort((a, b) => a.start - b.start || a.midi - b.midi)
+  if (mainNotes.length === 0) return []
+  const sections = fillDraft(
+    draftFor(mainNotes),
+    mainTracks.flatMap((track) => track.lyrics),
+    false,
+  ).filter((section) => section.lines.length > 0)
+
+  for (const role of roles.filter((item) => item.harmony)) {
+    const track = file.tracks[role.index]
+    if (!track) continue
+    const notes = sortedNotes(track)
+    if (notes.length === 0) continue
+    for (const section of fillDraft(draftFor(notes), track.lyrics, true)) {
+      for (const line of section.lines) insertHarmonyLine(sections, line)
+    }
+  }
+  return sections
 }
 
 function vlqBytes(value: number): number[] {

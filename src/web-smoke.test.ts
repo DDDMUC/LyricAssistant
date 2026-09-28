@@ -132,3 +132,37 @@ describe("网页环境", () => {
     expect(document.querySelector(".find-panel")!.hasAttribute("hidden")).toBe(true)
   })
 })
+
+it("MIDI 导入的元数据防护：识别不到就清空旧的歌名 / 原文 / 创作信息", async () => {
+  const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const titleInput = () =>
+    document.querySelector<HTMLInputElement>("#project-title")!.value
+
+  // 先用文本导入造出"上一首"的歌名、原文、创作信息
+  document.querySelector<HTMLButtonElement>("#btn-import-lyrics")!.click()
+  const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  dialog.querySelector("textarea")!.value = "《旧歌名》\n作词：某人\n真的 假的"
+  Array.from(dialog.querySelectorAll("button"))
+    .find((button) => button.textContent === "导入")!
+    .click()
+  await tick(30)
+  expect(titleInput()).toBe("旧歌名")
+  expect(document.querySelector<HTMLElement>("#btn-source")!.hidden).toBe(false)
+  expect(document.querySelector<HTMLElement>("#btn-credits")!.hidden).toBe(false)
+
+  // 再拖入一个没有轨名 / 版权的 MIDI → 旧的歌名 / 原文 / 创作信息都应被清掉
+  const file = new File([new Uint8Array(demoMidi())], "demo.mid")
+  const event = new Event("drop", { bubbles: true }) as Event & { dataTransfer?: unknown }
+  Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files: [file] } })
+  window.dispatchEvent(event)
+  await tick(30)
+  const midiDialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  Array.from(midiDialog.querySelectorAll("button"))
+    .find((button) => button.textContent === "导入")!
+    .click()
+  await tick(30)
+
+  expect(titleInput()).toBe("未命名歌曲")
+  expect(document.querySelector<HTMLElement>("#btn-source")!.hidden).toBe(true)
+  expect(document.querySelector<HTMLElement>("#btn-credits")!.hidden).toBe(true)
+})

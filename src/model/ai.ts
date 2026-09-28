@@ -118,9 +118,14 @@ export function buildBrief(
       const want = !targetSet || targetSet.has(sentence.id)
       const parts: string[] = [`${sentence.id}｜${total} 字（${sentence.pattern.join("+")}）`]
       if (sentence.role === "harmony") parts.push("和声（与上一句同时唱）")
-      if (sentence.rhymeLock) {
-        const label = RHYME_LABEL_BY_KEY.get(sentence.rhymeLock) ?? sentence.rhymeLock
-        parts.push(`押「${label.replace(/辙$/, "")}辙」（韵母 ${rhymeFinals(sentence.rhymeLock).join("/")}）`)
+      const locks = Object.entries(sentence.cellLocks ?? {})
+        .map(([index, key]) => ({ index: Number(index), key }))
+        .sort((a, b) => a.index - b.index)
+      for (const lock of locks) {
+        const label = RHYME_LABEL_BY_KEY.get(lock.key) ?? lock.key
+        parts.push(
+          `第 ${lock.index + 1} 格押「${label.replace(/辙$/, "")}辙」（韵母 ${rhymeFinals(lock.key).join("/")}）`,
+        )
       }
       if (sentence.note) parts.push(`备注「${sentence.note}」`)
       const existing = getCells(sentence).join("")
@@ -226,15 +231,20 @@ export function validateAiResults(
       })
       return
     }
-    const lock = sentence.rhymeLock ?? ""
-    if (lock && chars.length > 0 && !charFitsRhyme(chars[chars.length - 1], lock)) {
-      const name = (RHYME_LABEL_BY_KEY.get(lock) ?? lock).replace(/辙$/, "")
-      issues.push({
-        sentenceId: sentence.id,
-        label,
-        message: `句尾「${chars[chars.length - 1]}」不押「${name}辙」，请换一个押韵的字`,
-      })
-      return
+    const locks = Object.entries(sentence.cellLocks ?? {})
+      .map(([index, key]) => ({ index: Number(index), key }))
+      .sort((a, b) => a.index - b.index)
+    for (const lock of locks) {
+      const char = chars[lock.index]
+      if (char && !charFitsRhyme(char, lock.key)) {
+        const name = (RHYME_LABEL_BY_KEY.get(lock.key) ?? lock.key).replace(/辙$/, "")
+        issues.push({
+          sentenceId: sentence.id,
+          label,
+          message: `第 ${lock.index + 1} 格「${char}」不押「${name}辙」，请换一个押韵的字`,
+        })
+        return
+      }
     }
     ok.push({ id: sentence.id, text: chars.join("") })
   })

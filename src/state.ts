@@ -23,7 +23,6 @@ export function createSentence(pattern: number[], role?: "harmony"): Sentence {
     activeAlt: 0,
     note: "",
     overflow: "",
-    rhymeLock: "",
     rhymeHint: "",
     ...(role === "harmony" ? { role: "harmony" as const } : {}),
   }
@@ -172,8 +171,30 @@ function normalizeSentence(sentence: Sentence): void {
   }
   if (typeof sentence.note !== "string") sentence.note = ""
   if (typeof sentence.overflow !== "string") sentence.overflow = ""
-  if (typeof sentence.rhymeLock !== "string") sentence.rhymeLock = ""
   if (typeof sentence.rhymeHint !== "string") sentence.rhymeHint = ""
+  // 老的"整句锁"（只锁句尾）→ 迁移成逐格锁（锁在最后一格）
+  if (typeof sentence.rhymeLock === "string" && sentence.rhymeLock) {
+    const lastIndex = totalCells(sentence.pattern) - 1
+    if (lastIndex >= 0) {
+      if (!sentence.cellLocks || typeof sentence.cellLocks !== "object") sentence.cellLocks = {}
+      sentence.cellLocks[String(lastIndex)] = sentence.rhymeLock
+    }
+  }
+  delete sentence.rhymeLock
+  if (sentence.cellLocks && typeof sentence.cellLocks === "object") {
+    const size = totalCells(sentence.pattern)
+    const clean: Record<string, string> = {}
+    for (const [key, value] of Object.entries(sentence.cellLocks)) {
+      const index = Number(key)
+      if (Number.isInteger(index) && index >= 0 && index < size && typeof value === "string" && value) {
+        clean[String(index)] = value
+      }
+    }
+    if (Object.keys(clean).length > 0) sentence.cellLocks = clean
+    else delete sentence.cellLocks
+  } else {
+    delete sentence.cellLocks
+  }
   if (sentence.role !== "harmony") delete sentence.role
   if (typeof sentence.id !== "string" || !sentence.id) sentence.id = newId("s")
 }

@@ -23,6 +23,63 @@ import {
 } from "./state"
 
 describe("parseProject", () => {
+  it("老的整句锁（句尾）迁移成逐格锁（锁在最后一格）", () => {
+    const raw = JSON.stringify({
+      version: 2,
+      title: "t",
+      sections: [
+        {
+          id: "sec1",
+          name: "",
+          sentences: [
+            {
+              id: "s1",
+              pattern: [4, 3],
+              alternatives: [{ id: "a1", name: "备选 1", cells: ["", "", "", "", "", "", ""] }],
+              activeAlt: 0,
+              note: "",
+              overflow: "",
+              rhymeLock: "yiqi",
+            },
+          ],
+        },
+      ],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    })
+    const project = parseProject(raw)
+    const sentence = project.sections[0].sentences[0]
+    expect(sentence.cellLocks).toEqual({ "6": "yiqi" })
+    expect(sentence.rhymeLock).toBeUndefined()
+  })
+
+  it("越界/空的逐格锁会被清掉", () => {
+    const raw = JSON.stringify({
+      version: 2,
+      title: "t",
+      sections: [
+        {
+          id: "sec1",
+          name: "",
+          sentences: [
+            {
+              id: "s1",
+              pattern: [2, 2],
+              alternatives: [{ id: "a1", name: "备选 1", cells: ["", "", "", ""] }],
+              activeAlt: 0,
+              note: "",
+              overflow: "",
+              cellLocks: { "1": "yiqi", "9": "jiangyang", "2": "" },
+            },
+          ],
+        },
+      ],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    })
+    const project = parseProject(raw)
+    const sentence = project.sections[0].sentences[0]
+    expect(sentence.cellLocks).toEqual({ "1": "yiqi" })
+  })
+
   it("迁移 v1 无段落工程", () => {
     const v1 = {
       version: 1,

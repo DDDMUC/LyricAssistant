@@ -224,3 +224,44 @@ it("对话记录：标题自动、分组、新建/切换/删除、持久化", as
   await tick(30)
   expect(findRow("新会话")).toBeFalsy()
 })
+
+it("导入原文面板开合会挂 source-open（进度条也避开）", () => {
+  const btn = document.querySelector<HTMLButtonElement>("#btn-source")!
+  btn.click()
+  expect(document.documentElement.classList.contains("source-open")).toBe(true)
+  btn.click()
+  expect(document.documentElement.classList.contains("source-open")).toBe(false)
+})
+
+it("AI 面板开合会挂 ai-open（进度条跟着收窄用）", () => {
+  const panel = document.querySelector<HTMLElement>("#ai-panel")!
+  const btn = document.querySelector<HTMLButtonElement>("#btn-ai")!
+  const wasOpen = !panel.hasAttribute("hidden")
+  expect(document.documentElement.classList.contains("ai-open")).toBe(wasOpen)
+  btn.click()
+  expect(document.documentElement.classList.contains("ai-open")).toBe(!wasOpen)
+  btn.click()
+  expect(document.documentElement.classList.contains("ai-open")).toBe(wasOpen)
+})
+
+it("工具栏「帮助」：弹窗里有使用说明、快捷键和导出诊断日志", () => {
+  document.querySelector<HTMLButtonElement>("#btn-help")!.click()
+  const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  expect(dialog.textContent).toContain("使用说明")
+  expect(dialog.textContent).toContain("快捷键")
+  expect(dialog.textContent).toContain("只收汉字")
+  expect(dialog.textContent).toContain("韵脚")
+  const buttons = Array.from(dialog.querySelectorAll("button")).map((b) => b.textContent)
+  expect(buttons).toContain("导出诊断日志")
+  expect(buttons).toContain("知道了")
+  dialog.close()
+  expect(document.querySelector("dialog[open]")).toBeNull()
+
+  // 诊断按钮已经从 AI 设置里挪到帮助里
+  openAiSettingsDialog()
+  const settings = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  expect(
+    Array.from(settings.querySelectorAll("button")).some((b) => b.textContent === "导出诊断日志"),
+  ).toBe(false)
+  settings.close()
+})

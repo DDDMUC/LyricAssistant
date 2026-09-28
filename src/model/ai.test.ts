@@ -18,7 +18,7 @@ function projectOf(): Project {
   setCells(s1, ["北", "望", "去", "荠", "麦", "如", "雪", "月"])
   s1.note = "开场"
   const s2 = createSentence([4, 4])
-  s2.rhymeLock = "jiangyang"
+  s2.cellLocks = { "7": "jiangyang" }
   return {
     version: 2,
     title: "t",

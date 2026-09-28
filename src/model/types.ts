@@ -11,6 +11,9 @@ export interface Sentence {
   activeAlt: number
   note: string
   overflow: string
+  /** 逐格韵辙锁：格索引（字符串）→ 辙 key；锁住的格子只收押该辙的字 */
+  cellLocks?: Record<string, string>
+  /** 老字段（只锁句尾）：读旧工程时自动迁移进 cellLocks，不再写 */
   rhymeLock?: string
   rhymeHint?: string
   role?: "harmony"

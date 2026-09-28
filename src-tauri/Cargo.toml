@@ -1,6 +1,6 @@
 [package]
 name = "cige-grid"
-version = "0.7.0"
+version = "0.7.5"
 description = "中文歌词词格写作工具"
 authors = ["337mu"]
 license = "AGPL-3.0-only"
