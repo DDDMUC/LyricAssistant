@@ -85,6 +85,8 @@ const CREDIT_WORDS = [
   "封面",
   "海报",
   "曲绘",
+  "美工",
+  "题字",
   "动画",
   "视频",
   "分镜",
@@ -245,28 +247,85 @@ function sectionNameOf(line: string): string | null {
   return SECTION_WORDS.has(normalized) ? name : null
 }
 
-function chunkLines(lines: ParsedLine[]): ParsedSection[] {
+/** 导入保险丝：一小节（词格的一组）最多 16 字、一句最多 32 字，超了自动断开——
+ *  防止格式乱的文件导进来出现"一句几百字"的糟糕情况（只在导入时生效） */
+const IMPORT_MAX_GROUP = 16
+const IMPORT_MAX_LINE = 32
+
+/** 导入保险丝（文本导入与 MIDI 导入共用）：把词格切成多行——
+ *  一小节（一组）最多 16 格、一句最多 32 格，每到上限自动断开 */
+export function splitPatternForImport(pattern: number[]): number[][] {
+  const groups: number[] = []
+  for (const size of pattern) {
+    let remaining = size
+    while (remaining > 0) {
+      const take = Math.min(remaining, IMPORT_MAX_GROUP)
+      groups.push(take)
+      remaining -= take
+    }
+  }
+  const lines: number[][] = []
+  let current: number[] = []
+  let total = 0
+  for (const size of groups) {
+    if (total + size > IMPORT_MAX_LINE) {
+      lines.push(current)
+      current = []
+      total = 0
+    }
+    current.push(size)
+    total += size
+  }
+  if (current.length > 0) lines.push(current)
+  return lines
+}
+
+function splitOversizedLine(line: ParsedLine): ParsedLine[] {
+  const out: ParsedLine[] = []
+  let offset = 0
+  for (const pattern of splitPatternForImport(line.pattern)) {
+    const size = pattern.reduce((sum, value) => sum + value, 0)
+    out.push({
+      ...line,
+      pattern,
+      cells: line.cells.slice(offset, offset + size),
+      alts: line.alts.map((alt) => alt.slice(offset, offset + size)),
+    })
+    offset += size
+  }
+  return out
+}
+
+/** 自动分段：**连续不超过 9 句**——连续 8 句以内不动；检测到连续 9 句及以上，
+ *  就在**第 4 句和第 5 句之间**断开，剩下的继续判（和声句跟着上一句） */
+function chunkLineGroups(lines: ParsedLine[]): ParsedLine[][] {
+  const total = lines.filter((line) => !line.harmony).length
+  if (total < 9) return [lines]
+  const sizes: number[] = []
+  let remaining = total
+  while (remaining >= 9) {
+    sizes.push(LINES_PER_SECTION)
+    remaining -= LINES_PER_SECTION
+  }
+  sizes.push(remaining)
   const groups: ParsedLine[][] = []
   let group: ParsedLine[] = []
   let mains = 0
+  let index = 0
+  let target = sizes[0]
   for (const line of lines) {
-    if (!line.harmony && mains >= LINES_PER_SECTION) {
+    if (!line.harmony && mains >= target) {
       groups.push(group)
       group = []
       mains = 0
+      index += 1
+      target = sizes[index] ?? Number.POSITIVE_INFINITY
     }
     group.push(line)
     if (!line.harmony) mains += 1
   }
   if (group.length) groups.push(group)
-  if (groups.length > 1) {
-    const last = groups[groups.length - 1]
-    if (last.filter((line) => !line.harmony).length === 1) {
-      groups.pop()
-      groups[groups.length - 1].push(...last)
-    }
-  }
-  return groups.map((group) => ({ name: "", lines: group }))
+  return groups
 }
 
 function splitLine(line: string): { pattern: number[]; cells: string[] } | null {
@@ -340,7 +399,6 @@ export function parseLyrics(text: string): ParsedLyrics {
   const result: ParsedLyrics = { title: "", sections: [], credits: [] }
   let current: ParsedSection | null = null
   let first = true
-  let hadHeader = false
   let hasContent = false
   const rawLines = text.replace(/^\uFEFF/, "").split(/\r?\n/)
 
@@ -357,7 +415,6 @@ export function parseLyrics(text: string): ParsedLyrics {
       if (!inner || /[::]/.test(inner)) continue
       current = { name: inner.slice(0, 24), lines: [] }
       result.sections.push(current)
-      hadHeader = true
       continue
     }
 
@@ -374,7 +431,6 @@ export function parseLyrics(text: string): ParsedLyrics {
     if (sectionName) {
       current = { name: sectionName, lines: [] }
       result.sections.push(current)
-      hadHeader = true
       continue
     }
 
@@ -410,15 +466,24 @@ export function parseLyrics(text: string): ParsedLyrics {
 
     const parsed = parseContentLine(line)
     if (parsed) {
-      current.lines.push(parsed)
+      current.lines.push(...splitOversizedLine(parsed))
       hasContent = true
     }
   }
 
-  result.sections = result.sections.filter((section) => section.lines.length > 0)
-  if (!hadHeader && result.sections.length <= 1 && result.sections[0]) {
-    result.sections = chunkLines(result.sections[0].lines)
-  }
+  // 自动分段（按段落各自判，哪怕文件里有 [段落] / 间奏 之类的标记）：
+  // 连续 8 句以内不动；连续 9 句及以上才在 4|5 句之间断开。
+  // 带名字的段，切出来的后续段自动加序号（「主歌」→「主歌 2」）；没名字的显示成「段落 N」。
+  result.sections = result.sections
+    .filter((section) => section.lines.length > 0)
+    .flatMap((section) => {
+      const groups = chunkLineGroups(section.lines)
+      if (groups.length <= 1) return [section]
+      return groups.map((lines, index) => ({
+        name: index === 0 ? section.name : section.name ? `${section.name} ${index + 1}` : "",
+        lines,
+      }))
+    })
   result.credits = [...new Set(result.credits)]
   return result
 }

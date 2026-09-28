@@ -71,16 +71,26 @@ describe("parseLyrics", () => {
     expect(parsed.sections[1].lines[0].cells).toEqual(["爱", "你", "哦"])
   })
 
-  it("无空行无段落头时每 4 句自动分段", () => {
-    const lines = Array.from({ length: 12 }, (_, i) => `第${i + 1}句`).join("\n")
+  it("连续 8 句以内不分段", () => {
+    const lines = Array.from({ length: 8 }, (_, i) => `第${i + 1}句`).join("\n")
     const parsed = parseLyrics(lines)
-    expect(parsed.sections.map((s) => s.lines.length)).toEqual([4, 4, 4])
+    expect(parsed.sections.map((s) => s.lines.length)).toEqual([8])
   })
 
-  it("余 1 句时并进上一段", () => {
-    const lines = Array.from({ length: 13 }, (_, i) => `第${i + 1}句`).join("\n")
+  it("检测到连续 9 句，在第 4|5 句之间断开", () => {
+    const nine = Array.from({ length: 9 }, (_, i) => `第${i + 1}句`).join("\n")
+    expect(parseLyrics(nine).sections.map((s) => s.lines.length)).toEqual([4, 5])
+    const twelve = Array.from({ length: 12 }, (_, i) => `第${i + 1}句`).join("\n")
+    expect(parseLyrics(twelve).sections.map((s) => s.lines.length)).toEqual([4, 8])
+    const thirteen = Array.from({ length: 13 }, (_, i) => `第${i + 1}句`).join("\n")
+    expect(parseLyrics(thirteen).sections.map((s) => s.lines.length)).toEqual([4, 4, 5])
+  })
+
+  it("带名字的段超 9 句也切，并自动加序号", () => {
+    const lines = ["[主歌]", ...Array.from({ length: 26 }, (_, i) => `第${i + 1}句`)].join("\n")
     const parsed = parseLyrics(lines)
-    expect(parsed.sections.map((s) => s.lines.length)).toEqual([4, 4, 5])
+    expect(parsed.sections.map((s) => s.name)).toEqual(["主歌", "主歌 2", "主歌 3", "主歌 4", "主歌 5", "主歌 6"])
+    expect(parsed.sections.map((s) => s.lines.length)).toEqual([4, 4, 4, 4, 4, 6])
   })
 
   it("不足 5 句不分段", () => {
@@ -154,6 +164,29 @@ describe("parseLyrics", () => {
     expect(parsed.sections).toHaveLength(1)
     expect(parsed.sections[0].lines).toHaveLength(1)
     expect(parsed.sections[0].lines[0].cells.join("")).toBe("我要扶摇直上坐拥满天星斗")
+  })
+
+  it("导入保险丝：一小节最多 16 字、一句最多 32 字，超了自动断开", () => {
+    const twenty = "一二三四五六七八九十一二三四五六七八九十"
+    const forty = twenty + twenty
+    // 20 字一坨 → 16 + 4
+    const one = parseLyrics(twenty)
+    expect(one.sections[0].lines.map((line) => line.pattern)).toEqual([[16, 4]])
+    // 40 字一坨 → 16+16 / 8 两句
+    const two = parseLyrics(forty)
+    expect(two.sections[0].lines.map((line) => line.pattern)).toEqual([[16, 16], [8]])
+    expect(two.sections[0].lines[1].cells.join("")).toBe(forty.slice(32))
+    // 20 字 + 15 字两组 → 第一句 16+4，第二句 15
+    const three = parseLyrics(`${twenty} 一二三四五六七八九十一二三四五`)
+    expect(three.sections[0].lines.map((line) => line.pattern)).toEqual([[16, 4], [15]])
+  })
+
+  it("美工 / 题字 也算署名行，不进正文", () => {
+    const parsed = parseLyrics("美工：KAIRI\n题字：忍清寒\n一二三四")
+    expect(parsed.credits).toEqual(["美工：KAIRI", "题字：忍清寒"])
+    expect(parsed.sections).toHaveLength(1)
+    expect(parsed.sections[0].lines).toHaveLength(1)
+    expect(parsed.sections[0].lines[0].cells.join("")).toBe("一二三四")
   })
 
   it("英文 credit 也认", () => {
@@ -267,12 +300,17 @@ describe("parseLyrics", () => {
       "四",
       "五",
       "六",
+      "七",
+      "八",
+      "九",
+      "十",
     ].join("\n")
     const parsed = parseLyrics(text)
+    // 10 个主句 → 检测到连续 9 句 → 4|5 之间断；和声句跟着前一句
     expect(parsed.sections).toHaveLength(2)
     expect(parsed.sections[0].lines).toHaveLength(5)
     expect(parsed.sections[0].lines[1].harmony).toBe(true)
-    expect(parsed.sections[1].lines).toHaveLength(2)
+    expect(parsed.sections[1].lines).toHaveLength(6)
   })
 
   it("词里的 X 也当空格子（和导出对齐）", () => {

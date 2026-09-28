@@ -61,6 +61,7 @@ import {
   KEYSWITCH,
   buildLyricMidi,
   keyswitchCount,
+  midiTitle,
   midiToSections,
   noteTracks,
   parseMidi,
@@ -70,6 +71,7 @@ import {
 } from "./model/midi"
 import { parsePattern, patternToString, totalCells } from "./model/pattern"
 import { findMatches, replaceInSentence, type SearchMatch } from "./model/search"
+import { diag, diagError, diagText, initDiag } from "./diag"
 import {
   RHYME_LABEL_BY_KEY,
   charFitsRhyme,
@@ -78,6 +80,10 @@ import {
   isHanChar,
   rhymeHue,
   rhymeOfCells,
+  rhymeOfChar,
+  cellLockAt,
+  setCellLockAt,
+  rhymeOfPinyin,
 } from "./model/rhyme"
 import type { Project, Section, Sentence } from "./model/types"
 import type { ExportOptions } from "./state"
@@ -115,7 +121,6 @@ import { cycleTheme, initTheme, themeIcon, themeLabel, themeState } from "./them
 const sentencesEl = document.querySelector("#sentences") as HTMLElement
 const scrollProgressEl = document.querySelector("#scroll-progress") as HTMLElement
 const titleEl = document.querySelector("#project-title") as HTMLInputElement
-const newPatternEl = document.querySelector("#new-pattern") as HTMLInputElement
 const statusStatsEl = document.querySelector("#status-stats") as HTMLElement
 const statusHintEl = document.querySelector("#status-hint") as HTMLElement
 const statusPathEl = document.querySelector("#status-path") as HTMLElement
@@ -151,6 +156,8 @@ const btnAiSend = document.querySelector("#btn-ai-send") as HTMLButtonElement
 const aiHint = document.querySelector("#ai-hint") as HTMLElement
 
 let composing = false
+// 正在组字的那个输入框：render() 只在它仍然聚焦时才避让（防止 composition 卡死把整页冻住）
+let composingInput: HTMLInputElement | null = null
 // 组字刚结束置 true：紧接着的第一次 Backspace 原地不动、什么都不做，
 // 避免删光拼音后连打删除键把前一格的字一起带走
 let imeJustEnded = false
@@ -223,8 +230,8 @@ function renderStatusBar(): void {
     statusHintEl.textContent = statusOverride.text
     statusHintEl.classList.toggle("error", statusOverride.isError)
   } else {
-    statusHintEl.textContent =
-      "点格子输入 · Backspace 删当前格 · Alt+←/→ 整句挪动 · Ctrl/Cmd+S 保存 · Ctrl/Cmd+Z 撤销 · Shift+Cmd+Z 重做"
+    // 默认不占位：快捷键都在「帮助」弹窗里了
+    statusHintEl.textContent = ""
     statusHintEl.classList.remove("error")
   }
 
@@ -606,18 +613,20 @@ function performDeleteDoc(id: string, name: string): void {
 function openSourcePanel(): void {
   closeAiPanel()
   sourcePanel.hidden = false
+  document.documentElement.classList.add("source-open")
   sourceTextEl.value = store.project.source ?? ""
 }
 
 function closeSourcePanel(): void {
   sourcePanel.hidden = true
+  document.documentElement.classList.remove("source-open")
 }
 
 function syncSourcePanel(): void {
   const hasSource = !!store.project.source
   sourceBtn.hidden = !hasSource
   sourceTextEl.value = store.project.source ?? ""
-  if (!hasSource) sourcePanel.hidden = true
+  if (!hasSource) closeSourcePanel()
 }
 
 function renderEmptyState(): HTMLElement {
@@ -637,7 +646,9 @@ function renderEmptyState(): HTMLElement {
 }
 
 function render(): void {
+  // 组字期间绝不重绘（换掉输入框会打断输入法）；卡死状态由 pointerdown 兜底收掉
   if (composing) return
+  const renderStarted = performance.now()
   const prevScrollY = window.scrollY
   const empty = docsState.docs.length === 0
   if (empty) {
@@ -671,6 +682,15 @@ function render(): void {
   // replaceChildren 会先清空容器，高度瞬间归零导致 scrollTop 被钳到 0，这里补回
   if (window.scrollY !== prevScrollY) window.scrollTo(0, prevScrollY)
   updateScrollProgress()
+  const renderMs = performance.now() - renderStarted
+  if (renderMs > 50) {
+    const sentences = allSentences(store.project)
+    diag("render.slow", {
+      ms: Math.round(renderMs),
+      sentences: sentences.length,
+      cells: sentences.reduce((sum, item) => sum + totalCells(item.pattern), 0),
+    })
+  }
 }
 
 function clearSelection(): void {
@@ -727,6 +747,7 @@ function paintSelection(): void {
       if (index >= span.from && index <= span.to) el.classList.add("selected")
     })
   }
+  syncNativeSelection()
 }
 
 function removeSelectedCells(): void {
@@ -746,12 +767,46 @@ function removeSelectedCells(): void {
   setStatus("已清空选中的格子")
 }
 
+/** 框选中的字：每句一行，只算有字的格子 */
+function selectedCellsText(): string {
+  return selectionSpans()
+    .map((span) => getCells(span.sentence).slice(span.from, span.to + 1).filter(Boolean).join(""))
+    .join("\n")
+}
+
+// 隐藏镜像：框选时把系统选区同步成选中的字，这样「右键 → 复制」也拿到选中的内容
+const copyMirror = document.createElement("div")
+copyMirror.className = "copy-mirror"
+copyMirror.setAttribute("aria-hidden", "true")
+document.body.appendChild(copyMirror)
+
+let mirrorActive = false
+
+function syncNativeSelection(): void {
+  const text = selectedCellsText()
+  const native = window.getSelection()
+  if (text) {
+    copyMirror.textContent = text
+    if (native) {
+      native.removeAllRanges()
+      const range = document.createRange()
+      range.selectNodeContents(copyMirror)
+      native.addRange(range)
+    }
+    mirrorActive = true
+    return
+  }
+  // 没有框选、也从没设置过镜像 → 绝不去碰系统选区（打字时动它会把输入法组字打断）
+  if (!mirrorActive) return
+  copyMirror.textContent = ""
+  native?.removeAllRanges()
+  mirrorActive = false
+}
+
 async function copySelection(): Promise<void> {
   const spans = selectionSpans()
   if (spans.length === 0) return
-  const text = spans
-    .map((span) => getCells(span.sentence).slice(span.from, span.to + 1).filter(Boolean).join(""))
-    .join("\n")
+  const text = selectedCellsText()
   const count = [...text.replace(/\n/g, "")].length
   const ok = await copyText(text)
   setStatus(ok ? `已复制 ${count} 个字` : "复制失败", !ok)
@@ -780,7 +835,6 @@ function bindSelection(): void {
     const index = Number(el.dataset.index)
     if (sentenceId === dragStart.sentenceId && index === dragStart.index && !dragStart.moved) return
     dragStart.moved = true
-    window.getSelection()?.removeAllRanges()
     setSelectionBetween(
       { sentenceId: dragStart.sentenceId, cell: dragStart.index },
       { sentenceId, cell: index },
@@ -801,6 +855,28 @@ function bindSelection(): void {
   document.addEventListener(
     "keydown",
     (event) => {
+      // ⌘A / Ctrl+A：全选这首歌词的格子（而不是把整页文字都选上）
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+        const target = event.target as HTMLElement | null
+        if (
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement ||
+          target?.isContentEditable
+        ) {
+          return
+        }
+        const ordered = allSentences(store.project)
+        const first = ordered[0]
+        const last = ordered[ordered.length - 1]
+        if (!first || !last) return
+        event.preventDefault()
+        setSelectionBetween(
+          { sentenceId: first.id, cell: 0 },
+          { sentenceId: last.id, cell: totalCells(last.pattern) - 1 },
+        )
+        paintSelection()
+        return
+      }
       if (!selection) return
       if (event.key === "Escape") {
         event.preventDefault()
@@ -1118,59 +1194,46 @@ function renderSection(section: Section, sectionIdx: number): HTMLElement {
   return root
 }
 
+/** 在这一句下面插一句：词格沿用这一句 */
 function addSentenceAfter(sentenceId: string): void {
-  try {
-    const pattern = parsePattern(newPatternEl.value)
-    newPatternEl.classList.remove("invalid")
-    mutate(() => {
-      const section = findSectionBySentence(store.project, sentenceId)
-      if (!section) return
-      const index = section.sentences.findIndex((s) => s.id === sentenceId)
-      if (index < 0) return
-      const sentence = createSentence(pattern)
-      section.sentences.splice(index + 1, 0, sentence)
-      store.cursor = { sentenceId: sentence.id, cell: 0 }
-    })
-    focusCellInput()
-    setStatus("已加句")
-  } catch (err) {
-    newPatternEl.classList.add("invalid")
-    setStatus(err instanceof Error ? err.message : String(err), true)
-  }
+  const source = store.findSentence(sentenceId)
+  if (!source) return
+  const pattern = source.pattern.slice()
+  mutate(() => {
+    const section = findSectionBySentence(store.project, sentenceId)
+    if (!section) return
+    const index = section.sentences.findIndex((s) => s.id === sentenceId)
+    if (index < 0) return
+    const sentence = createSentence(pattern)
+    section.sentences.splice(index + 1, 0, sentence)
+    store.cursor = { sentenceId: sentence.id, cell: 0 }
+  })
+  focusCellInput()
+  setStatus("已加句")
 }
 
+/** 在本段末尾加一句：词格沿用本段最后一句（空段默认 4+4） */
 function addSentenceToSection(sectionId: string): void {
-  try {
-    const pattern = parsePattern(newPatternEl.value)
-    newPatternEl.classList.remove("invalid")
-    mutate(() => {
-      const section = store.project.sections.find((s) => s.id === sectionId)
-      if (!section) return
-      const sentence = createSentence(pattern)
-      section.sentences.push(sentence)
-      store.cursor = { sentenceId: sentence.id, cell: 0 }
-    })
-    setStatus("已加句")
-    focusCellInput()
-  } catch (err) {
-    newPatternEl.classList.add("invalid")
-    setStatus(err instanceof Error ? err.message : String(err), true)
-  }
+  const section = store.project.sections.find((s) => s.id === sectionId)
+  if (!section) return
+  const last = section.sentences[section.sentences.length - 1]
+  const pattern = last ? last.pattern.slice() : [4, 4]
+  mutate(() => {
+    const target = store.project.sections.find((s) => s.id === sectionId)
+    if (!target) return
+    const sentence = createSentence(pattern)
+    target.sentences.push(sentence)
+    store.cursor = { sentenceId: sentence.id, cell: 0 }
+  })
+  setStatus("已加句")
+  focusCellInput()
 }
 
 function addHarmonyToSection(sectionId: string): void {
   const section = store.project.sections.find((s) => s.id === sectionId)
   if (!section) return
   const prev = section.sentences[section.sentences.length - 1]
-  let pattern: number[]
-  try {
-    pattern = prev ? prev.pattern.slice() : parsePattern(newPatternEl.value)
-    newPatternEl.classList.remove("invalid")
-  } catch (err) {
-    newPatternEl.classList.add("invalid")
-    setStatus(err instanceof Error ? err.message : String(err), true)
-    return
-  }
+  const pattern = prev ? prev.pattern.slice() : [4, 4]
   mutate(() => {
     const target = store.project.sections.find((s) => s.id === sectionId)
     if (!target) return
@@ -1508,41 +1571,53 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   const sideRight = document.createElement("div")
   sideRight.className = "sentence-side-right"
 
-  const rhyme = rhymeOfCells(cells)
-  const lockKey = sentence.rhymeLock ?? ""
-  const lockLabel = RHYME_LABEL_BY_KEY.get(lockKey)
+  // 逐格韵辙锁：徽章看"正在看的那一格"——光标在哪格看哪格；
+  // 光标不在本句时看最后有字的一格（都没有就看句尾）
+  const lastIndex = Math.max(0, cells.length - 1)
+  const cursorHere = store.cursor.sentenceId === sentence.id
+  let watchIndex = Math.min(Math.max(0, store.cursor.cell), lastIndex)
+  if (!cursorHere) {
+    watchIndex = lastIndex
+    for (let i = cells.length - 1; i >= 0; i--) {
+      if (cells[i]) {
+        watchIndex = i
+        break
+      }
+    }
+  }
+  const watchChar = cells[watchIndex] ?? ""
+  const watchRhyme = watchChar ? rhymeOfChar(watchChar) : null
+  const watchLock = cellLockAt(sentence, watchIndex)
+  const lockLabel = RHYME_LABEL_BY_KEY.get(watchLock)
   const badge = document.createElement("span")
   if (lockLabel) {
-    const mismatch = rhyme !== null && rhyme.key !== lockKey
+    const mismatch = watchRhyme !== null && watchRhyme.key !== watchLock
     badge.className = mismatch ? "rhyme-badge locked mismatch" : "rhyme-badge locked"
     badge.textContent = `${lockLabel} 🔒`
-    badge.title = mismatch && rhyme
-      ? `已锁「${lockLabel}」· 但句尾是「${rhyme.char}」（${rhyme.label}），不合辙`
-      : `已锁「${lockLabel}」· 点击解锁`
-    badge.style.setProperty("--rhyme-hue", String(rhymeHue(lockKey)))
-  } else if (rhyme) {
-    const ended = isEndingFilled(cells)
-    badge.className = ended ? "rhyme-badge" : "rhyme-badge pending"
-    badge.textContent = rhyme.label.replace(/辙$/, "")
-    badge.title = ended
-      ? `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label} · 点击加锁`
-      : `韵脚「${rhyme.char}」· 韵母 ${rhyme.final} · ${rhyme.label}（句尾未填，暂不统计）`
-    badge.style.setProperty("--rhyme-hue", String(rhymeHue(rhyme.key)))
-  } else if (RHYME_LABEL_BY_KEY.get(sentence.rhymeHint ?? "")) {
+    badge.title = mismatch && watchRhyme
+      ? `第 ${watchIndex + 1} 格已锁「${lockLabel}」，但这里是「${watchRhyme.char}」（${watchRhyme.label}），不合辙 · 点击解锁`
+      : `第 ${watchIndex + 1} 格已锁「${lockLabel}」· 点击解锁`
+    badge.style.setProperty("--rhyme-hue", String(rhymeHue(watchLock)))
+  } else if (watchRhyme) {
+    badge.className = "rhyme-badge"
+    badge.textContent = watchRhyme.label.replace(/辙$/, "")
+    badge.title = `第 ${watchIndex + 1} 格「${watchRhyme.char}」· 韵母 ${watchRhyme.final} · ${watchRhyme.label} · 点击给这格加锁`
+    badge.style.setProperty("--rhyme-hue", String(rhymeHue(watchRhyme.key)))
+  } else if (watchIndex === lastIndex && RHYME_LABEL_BY_KEY.get(sentence.rhymeHint ?? "")) {
     const hintKey = sentence.rhymeHint as string
     const hintLabel = RHYME_LABEL_BY_KEY.get(hintKey) as string
     badge.className = "rhyme-badge pending"
     badge.textContent = hintLabel.replace(/辙$/, "")
-    badge.title = `清空时记住的辙「${hintLabel}」（未锁定）· 点击可加锁`
+    badge.title = `清空时记住的辙「${hintLabel}」（未锁）· 点击给句尾加锁`
     badge.style.setProperty("--rhyme-hue", String(rhymeHue(hintKey)))
   } else {
     badge.className = "rhyme-badge empty"
     badge.textContent = "＋ 锁"
-    badge.title = "锁定韵辙：写句尾时只允许押这个辙的字"
+    badge.title = `给第 ${watchIndex + 1} 格加锁：写这格时只允许押这个辙的字`
   }
   badge.addEventListener("click", (event) => {
     event.stopPropagation()
-    openRhymeLockDialog(sentence.id, lockKey)
+    openRhymeLockDialog(sentence.id, watchIndex, watchLock)
   })
   sideRight.appendChild(badge)
 
@@ -1725,6 +1800,69 @@ function moveCursorToFlatIndex(currentId: string, nextFlat: number): void {
   focusCellInput()
 }
 
+document.addEventListener(
+  "pointerdown",
+  (event) => {
+    // 点到正在组字的输入框以外的任何地方 = 放弃这次组字（唯一的强制收口，
+    // 用来解开"compositionend 永远不来"的卡死；blur/切窗不清，免得误伤输入法）
+    if (composing && composingInput && event.target !== composingInput) {
+      restoreComposingBadge()
+      diag("ime.forced-clear")
+      composing = false
+      composingInput = null
+    }
+  },
+  { capture: true },
+)
+
+// 组字时给徽章"打草稿"：显示这段拼音的辙；选定/放弃后恢复或重渲染
+const composingBadgeSaved = new WeakMap<
+  HTMLElement,
+  { className: string; text: string; title: string; hue: string }
+>()
+
+function composingBadge(): HTMLElement | null {
+  if (!composingInput) return null
+  const sentenceId = composingInput.dataset.sentenceId ?? ""
+  return document.querySelector<HTMLElement>(
+    `.sentence[data-id="${sentenceId}"] .rhyme-badge`,
+  )
+}
+
+function restoreComposingBadge(): void {
+  const badge = composingBadge()
+  if (!badge) return
+  const saved = composingBadgeSaved.get(badge)
+  if (!saved) return
+  badge.className = saved.className
+  badge.textContent = saved.text
+  badge.title = saved.title
+  badge.style.setProperty("--rhyme-hue", saved.hue)
+}
+
+function paintComposingBadge(): void {
+  const badge = composingBadge()
+  if (!badge) return
+  const pinyin = composingInput?.value ?? ""
+  const info = rhymeOfPinyin(pinyin)
+  if (!info) {
+    restoreComposingBadge()
+    return
+  }
+  if (!composingBadgeSaved.has(badge)) {
+    composingBadgeSaved.set(badge, {
+      className: badge.className,
+      text: badge.textContent ?? "",
+      title: badge.title,
+      hue: badge.style.getPropertyValue("--rhyme-hue"),
+    })
+  }
+  badge.className = "rhyme-badge pending"
+  badge.textContent = info.label.replace(/辙$/, "")
+  badge.title = `正在拼「${pinyin}」→ ${info.label}；选定后自动换成那个字的辙`
+  badge.style.setProperty("--rhyme-hue", String(rhymeHue(info.key)))
+}
+
 function bindCellInput(input: HTMLInputElement, sentenceId: string, index: number): void {
   input.addEventListener("focus", () => {
     store.cursor = { sentenceId, cell: index }
@@ -1732,12 +1870,21 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
 
   input.addEventListener("compositionstart", () => {
     composing = true
+    composingInput = input
+    diag("ime.start")
+  })
+
+  input.addEventListener("compositionupdate", () => {
+    paintComposingBadge()
   })
 
   input.addEventListener("compositionend", () => {
+    restoreComposingBadge()
     composing = false
+    composingInput = null
     input.style.width = ""
     imeJustEnded = true
+    diag("ime.end", { len: input.value.length })
     commitInput(input)
   })
 
@@ -1750,6 +1897,7 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
     if (composing) {
       const len = input.value.length
       input.style.width = len > 1 ? `${Math.max(54, (len + 1) * 16)}px` : ""
+      paintComposingBadge()
       return
     }
     commitInput(input)
@@ -1878,15 +2026,16 @@ function commitInput(input: HTMLInputElement): void {
   const sentence = store.findSentence(sentenceId)
   if (!sentence) return
 
-  const lockKey = sentence.rhymeLock ?? ""
-  if (lockKey) {
+  // 逐格锁：有锁的格子只收押该辙的字（写到哪格查哪格）
+  {
     const total = totalCells(sentence.pattern)
-    const lastIndex = total - 1
     const chars = [...text]
-    for (let i = start, j = 0; i <= lastIndex && j < chars.length; i++, j++) {
-      if (i !== lastIndex) continue
-      if (!charFitsRhyme(chars[j], lockKey)) {
-        setStatus(`『${chars[j]}』不押「${RHYME_LABEL_BY_KEY.get(lockKey) ?? lockKey}」，已拦下`, true)
+    for (let i = start, j = 0; i < total && j < chars.length; i++, j++) {
+      const lock = cellLockAt(sentence, i)
+      if (lock && !charFitsRhyme(chars[j], lock)) {
+        const name = (RHYME_LABEL_BY_KEY.get(lock) ?? lock).replace(/辙$/, "")
+        input.value = base
+        setStatus(`第 ${i + 1} 格锁了「${name}」，「${chars[j]}」不押，已拦下`, true)
         return
       }
     }
@@ -2033,7 +2182,7 @@ function clearAllCells(): void {
 }
 
 function rememberRhyme(sentence: Sentence): void {
-  if (sentence.rhymeLock) return
+  if (Object.keys(sentence.cellLocks ?? {}).length > 0) return
   const cells = getCells(sentence)
   if (!isEndingFilled(cells)) return
   const rhyme = rhymeOfCells(cells)
@@ -2063,11 +2212,12 @@ async function pasteSentence(sentenceId: string): Promise<void> {
   if (!sentence) return
   const total = totalCells(sentence.pattern)
   const written = Math.min(chars.length, total)
-  const lockKey = sentence.rhymeLock ?? ""
-  if (lockKey && written > 0) {
-    const lastChar = chars[written - 1]
-    if (!charFitsRhyme(lastChar, lockKey)) {
-      setStatus(`『${lastChar}』不押「${RHYME_LABEL_BY_KEY.get(lockKey) ?? lockKey}」，已拦下`, true)
+  // 逐格锁：粘进来的字落在有锁的格子上也要押
+  for (let i = 0; i < written; i++) {
+    const lock = cellLockAt(sentence, i)
+    if (lock && !charFitsRhyme(chars[i], lock)) {
+      const name = (RHYME_LABEL_BY_KEY.get(lock) ?? lock).replace(/辙$/, "")
+      setStatus(`第 ${i + 1} 格锁了「${name}」，「${chars[i]}」不押，已拦下`, true)
       return
     }
   }
@@ -2217,17 +2367,17 @@ async function exportDraftsBackup(): Promise<void> {
 
 
 
-function openRhymeLockDialog(sentenceId: string, current: string): void {
+function openRhymeLockDialog(sentenceId: string, cellIndex: number, current: string): void {
   const dialog = document.createElement("dialog")
   const form = document.createElement("form")
   form.method = "dialog"
   form.className = "dialog-body"
 
   const title = document.createElement("strong")
-  title.textContent = "锁定韵辙"
+  title.textContent = `锁定第 ${cellIndex + 1} 格的韵辙`
 
   const hint = document.createElement("p")
-  hint.textContent = "锁定后，这句的句尾只能输入押该辙的字（多音字任一读音命中即放行）。"
+  hint.textContent = `锁定后，第 ${cellIndex + 1} 格只能输入押该辙的字（多音字任一读音命中即放行）；点徽章可随时解锁。`
 
   const grid = document.createElement("div")
   grid.className = "rhyme-grid"
@@ -2267,9 +2417,13 @@ function openRhymeLockDialog(sentenceId: string, current: string): void {
     mutate(() => {
       const target = store.findSentence(sentenceId)
       if (!target) return
-      target.rhymeLock = key
+      setCellLockAt(target, cellIndex, key)
     })
-    setStatus(key ? `已锁「${RHYME_LABEL_BY_KEY.get(key)}」，句尾只能押这个辙` : "已解锁")
+    setStatus(
+      key
+        ? `已锁第 ${cellIndex + 1} 格「${RHYME_LABEL_BY_KEY.get(key) ?? key}」，这格只能押这个辙`
+        : `已解锁第 ${cellIndex + 1} 格`,
+    )
   })
   dialog.showModal()
 }
@@ -2558,7 +2712,15 @@ function applyLyricsText(
   try {
     const parsed = parseLyrics(text)
     const total = parsed.sections.reduce((n, section) => n + section.lines.length, 0)
+    diag("import.lyrics", {
+      chars: text.length,
+      sections: parsed.sections.length,
+      lines: total,
+      merge,
+      fillLyrics,
+    })
     if (total === 0) {
+      diag("import.lyrics.empty", { chars: text.length })
       setStatus("没有识别到歌词行", true)
       return false
     }
@@ -2625,7 +2787,7 @@ function openImportDialog(initialText?: string, fileTitle?: string): void {
     <form method="dialog" class="dialog-body">
       <button class="dialog-close" value="cancel" type="submit" title="关闭" aria-label="关闭">×</button>
       <strong>导入歌词</strong>
-      <p>每行一句，空格分组，空行分段。支持《标题》、[段落名]、行尾（备注）、<code>|</code> 分隔备选、纯数字行只生成词格。例：<code>真的 假的 啊</code> → 2/2/1。可直接粘贴、从剪贴板读入，或选择 .txt / .lrc / .md 文件。</p>
+      <p>每行一句，空格分组，空行分段；<strong>连续超过 8 句会自动断开</strong>（在第 4、5 句之间，连续不超过 9 句）。支持《标题》、[段落名]、行尾（备注）、<code>|</code> 分隔备选、纯数字行只生成词格。例：<code>真的 假的 啊</code> → 2/2/1。可直接粘贴、从剪贴板读入，或选择 .txt / .lrc / .md 文件。</p>
       <textarea placeholder="《歌名》&#10;[Verse]&#10;真的 假的（温柔）|真的啊"></textarea>
       <div class="dialog-radios">
         <label><input type="radio" name="import-mode" value="lyrics" checked /> 同时导入歌词</label>
@@ -2803,13 +2965,17 @@ function openMidiDialog(file: MidiFile, baseName: string): void {
   trackLabel.className = "dialog-field"
   trackLabel.append(document.createTextNode("轨道"))
   const trackSelect = document.createElement("select")
+  const autoOption = document.createElement("option")
+  autoOption.value = "-1"
+  autoOption.textContent = "自动（单轨直接用；多轨不重叠就合并）"
+  trackSelect.appendChild(autoOption)
   for (const track of tracks) {
     const option = document.createElement("option")
     option.value = String(track.index)
     option.textContent = `${track.name}（${track.count} 个音）`
     trackSelect.appendChild(option)
   }
-  trackSelect.value = String(pickMelodyTrack(file))
+  trackSelect.value = "-1"
   trackLabel.appendChild(trackSelect)
 
   const modeLabel = document.createElement("label")
@@ -2950,11 +3116,18 @@ function openMidiDialog(file: MidiFile, baseName: string): void {
       usesKeyswitch() && keyswitchCount(file, trackIndex) > 0
         ? [KEYSWITCH.group, KEYSWITCH.sentence, KEYSWITCH.section]
         : []
+    // 导出要写回某一条真轨：自动模式落回人声 / 音最多的那轨
+    const exportTrack = trackIndex >= 0 ? trackIndex : Math.max(0, pickMelodyTrack(file))
     dialog.remove()
     if (action !== "ok") return
-    applyMidiSections(file, trackIndex, sections, mergeCheck.checked, skipPitches)
+    applyMidiSections(file, exportTrack, sections, mergeCheck.checked, skipPitches)
   })
   dialog.showModal()
+}
+
+/** 各轨的版权声明（meta 0x02），去重去空 */
+function copyrightsOf(file: MidiFile): string[] {
+  return [...new Set(file.tracks.map((track) => track.copyright.trim()).filter(Boolean))]
 }
 
 function applyMidiSections(
@@ -2983,7 +3156,7 @@ function applyMidiSections(
     }
     const imported = sections.map((section, index) => {
       const sentences = section.lines.map((line) => {
-        const sentence = createSentence(line.pattern)
+        const sentence = createSentence(line.pattern, line.harmony ? "harmony" : undefined)
         setCells(sentence, line.cells)
         return sentence
       })
@@ -2992,14 +3165,30 @@ function applyMidiSections(
     if (merge) {
       offset = store.project.sections.length
       store.project.sections.push(...imported)
+      // 合并导入：只补识别到的版权，不动歌名/原文
+      const found = copyrightsOf(file)
+      if (found.length > 0) {
+        store.project.credits = [...new Set([...(store.project.credits ?? []), ...found])]
+      }
     } else {
       offset = 0
       store.project.sections = imported
+      // 和文本导入一样的防护：识别不到就清空旧的，不留上一首的残留
+      store.project.title = midiTitle(file) || "未命名歌曲"
+      store.project.credits = copyrightsOf(file)
+      store.project.source = ""
     }
     const first = imported[0]?.sentences[0]
     if (first) store.cursor = { sentenceId: first.id, cell: 0 }
   })
   midiSession = { file, trackIndex, offset, sections, skipPitches }
+  diag("import.midi", {
+    tracks: file.tracks.length,
+    trackIndex,
+    sections: sections.length,
+    lines: total,
+    merge,
+  })
   focusCellInput()
   setStatus(`已从 MIDI 导入 ${total} 句词格（填完字可「导出 → 带歌词 MIDI」）`)
 }
@@ -3516,6 +3705,7 @@ function openAiPanel(): void {
   closeSourcePanel()
   aiPanel.hidden = false
   aiResizer.hidden = false
+  document.documentElement.classList.add("ai-open")
   btnAi.setAttribute("aria-expanded", "true")
   localStorage.setItem(AI_OPEN_KEY, "1")
   updateAiHint()
@@ -3528,6 +3718,7 @@ function closeAiPanel(): void {
   closeAiPops()
   aiPanel.hidden = true
   aiResizer.hidden = true
+  document.documentElement.classList.remove("ai-open")
   btnAi.setAttribute("aria-expanded", "false")
   localStorage.setItem(AI_OPEN_KEY, "0")
 }
@@ -4178,6 +4369,7 @@ async function runAiGeneration(
   aiAbort = new AbortController()
   updateAiSendButton()
   const started = Date.now()
+  diag("ai.request", { model: target.model, history: history.length })
   const scopeIds =
     targets && targets.length > 0
       ? targets
@@ -4267,6 +4459,13 @@ async function runAiGeneration(
     version.ok = validation.ok
     version.issues = validation.issues
     const seconds = ((Date.now() - started) / 1000).toFixed(1)
+    diag("ai.done", {
+      ms: Date.now() - started,
+      results: results.length,
+      ok: validation.ok.length,
+      issues: validation.issues.length,
+      rounds,
+    })
     const model = ` · ${target.model}`
     const thinkCount = [...(version.thinkingText ?? "")].length
     const thinking = thinkCount > 0 ? ` · 思考 ${thinkCount} 字` : ""
@@ -4283,8 +4482,10 @@ async function runAiGeneration(
     version.streaming = false
     if (aiAbort?.signal.aborted) {
       version.note = "已停止"
+      diag("ai.abort", { ms: Date.now() - started })
     } else {
       version.error = err instanceof Error ? err.message : String(err)
+      diagError("ai.error", err, { ms: Date.now() - started })
       setStatus(`AI 出错：${version.error}`, true)
     }
     renderAiMessages()
@@ -4534,6 +4735,99 @@ function openAiSettings(): void {
     setStatus("AI 设置已保存")
   })
   dialog.showModal()
+}
+
+const HELP_GUIDE: string[] = [
+  "<b>格子</b>：点格子直接打字，一格一字——<b>只收汉字</b>（英文、拼音、数字、标点自动跳过）",
+  "<b>词格</b>：句子左边的小框改这句的词格（如 <code>4/4</code> 表示 4+4）；「＋ 新增一句」沿用本句 / 本段最后一句的词格",
+  "<b>韵辙</b>：右侧徽章显示<b>光标所在那一格</b>的辙，点它给<b>这一格</b>加锁（任意一格都能锁）；锁住的格子只收押该辙的字；正在打拼音时徽章会实时显示这段拼音的辙",
+  "<b>状态栏 · 韵脚</b>：底部那串「韵脚 江阳×12 …」是**整首每句最后一个有字的格**的辙统计（按出现次数排序）——句尾还空着时，看的就是它前面最近的有字格；用来一眼看清押韵分布",
+  "<b>和声</b>：句子上「和声」按钮标记 / 取消；段落头「＋ 和声」在段尾加一句",
+  "<b>备选</b>：句首「备选 N ◇」可以开新备选，写不同版本",
+  "<b>导入</b>：<code>导入</code> 收歌词（可直接粘贴、选 <code>.txt/.lrc/.md</code>、或把文件拖进窗口）与 <code>选择 MIDI…</code>；导入会自动断句（连续 8 句以内不动，超过就在第 4、5 句之间断；一小节 ≤16 字、一句 ≤32 字）；多轨 MIDI：不重叠的带词轨合并循序读字，重叠的按字数定主歌 / 和声",
+  "<b>导出 / 复制</b>：导出 → 歌词 / 词格 / 带歌词 MIDI（写回原 MIDI）；复制 → 歌词 / 词格",
+  "<b>查找替换</b>：工具栏「查找」或 <kbd>Cmd/Ctrl+F</kbd>；替换会<b>按字数改词格</b>（短了删格、长了插格），可一步撤销",
+  "<b>工作区（左栏）</b>：歌词分组，每组下面是它的 AI 会话；鼠标悬浮歌名行时左边的文件夹会变成三角，点它折叠 / 展开；「＋ 新建对话」开新会话",
+  "<b>AI 面板（桌面版）</b>：选模型和等级 → 说要求（或点「按词格写整首」）；范围可选整首 / 只填空句 / 当前段 / 选中的句子；回复能翻页（输入版本 × 回复版本）；「填入词格」把通过的句子写进格子（可撤销）",
+  "<b>保存</b>：草稿自动存本机；<code>保存工程</code> 存成 <code>.json</code> 文件，可换机 / 分享",
+  "<b>网页版</b>：AI 不可用；Chrome / Edge 保存就地覆盖，Safari 走下载",
+]
+
+const HELP_KEYS: string[] = [
+  "输入：<kbd>Enter</kbd> 下一句 · <kbd>←</kbd><kbd>→</kbd> 换格 · <kbd>↑</kbd><kbd>↓</kbd> 换句 · <kbd>Alt+←/→</kbd> 整句挪动 · <kbd>Backspace</kbd> 删当前格（空格时删前一格）",
+  "框选：按住拖动选一串格子 → <kbd>Backspace</kbd>/<kbd>Delete</kbd> 清空 · <kbd>Cmd/Ctrl+C</kbd> 复制选中 · <kbd>Esc</kbd> 取消；<kbd>Cmd/Ctrl+A</kbd> 全选格子",
+  "全局：<kbd>Cmd/Ctrl+S</kbd> 保存工程（加 <kbd>Shift</kbd> 另存为）· <kbd>Cmd/Ctrl+Z</kbd> 撤销 · <kbd>Shift+Cmd/Ctrl+Z</kbd> 重做 · <kbd>Cmd/Ctrl+F</kbd> 查找替换",
+  "AI：输入框 <kbd>Enter</kbd> 发送（<kbd>Shift+Enter</kbd> 换行）；编辑消息 <kbd>Enter</kbd> 发送、<kbd>Esc</kbd> 取消",
+  "弹窗：<kbd>Esc</kbd> 关闭；查找面板 <kbd>Enter</kbd> 下一处、<kbd>Shift+Enter</kbd> 上一处",
+]
+
+/** 帮助：使用说明 + 快捷键 + 导出诊断日志 */
+function openHelpDialog(): void {
+  const dialog = document.createElement("dialog")
+  dialog.className = "help-dialog"
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body"
+
+  const title = document.createElement("strong")
+  title.textContent = "帮助"
+  form.appendChild(title)
+
+  const section = (heading: string, items: string[]): void => {
+    const head = document.createElement("div")
+    head.className = "help-title"
+    head.textContent = heading
+    const list = document.createElement("ul")
+    list.className = "help-list"
+    for (const item of items) {
+      const li = document.createElement("li")
+      li.innerHTML = item
+      list.appendChild(li)
+    }
+    form.append(head, list)
+  }
+  section("使用说明", HELP_GUIDE)
+  section("快捷键", HELP_KEYS)
+
+  const actions = document.createElement("div")
+  actions.className = "dialog-actions help-actions"
+  const diagBtn = document.createElement("button")
+  diagBtn.type = "button"
+  diagBtn.className = "dialog-inline-btn"
+  diagBtn.textContent = "导出诊断日志"
+  diagBtn.title = "运行信息 + 最近内部事件（不含歌词正文和提示词），出问题时发给开发者"
+  diagBtn.addEventListener("click", () => void exportDiagLog())
+  const close = document.createElement("button")
+  close.type = "submit"
+  close.value = "ok"
+  close.textContent = "知道了"
+  actions.append(diagBtn, close)
+
+  form.appendChild(actions)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  dialog.addEventListener("close", () => dialog.remove())
+  dialog.showModal()
+}
+
+/** 导出诊断日志：桌面端走保存对话框，网页版直接下载 */
+async function exportDiagLog(): Promise<void> {
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")
+  try {
+    const saved = await saveText({
+      suggestedName: `作词助手-诊断-${stamp}.txt`,
+      description: "诊断日志",
+      extensions: ["txt"],
+      pickerId: "cige-diag",
+      contents: diagText(),
+    })
+    if (!saved) return
+    diag("diag.export", { kind: saved.kind })
+    setStatus(saved.kind === "download" ? "已下载诊断日志" : "已导出诊断日志")
+  } catch (err) {
+    diagError("diag.export.error", err)
+    setStatus("导出诊断日志失败", true)
+  }
 }
 
 function openAiPromptView(): void {
@@ -4830,14 +5124,8 @@ function bindToolbar(): void {
     })
   })
 
-  document.querySelector("#btn-add-sentence")?.addEventListener("click", () => {
-    const sectionId =
-      findSectionBySentence(store.project, store.cursor.sentenceId)?.id ??
-      store.project.sections[0]?.id
-    if (sectionId) addSentenceToSection(sectionId)
-  })
-
   document.querySelector("#btn-import-lyrics")?.addEventListener("click", () => openImportDialog())
+  document.querySelector("#btn-help")?.addEventListener("click", openHelpDialog)
   newDocBtn.addEventListener("click", addDoc)
   creditsBtn.addEventListener("click", openCreditsDialog)
   sourceBtn.addEventListener("click", () => {
@@ -4947,6 +5235,7 @@ function doRedo(): void {
   setStatus("已重做")
 }
 
+initDiag()
 initTheme()
 refreshThemeButton()
 trackTopbarHeight()

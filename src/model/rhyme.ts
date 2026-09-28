@@ -64,6 +64,53 @@ export function rhymeOfChar(char: string): RhymeInfo | null {
   return info
 }
 
+const PINYIN_INITIALS = [
+  "zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l",
+  "g", "k", "h", "j", "q", "x", "r", "z", "c", "s", "y", "w",
+]
+
+/** 拼音（输入法组字串）→ 辙。只认"整串刚好是一个音节"的情况；
+ *  打一半（zh）、多音节（nihao）返回 null。 */
+export function rhymeOfPinyin(pinyin: string): { final: string; key: string; label: string } | null {
+  const raw = pinyin
+    .toLowerCase()
+    .replace(/ü/g, "v")
+    .replace(/[^a-z]/g, "")
+  if (!raw) return null
+  let initial = ""
+  for (const candidate of PINYIN_INITIALS) {
+    if (raw.startsWith(candidate)) {
+      initial = candidate
+      break
+    }
+  }
+  let final = raw.slice(initial.length)
+  if (!final) return null
+  // ü 的写法：j/q/x + u = ü；yu… = ü…
+  if ((initial === "j" || initial === "q" || initial === "x") && final === "u") final = "v"
+  if (initial === "y" && (final === "u" || final.startsWith("u"))) final = `v${final.slice(1)}`
+  if (initial === "y" && final === "e") final = "ie"
+  const group = FINAL_TO_GROUP.get(final)
+  return group ? { final, key: group.key, label: group.label } : null
+}
+
+export function cellLockAt(
+  sentence: { cellLocks?: Record<string, string> },
+  index: number,
+): string {
+  return sentence.cellLocks?.[String(index)] ?? ""
+}
+
+export function setCellLockAt(
+  sentence: { cellLocks?: Record<string, string> },
+  index: number,
+  key: string,
+): void {
+  if (!sentence.cellLocks) sentence.cellLocks = {}
+  if (key) sentence.cellLocks[String(index)] = key
+  else delete sentence.cellLocks[String(index)]
+}
+
 export function isEndingFilled(cells: string[]): boolean {
   const last = cells[cells.length - 1]
   return typeof last === "string" && last.trim().length > 0

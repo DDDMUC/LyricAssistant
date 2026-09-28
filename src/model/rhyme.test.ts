@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { isEndingFilled, rhymeHue, rhymeLabels, rhymeOfCells, rhymeOfChar } from "./rhyme"
+import {
+  isEndingFilled,
+  rhymeHue,
+  rhymeLabels,
+  rhymeOfCells,
+  rhymeOfChar,
+  rhymeOfPinyin,
+} from "./rhyme"
 
 describe("rhymeOfChar", () => {
   it("识别常见十三辙", () => {
@@ -60,6 +67,24 @@ describe("rhymeHue", () => {
 })
 
 describe("rhymeLabels", () => {
+  it("拼音（组字串）算辙：常用音节 + 打一半/多音节给 null", () => {
+    expect(rhymeOfPinyin("san")?.label).toBe("言前辙")
+    expect(rhymeOfPinyin("zhong")?.label).toBe("中东辙")
+    expect(rhymeOfPinyin("dao")?.label).toBe("遥条辙")
+    expect(rhymeOfPinyin("ni")?.label).toBe("一七辙")
+    expect(rhymeOfPinyin("wo")?.label).toBe("梭波辙")
+    expect(rhymeOfPinyin("yue")?.label).toBe("乜斜辙")
+    expect(rhymeOfPinyin("ye")?.label).toBe("乜斜辙")
+    expect(rhymeOfPinyin("yu")?.label).toBe("一七辙")
+    expect(rhymeOfPinyin("lv")?.label).toBe("一七辙")
+    expect(rhymeOfPinyin("ju")?.label).toBe("一七辙")
+    expect(rhymeOfPinyin("er")?.label).toBe("一七辙")
+    expect(rhymeOfPinyin("shi")?.label).toBe("一七辙")
+    expect(rhymeOfPinyin("zh")).toBeNull()
+    expect(rhymeOfPinyin("nihao")).toBeNull()
+    expect(rhymeOfPinyin("")).toBeNull()
+  })
+
   it("包含十三辙", () => {
     expect(rhymeLabels()).toHaveLength(13)
     expect(rhymeLabels()).toContain("江阳辙")

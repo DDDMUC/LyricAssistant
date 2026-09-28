@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   buildLyricMidi,
   keyswitchCount,
+  midiTitle,
   midiToSections,
   noteTracks,
   parseMidi,
@@ -174,6 +175,197 @@ describe("midiToSections", () => {
     )
     const sections = midiToSections(file)
     expect(sections[0].lines[0].pattern).toEqual([1])
+  })
+})
+
+describe("文件元数据：歌名（轨名）与版权", () => {
+  it("第 1 轨轨名当歌名；版权声明进 copyright；都没有就空", () => {
+    const named = parseMidi(
+      build([
+        [
+          meta(0, 0x03, text("草木青时")),
+          meta(0, 0x02, text("© 2026 某社")),
+          on(0, 60),
+          off(480, 60),
+          meta(0, 0x2f, []),
+        ],
+      ]),
+    )
+    expect(named.tracks[0].name).toBe("草木青时")
+    expect(named.tracks[0].copyright).toBe("© 2026 某社")
+    expect(midiTitle(named)).toBe("草木青时")
+
+    const bare = parseMidi(build([[meta(0, 0x2f, [])]]))
+    expect(midiTitle(bare)).toBe("")
+    expect(bare.tracks[0].copyright).toBe("")
+  })
+})
+
+describe("多轨：带歌词的轨不重叠时合并", () => {
+  it("两条各唱一半的轨 → 合并成一条，循序读字", () => {
+    const verse = [
+      meta(0, 0x03, text("Verse")),
+      meta(0, 0x05, text("春")),
+      on(0, 60),
+      off(480, 60),
+      meta(0, 0x05, text("眠")),
+      on(0, 62),
+      off(480, 62),
+      meta(0, 0x2f, []),
+    ]
+    const chorus = [
+      meta(0, 0x03, text("Chorus")),
+      meta(960, 0x01, text("")),
+      meta(0, 0x05, text("不")),
+      on(0, 64),
+      off(480, 64),
+      meta(0, 0x05, text("觉")),
+      on(0, 65),
+      off(480, 65),
+      meta(0, 0x2f, []),
+    ]
+    const file = parseMidi(build([verse, chorus]))
+    const sections = midiToSections(file)
+    expect(sections).toHaveLength(1)
+    expect(sections[0].lines[0].pattern).toEqual([4])
+    expect(sections[0].lines[0].cells).toEqual(["春", "眠", "不", "觉"])
+  })
+
+  it("时间重叠的轨：字数多的当主歌、少的当和声（挂在重叠的主句后面）", () => {
+    const main = [
+      meta(0, 0x03, text("主唱")),
+      meta(0, 0x05, text("一")),
+      on(0, 60),
+      off(480, 60),
+      meta(0, 0x05, text("二")),
+      on(0, 62),
+      off(480, 62),
+      meta(0, 0x05, text("三")),
+      on(0, 64),
+      off(480, 64),
+      meta(0, 0x05, text("四")),
+      on(0, 66),
+      off(480, 66),
+      meta(0, 0x2f, []),
+    ]
+    const harmony = [
+      meta(0, 0x03, text("和声")),
+      meta(240, 0x05, text("和")),
+      on(0, 55),
+      off(480, 55),
+      meta(0, 0x05, text("声")),
+      on(0, 57),
+      off(480, 57),
+      meta(0, 0x2f, []),
+    ]
+    const file = parseMidi(build([main, harmony]))
+    const sections = midiToSections(file)
+    expect(sections).toHaveLength(1)
+    expect(
+      sections[0].lines.map((line) => ({
+        pattern: line.pattern,
+        cells: line.cells,
+        harmony: line.harmony ?? false,
+      })),
+    ).toEqual([
+      { pattern: [4], cells: ["一", "二", "三", "四"], harmony: false },
+      { pattern: [2], cells: ["和", "声"], harmony: true },
+    ])
+  })
+
+  it("一句主歌可以挂多个和声（两条和声轨都挂在同一条主句后面）", () => {
+    const main = [
+      meta(0, 0x03, text("主唱")),
+      meta(0, 0x05, text("一")),
+      on(0, 60),
+      off(480, 60),
+      meta(0, 0x05, text("二")),
+      on(0, 62),
+      off(480, 62),
+      meta(0, 0x05, text("三")),
+      on(0, 64),
+      off(480, 64),
+      meta(0, 0x05, text("四")),
+      on(0, 66),
+      off(480, 66),
+      meta(0, 0x2f, []),
+    ]
+    const harmonyA = [
+      meta(0, 0x03, text("和声A")),
+      meta(240, 0x05, text("和")),
+      on(0, 55),
+      off(480, 55),
+      meta(0, 0x05, text("声")),
+      on(0, 57),
+      off(480, 57),
+      meta(0, 0x2f, []),
+    ]
+    const harmonyB = [
+      meta(0, 0x03, text("和声B")),
+      meta(480, 0x05, text("伴")),
+      on(0, 52),
+      off(480, 52),
+      meta(0, 0x05, text("唱")),
+      on(0, 53),
+      off(480, 53),
+      meta(0, 0x2f, []),
+    ]
+    const file = parseMidi(build([main, harmonyA, harmonyB]))
+    const sections = midiToSections(file)
+    expect(sections).toHaveLength(1)
+    const lines = sections[0].lines
+    expect(lines).toHaveLength(3)
+    expect(lines[0].cells).toEqual(["一", "二", "三", "四"])
+    expect(lines[0].harmony ?? false).toBe(false)
+    // 两条和声都在主句后面，依次跟主句（前后顺序无所谓，各自标和声）
+    const rest = lines.slice(1)
+    expect(rest.every((line) => line.harmony === true)).toBe(true)
+    expect(rest.map((line) => line.cells.join("")).sort()).toEqual(["伴唱", "和声"])
+    expect(sections[0].lines[0].cells.join("")).toBe("一二三四")
+  })
+
+  it("MIDI 导入也吃 16 / 32 保险丝：一句超 32 自动断句", () => {
+    const han = [..."一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十"]
+    const events: number[][] = [meta(0, 0x03, text("Vocal"))]
+    for (const char of han) {
+      events.push(meta(0, 0x05, text(char)), on(0, 60), off(480, 60))
+    }
+    events.push(meta(0, 0x2f, []))
+    const file = parseMidi(build([events]))
+    const sections = midiToSections(file)
+    expect(sections[0].lines.map((line) => line.pattern)).toEqual([[16, 16], [8]])
+    expect(sections[0].lines[0].cells.join("")).toBe(han.slice(0, 32).join(""))
+    expect(sections[0].lines[1].cells.join("")).toBe(han.slice(32).join(""))
+  })
+
+  it("伴奏轨没歌词就不掺进来", () => {
+    const vocal = [
+      meta(0, 0x03, text("Vocal")),
+      meta(0, 0x05, text("风")),
+      on(0, 60),
+      off(480, 60),
+      meta(0, 0x05, text("雨")),
+      on(0, 62),
+      off(480, 62),
+      meta(0, 0x2f, []),
+    ]
+    const piano = [
+      meta(0, 0x03, text("Piano")),
+      on(0, 48),
+      on(0, 55),
+      off(480, 48),
+      off(0, 55),
+      on(0, 48),
+      on(0, 55),
+      off(480, 48),
+      off(0, 55),
+      meta(0, 0x2f, []),
+    ]
+    const file = parseMidi(build([vocal, piano]))
+    const sections = midiToSections(file)
+    expect(sections).toHaveLength(1)
+    expect(sections[0].lines[0].pattern).toEqual([2])
+    expect(sections[0].lines[0].cells).toEqual(["风", "雨"])
   })
 })
 
