@@ -4213,6 +4213,8 @@ function setAiDetached(detached: boolean): void {
   }
   const redockMain = document.querySelector<HTMLElement>("#btn-ai-redock-main")
   if (redockMain) redockMain.hidden = !detached
+  const placeholder = document.querySelector<HTMLElement>("#ai-detached-placeholder")
+  if (placeholder) placeholder.hidden = !detached
   updateAiHint()
 }
 
@@ -4451,15 +4453,6 @@ function renderAiMessages(touchConvo = true): void {
   aiStreamThinkLabelEl = null
   aiMessagesEl.replaceChildren()
   persistConvosSoon(touchConvo)
-  if (aiTurns.length === 0) {
-    const empty = document.createElement("div")
-    empty.className = "ai-msg system"
-    empty.textContent = AI_WINDOW_MODE
-      ? "说要求（比如「写一段古风」），或点下面的「按词格写整首」；「＋ 新对话」开新话题，「放回」收回主窗口。"
-      : "说要求（比如「写一段古风」），或点下面的「按词格写整首」；历史对话在左边栏「工作区」里。"
-    aiMessagesEl.appendChild(empty)
-    return
-  }
   aiTurns.forEach((turn, turnIndex) => {
     const wrapper = document.createElement("div")
     wrapper.className = "ai-turn"
@@ -6555,11 +6548,24 @@ function setDocsDetached(detached: boolean): void {
   document.documentElement.classList.toggle("docs-detached", detached)
   const sidebar = document.querySelector<HTMLElement>(".sidebar")
   if (sidebar) sidebar.inert = detached
+  const placeholder = document.querySelector<HTMLElement>("#docs-detached-placeholder")
+  if (placeholder) placeholder.hidden = !detached
   try {
     localStorage.setItem(DOCS_DETACHED_KEY, detached ? "1" : "0")
   } catch {
     // 忽略配额错误
   }
+}
+
+/** 主窗口里点占位块的「放回」：藏掉文档栏窗 + 收回内嵌 */
+async function redockDocsWindow(): Promise<void> {
+  try {
+    const opened = (await getAllWindows()).find((win) => win.label === DOCS_WINDOW_LABEL)
+    if (opened) await opened.hide()
+  } catch (err) {
+    diagError("docs.redock.error", err)
+  }
+  setDocsDetached(false)
 }
 
 /** 已拆出去就把那个窗聚焦回来；没开就开一个 */
@@ -6754,6 +6760,10 @@ function initAiPanel(): void {
       else toggleAiPanel()
     })
     document.querySelector<HTMLButtonElement>("#btn-ai-redock-main")?.addEventListener("click", () => {
+      setAiDetached(false)
+      openAiPanel()
+    })
+    document.querySelector<HTMLButtonElement>("#btn-ai-redock-placeholder")?.addEventListener("click", () => {
       setAiDetached(false)
       openAiPanel()
     })
@@ -6974,6 +6984,13 @@ function doRedo(): void {
 initDiag()
 initTheme()
 refreshThemeButton()
+// Windows 桌面版：系统已有原生标题栏，隐掉页面内那条自绘标题栏；主题按钮挪到顶栏
+if (isDesktop() && /Windows/i.test(navigator.userAgent)) {
+  document.documentElement.classList.add("win-desktop")
+  const topbar = document.querySelector<HTMLElement>(".topbar")
+  const helpBtn = document.querySelector<HTMLButtonElement>("#btn-help")
+  if (topbar && helpBtn) topbar.insertBefore(themeBtn, helpBtn)
+}
 trackTopbarHeight()
 if (IS_DEV) {
   const titlebarTitle = document.querySelector<HTMLElement>(".titlebar-title")
@@ -7023,6 +7040,9 @@ if (DOCS_WINDOW_MODE) {
   const docsWinBtn = document.querySelector<HTMLButtonElement>("#btn-docs-win")
   if (docsWinBtn && isDesktop()) {
     docsWinBtn.addEventListener("click", () => void openDocsWindow())
+    document
+      .querySelector<HTMLButtonElement>("#btn-docs-redock-placeholder")
+      ?.addEventListener("click", () => void redockDocsWindow())
     if (localStorage.getItem(DOCS_DETACHED_KEY) === "1") void openDocsWindow()
   } else {
     docsWinBtn?.setAttribute("hidden", "")

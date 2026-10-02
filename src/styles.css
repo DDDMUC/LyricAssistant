@@ -30,6 +30,7 @@
   --shadow-dialog: rgba(60, 45, 30, 0.25);
   --sidebar-width: 240px;
   --statusbar-height: 35px;
+  --titlebar-h: 28px;
 
   font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Inter, sans-serif;
   font-size: 15px;
@@ -81,6 +82,44 @@ html[data-theme="dark"] {
 
 [hidden] {
   display: none !important;
+}
+
+/* 内联图标：共享 sprite（#ic-frame 只定义一次）+ 统一线宽/尺寸（改这一处即可） */
+.icon-sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.btn-icon {
+  width: 15px;
+  height: 15px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 body {
@@ -137,7 +176,7 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 28px;
+  height: var(--titlebar-h);
   padding: 0 12px 0 78px;
   background: var(--topbar-bg);
   border-bottom: 1px solid var(--border);
@@ -171,6 +210,15 @@ select {
   border-color: transparent;
 }
 
+/* Windows 桌面版：系统已有原生标题栏，隐掉页面内这条自绘标题栏 */
+html.win-desktop {
+  --titlebar-h: 0px;
+}
+
+html.win-desktop .titlebar {
+  display: none;
+}
+
 .workspace {
   flex: 1;
   display: flex;
@@ -182,8 +230,8 @@ select {
   width: var(--sidebar-width, 240px);
   flex-shrink: 0;
   position: sticky;
-  top: 28px;
-  height: calc(100vh - 28px - var(--statusbar-height, 35px));
+  top: var(--titlebar-h);
+  height: calc(100vh - var(--titlebar-h) - var(--statusbar-height, 35px));
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
@@ -260,22 +308,19 @@ body.docs-window .status-right {
   display: none;
 }
 
-/* 「拆出 / 放回」按钮：跟着当前在哪个窗口显示 */
-.sidebar-head #btn-docs-win,
-.sidebar-head #btn-docs-redock {
-  font-size: 12px;
-  padding: 0.15em 0.5em;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  cursor: pointer;
+/* 「拆出 / 放回」是图标按钮（见 .icon-btn），跟着当前在哪个窗口显示 */
+.sidebar-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
 }
 
-.sidebar-head #btn-docs-win:hover,
-.sidebar-head #btn-docs-redock:hover {
-  border-color: var(--accent);
-  color: var(--accent);
+.sidebar-head .icon-btn,
+.ai-head .icon-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
 }
 
 body.docs-window #btn-docs-win {
@@ -410,10 +455,10 @@ html:not(.sidebar-collapsed) #btn-sidebar-expand {
 
 .sidebar-resizer {
   position: sticky;
-  top: 28px;
+  top: var(--titlebar-h);
   align-self: flex-start;
   width: 7px;
-  height: calc(100vh - 28px - var(--statusbar-height, 35px));
+  height: calc(100vh - var(--titlebar-h) - var(--statusbar-height, 35px));
   margin-left: -4px;
   margin-right: -3px;
   flex-shrink: 0;
@@ -455,13 +500,13 @@ html:not(.sidebar-collapsed) #btn-sidebar-expand {
   flex-shrink: 0;
   align-self: flex-start;
   position: sticky;
-  top: calc(28px + var(--topbar-h, 64px));
+  top: calc(var(--titlebar-h) + var(--topbar-h, 64px));
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 10px 8px 12px;
   border-left: 1px solid var(--border);
-  height: calc(100vh - 28px - var(--topbar-h, 64px) - var(--statusbar-height, 35px));
+  height: calc(100vh - var(--titlebar-h) - var(--topbar-h, 64px) - var(--statusbar-height, 35px));
 }
 
 .source-panel[hidden] {
@@ -559,7 +604,7 @@ button:disabled {
 
 .topbar {
   position: sticky;
-  top: 28px;
+  top: var(--titlebar-h);
   z-index: 10;
   display: flex;
   align-items: center;
@@ -1512,10 +1557,10 @@ dialog::backdrop {
 
 .ai-resizer {
   position: sticky;
-  top: 28px;
+  top: var(--titlebar-h);
   align-self: flex-start;
   width: 7px;
-  height: calc(100vh - 28px - var(--statusbar-height, 35px));
+  height: calc(100vh - var(--titlebar-h) - var(--statusbar-height, 35px));
   margin-left: -4px;
   margin-right: -3px;
   flex-shrink: 0;
@@ -1539,10 +1584,10 @@ dialog::backdrop {
   flex-shrink: 0;
   align-self: flex-start;
   position: sticky;
-  top: calc(28px + var(--topbar-h, 64px));
+  top: calc(var(--titlebar-h) + var(--topbar-h, 64px));
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 28px - var(--topbar-h, 64px) - var(--statusbar-height, 35px));
+  height: calc(100vh - var(--titlebar-h) - var(--topbar-h, 64px) - var(--statusbar-height, 35px));
   border-left: 1px solid var(--border);
   background: var(--bg);
 }
@@ -1645,20 +1690,18 @@ body.ai-window .ai-head #btn-ai-expand {
   display: none;
 }
 
+/* 独立 AI 窗口头部：左侧 系统提示词 + 放回，右侧 + 新对话 + ×（面板内标题不显示，标题由系统标题栏承担） */
 body.ai-window .ai-win-title {
-  display: block;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
+  display: none;
 }
 
 body.ai-window #btn-ai-win-new {
   margin-left: auto;
+}
+
+/* 「放回」和 × 之间留出间距，避免误点 */
+body.ai-window #btn-ai-win-close {
+  margin-left: 12px;
 }
 
 /* ===== AI 面板：可拆但不默认拆 ===== */
@@ -1673,8 +1716,11 @@ body.ai-window #btn-ai-detach {
   display: none;
 }
 
-/* 顶栏「放回」（拆出期间才出现）：和 AI 按钮并排的小按钮 */
+/* 顶栏「放回」（拆出期间才出现）：图标 + AI，和 AI 按钮并排 */
 #btn-ai-redock-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 12.5px;
   padding: 0.25em 0.7em;
   margin-left: 4px;
@@ -1689,18 +1735,70 @@ body.ai-window #btn-ai-detach {
   background: var(--bg-hover);
 }
 
-/* 「拆出 / 放回」小按钮（跟「系统提示词」一个风格） */
-.ai-head #btn-ai-detach,
-.ai-head #btn-ai-redock {
-  font-size: 12px;
-  padding: 0.2em 0.5em;
-  color: var(--text-secondary);
-}
-
+/* 「拆出 / 放回」是图标按钮（尺寸/热区见 .icon-btn、.ai-head .icon-btn） */
 .ai-head #btn-ai-detach:hover,
 .ai-head #btn-ai-redock:hover {
-  border-color: var(--accent);
   color: var(--accent);
+}
+
+/* ===== 面板拆出后：原位置的占位 ===== */
+.panel-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  border-left: 1px solid var(--border);
+}
+
+.panel-placeholder-text {
+  margin: 0;
+}
+
+.panel-placeholder-docs {
+  width: var(--sidebar-width, 240px);
+  flex-shrink: 0;
+  align-self: flex-start;
+  position: sticky;
+  top: var(--titlebar-h);
+  height: calc(100vh - var(--titlebar-h) - var(--statusbar-height, 35px));
+  border-left: none;
+}
+
+.panel-placeholder-ai {
+  width: var(--ai-width, 400px);
+  flex-shrink: 0;
+  align-self: flex-start;
+  position: sticky;
+  top: calc(var(--titlebar-h) + var(--topbar-h, 64px));
+  height: calc(100vh - var(--titlebar-h) - var(--topbar-h, 64px) - var(--statusbar-height, 35px));
+}
+
+.placeholder-redock {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0.35em 0.8em;
+  font-size: 13px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.placeholder-redock:hover {
+  background: var(--bg-hover);
+}
+
+/* 独立窗口里不显示占位 */
+body.ai-window .panel-placeholder,
+body.docs-window .panel-placeholder {
+  display: none;
 }
 
 .ai-messages {
