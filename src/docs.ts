@@ -111,8 +111,91 @@ export function loadDocs(): DocsState {
   return defaultDocs()
 }
 
+const BACKUP_KEY = "cige-grid-docs-backup"
+const BACKUP_LIMIT = 5
+const BACKUP_INTERVAL_MS = 10 * 60_000
+const BACKUP_EVERY_SAVES = 20
+
+export interface DocsSnapshot {
+  t: number
+  docs: DocRecord[]
+  activeId: string
+}
+
+let saveCount = 0
+let lastSnapshotAt = 0
+
+function persistSnapshots(list: DocsSnapshot[]): void {
+  try {
+    localStorage.setItem(BACKUP_KEY, JSON.stringify(list))
+  } catch {
+    // 容量不够：降级只留最新的一份
+    try {
+      localStorage.setItem(BACKUP_KEY, JSON.stringify(list.slice(list.length - 1)))
+    } catch {
+      // 实在放不下就算了
+    }
+  }
+}
+
+/** 立即留一份草稿快照（最近 5 份，超出丢最旧） */
+export function snapshotDocs(state: DocsState): void {
+  const list = loadDocSnapshots()
+  list.push({ t: Date.now(), docs: state.docs, activeId: state.activeId })
+  while (list.length > BACKUP_LIMIT) list.shift()
+  persistSnapshots(list)
+  lastSnapshotAt = Date.now()
+  saveCount = 0
+}
+
+/** 自动留档：每 10 分钟或每 20 次保存留一份（避免把存储撑爆） */
+function maybeSnapshot(state: DocsState): void {
+  saveCount += 1
+  const due =
+    lastSnapshotAt === 0 ||
+    Date.now() - lastSnapshotAt >= BACKUP_INTERVAL_MS ||
+    saveCount >= BACKUP_EVERY_SAVES
+  if (!due || state.docs.length === 0) return
+  snapshotDocs(state)
+}
+
+/** 测试用：把快照节流计数清零 */
+export function resetDocsSnapshotState(): void {
+  saveCount = 0
+  lastSnapshotAt = 0
+}
+
+export function loadDocSnapshots(): DocsSnapshot[] {
+  try {
+    const raw = localStorage.getItem(BACKUP_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.flatMap((item) => {
+      if (!item || typeof item !== "object") return []
+      const snap = item as Partial<DocsSnapshot>
+      if (typeof snap.t !== "number" || !Array.isArray(snap.docs)) return []
+      return [{ t: snap.t, docs: snap.docs, activeId: typeof snap.activeId === "string" ? snap.activeId : "" }]
+    })
+  } catch {
+    return []
+  }
+}
+
+/** 按时间戳恢复某份快照（覆盖当前草稿）；找不到返回 false */
+export function restoreDocSnapshot(t: number): boolean {
+  const snapshot = loadDocSnapshots().find((item) => item.t === t)
+  if (!snapshot) return false
+  localStorage.setItem(
+    DOCS_KEY,
+    JSON.stringify({ activeId: snapshot.activeId, docs: snapshot.docs }),
+  )
+  return true
+}
+
 export function saveDocs(state: DocsState): void {
   localStorage.setItem(DOCS_KEY, JSON.stringify(state))
+  maybeSnapshot(state)
 }
 
 export interface DocsBackup {

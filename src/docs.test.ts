@@ -4,9 +4,13 @@ import {
   createDoc,
   createDocFrom,
   defaultDocs,
+  loadDocSnapshots,
   loadDocs,
   parseDocsBackup,
+  resetDocsSnapshotState,
+  restoreDocSnapshot,
   saveDocs,
+  snapshotDocs,
 } from "./docs"
 import { createProject } from "./state"
 
@@ -129,5 +133,47 @@ describe("草稿备份", () => {
     expect(
       parseDocsBackup(JSON.stringify({ format: "cige-grid-drafts", docs: [{ id: "x" }] })),
     ).toBeNull()
+  })
+})
+
+describe("草稿快照（备份轮转）", () => {
+  it("最多留 5 份，超出丢最旧", () => {
+    localStorage.clear()
+    for (let i = 0; i < 7; i++) {
+      const doc = createDoc(`第${i}份`)
+      snapshotDocs({ activeId: doc.id, docs: [doc] })
+    }
+    const list = loadDocSnapshots()
+    expect(list).toHaveLength(5)
+    expect(list[0]?.docs[0]?.project.title).toBe("第2份")
+    expect(list[4]?.docs[0]?.project.title).toBe("第6份")
+  })
+
+  it("按时间戳恢复：覆盖当前草稿，重启读到的就是备份", () => {
+    localStorage.clear()
+    const old = createDoc("旧备份")
+    snapshotDocs({ activeId: old.id, docs: [old] })
+    const snapshotT = loadDocSnapshots()[0]!.t
+
+    const fresh = createDoc("新内容")
+    saveDocs({ activeId: fresh.id, docs: [fresh] })
+    expect(loadDocs().docs[0]?.project.title).toBe("新内容")
+
+    expect(restoreDocSnapshot(snapshotT)).toBe(true)
+    expect(loadDocs().docs[0]?.project.title).toBe("旧备份")
+    expect(restoreDocSnapshot(-1)).toBe(false)
+  })
+
+  it("自动留档：20 次保存触发一份，之后计数清零", () => {
+    localStorage.clear()
+    resetDocsSnapshotState()
+    const doc = createDoc("自动")
+    const state = { activeId: doc.id, docs: [doc] }
+    saveDocs(state) // 首次保存：立刻留一份（lastSnapshotAt 初始为 0）
+    const before = loadDocSnapshots().length
+    for (let i = 0; i < 19; i++) saveDocs(state)
+    expect(loadDocSnapshots().length).toBe(before) // 没到 20 次
+    saveDocs(state) // 第 20 次
+    expect(loadDocSnapshots().length).toBe(before + 1)
   })
 })

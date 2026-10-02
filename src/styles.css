@@ -24,6 +24,8 @@
   --select-bg: rgba(96, 132, 196, 0.22);
   --find-bg: rgba(192, 73, 42, 0.14);
   --find-bg-current: rgba(192, 73, 42, 0.34);
+  --group-lit-bg: rgba(255, 238, 133, 0.9);
+  --group-lit-border: rgba(236, 196, 60, 0.95);
   --topbar-bg: rgba(246, 241, 230, 0.92);
   --shadow-dialog: rgba(60, 45, 30, 0.25);
   --sidebar-width: 240px;
@@ -66,6 +68,8 @@ html[data-theme="dark"] {
   --select-bg: rgba(120, 160, 220, 0.3);
   --find-bg: rgba(224, 118, 79, 0.18);
   --find-bg-current: rgba(224, 118, 79, 0.38);
+  --group-lit-bg: rgba(255, 233, 122, 0.45);
+  --group-lit-border: rgba(255, 222, 100, 0.9);
   --topbar-bg: rgba(33, 29, 24, 0.94);
   --shadow-dialog: rgba(0, 0, 0, 0.5);
   color-scheme: dark;
@@ -73,6 +77,10 @@ html[data-theme="dark"] {
 
 * {
   box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 body {
@@ -213,6 +221,65 @@ html.sidebar-collapsed .sidebar-resizer {
 
 html.sidebar-collapsed .workbench {
   border-left-color: transparent;
+}
+
+/* ===== 文档栏拆成独立窗口（可选，默认不拆）===== */
+/* 主窗口：侧边栏让位给独立窗，工作区铺满 */
+html.docs-detached .sidebar,
+html.docs-detached #sidebar-resizer {
+  display: none;
+}
+
+/* 独立文档栏窗口（?win=docs）：只留侧边栏铺满整个窗口 */
+body.docs-window .titlebar,
+body.docs-window .workbench,
+body.docs-window .statusbar,
+body.docs-window #ai-resizer,
+body.docs-window #ai-panel,
+body.docs-window #source-panel {
+  display: none;
+}
+
+body.docs-window .workspace {
+  min-height: 100vh;
+}
+
+body.docs-window .sidebar {
+  width: 100%;
+  flex: 1;
+  position: static;
+  height: 100vh;
+  padding: 10px 10px 14px;
+}
+
+body.docs-window .statusbar {
+  padding: 2px 10px;
+}
+body.docs-window .status-stats,
+body.docs-window .status-right {
+  display: none;
+}
+
+/* 「拆出 / 放回」按钮：跟着当前在哪个窗口显示 */
+.sidebar-head #btn-docs-win,
+.sidebar-head #btn-docs-redock {
+  font-size: 12px;
+  padding: 0.15em 0.5em;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sidebar-head #btn-docs-win:hover,
+.sidebar-head #btn-docs-redock:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+body.docs-window #btn-docs-win {
+  display: none;
 }
 
 .sidebar-head {
@@ -1495,6 +1562,11 @@ dialog::backdrop {
   color: var(--text-secondary);
 }
 
+/* AI 独立窗口的标题（主窗口里不显示） */
+.ai-win-title {
+  display: none;
+}
+
 .ai-head button {
   font-size: 12px;
   padding: 0.2em 0.5em;
@@ -1513,6 +1585,122 @@ dialog::backdrop {
 /* 图标转 90°：从副对角线（↗↙）变成正对角线（↖↘） */
 .ai-head #btn-ai-expand svg {
   transform: rotate(90deg);
+}
+
+/* ===== 独立 AI 窗口（?win=ai）：只留 AI 面板铺满整个窗口 ===== */
+body.ai-window .titlebar,
+body.ai-window .sidebar,
+body.ai-window #sidebar-resizer,
+body.ai-window .topbar,
+body.ai-window .main-col,
+body.ai-window #source-panel,
+body.ai-window #ai-resizer {
+  display: none;
+}
+
+/* 只留状态提示那一行（AI 出错 / 填入成功要看得到） */
+body.ai-window .statusbar {
+  padding: 2px 10px;
+}
+body.ai-window .status-stats,
+body.ai-window .status-right {
+  display: none;
+}
+
+body.ai-window .workbench,
+body.ai-window .workbench-body {
+  display: block;
+  min-width: 0;
+}
+
+body.ai-window #ai-panel {
+  position: fixed;
+  inset: 0;
+  /* 必须显式给满：height:auto 在 WebKit 里不靠 inset 撑满，面板会缩成一条 */
+  width: 100%;
+  height: 100%;
+  border-left: none;
+}
+
+/* 独立窗口里：消息与输入区限宽居中，别把整片宽度拉满 */
+body.ai-window .ai-messages,
+body.ai-window .ai-tools,
+body.ai-window .ai-composer,
+body.ai-window #ai-hint {
+  width: 100%;
+  max-width: 640px;
+  margin-inline: auto;
+}
+
+body.ai-window .ai-composer {
+  margin-bottom: 14px;
+}
+
+body.ai-window .ai-tools {
+  border-top: none;
+  padding-bottom: 0;
+}
+
+body.ai-window .ai-head #btn-ai-expand {
+  display: none;
+}
+
+body.ai-window .ai-win-title {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+body.ai-window #btn-ai-win-new {
+  margin-left: auto;
+}
+
+/* ===== AI 面板：可拆但不默认拆 ===== */
+/* 拆出去后，主窗口里的内嵌面板和拖拽条让位（工作区铺满） */
+html.ai-detached #ai-panel,
+html.ai-detached #ai-resizer {
+  display: none;
+}
+
+/* 独立 AI 窗口里「拆出」没意义，藏起来 */
+body.ai-window #btn-ai-detach {
+  display: none;
+}
+
+/* 顶栏「放回」（拆出期间才出现）：和 AI 按钮并排的小按钮 */
+#btn-ai-redock-main {
+  font-size: 12.5px;
+  padding: 0.25em 0.7em;
+  margin-left: 4px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+#btn-ai-redock-main:hover {
+  background: var(--bg-hover);
+}
+
+/* 「拆出 / 放回」小按钮（跟「系统提示词」一个风格） */
+.ai-head #btn-ai-detach,
+.ai-head #btn-ai-redock {
+  font-size: 12px;
+  padding: 0.2em 0.5em;
+  color: var(--text-secondary);
+}
+
+.ai-head #btn-ai-detach:hover,
+.ai-head #btn-ai-redock:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .ai-messages {
@@ -1564,6 +1752,259 @@ dialog::backdrop {
   padding: 3px;
 }
 
+/* 挑格模式里点到已有组的格子：整组闪一下（一次性，不常亮） */
+@keyframes groupFlash {
+  0% {
+    box-shadow:
+      0 0 0 2px rgba(255, 214, 64, 0.95),
+      0 0 14px 3px rgba(255, 225, 90, 0.8);
+  }
+  100% {
+    box-shadow:
+      0 0 0 2px rgba(255, 214, 64, 0),
+      0 0 14px 3px rgba(255, 225, 90, 0);
+  }
+}
+
+.cell.group-flash,
+.cell-input.group-flash {
+  animation: groupFlash 0.6s ease-out 1;
+}
+
+/* 押韵组：光标在某成员格时，同组整格荧光亮起（荧光黄马克笔底 + 同色系描边，无光晕） */
+.cell.group-lit,
+.cell-input.group-lit {
+  background: var(--group-lit-bg);
+  border-color: var(--group-lit-border);
+}
+
+/* 状态栏「押韵组 N」：可点的小药丸（点开总览） */
+#status-groups {
+  cursor: pointer;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-soft);
+}
+
+#status-groups:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+#status-groups.dim {
+  color: var(--text-muted);
+  border-color: var(--border);
+  background: transparent;
+}
+
+/* 押韵组总览对话框 */
+.rhyme-groups-dialog {
+  width: min(620px, 92vw);
+}
+
+.rhyme-groups-hint {
+  margin: 2px 0 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.rhyme-groups-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 52vh;
+  overflow: auto;
+}
+
+.rhyme-group-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+
+.rhyme-group-row:hover {
+  border-color: var(--accent);
+}
+
+.rhyme-group-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rhyme-group-constraint {
+  font-weight: 600;
+  align-self: flex-start;
+  padding: 0 6px;
+  margin-left: -6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: inherit;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.rhyme-group-constraint:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.rhyme-group-members {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* 成员位置里的格子：小按钮壳（「3格·空」），点了跳到那一格 */
+.rhyme-group-cell-button {
+  appearance: none;
+  display: inline-block;
+  margin: 1px 4px 1px 0;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-soft);
+  font: inherit;
+  line-height: 18px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.rhyme-group-cell-button:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.rhyme-groups-empty {
+  margin: 4px 0;
+  color: var(--text-muted);
+}
+
+/* 建立押韵组对话框 */
+.rhyme-group-dialog {
+  width: min(760px, 94vw);
+  max-height: min(88vh, 880px);
+}
+
+.dialog-drag-handle {
+  display: block;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+/* 初始焦点落在标题上（避免弹窗打开时第一个按钮常亮焦点圈），标题本身不画圈 */
+.dialog-drag-handle:focus,
+.dialog-drag-handle:focus-visible {
+  outline: none;
+}
+
+.group-field select {
+  margin-left: 6px;
+  max-width: 200px;
+}
+
+.group-tones {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: 4px;
+}
+
+.group-tones label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.candidate-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 320px;
+  overflow: auto;
+  margin: 6px 0 2px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-input);
+}
+
+.candidate-grid button {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 15px;
+}
+
+.candidate-grid button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 挑格模式：提示可以点格子加/减 */
+body.pick-mode .cell,
+body.pick-mode .cell-input {
+  cursor: copy;
+}
+
+body.pick-mode .cell:not(.selected):hover,
+body.pick-mode .cell-input:not(.selected):hover {
+  outline: 1px dashed rgba(104, 178, 122, 0.9);
+  outline-offset: 1px;
+}
+
+/* 框选后的小浮动条（复制 / 清空 / 押韵组） */
+.pick-bar {
+  position: fixed;
+  z-index: 70;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  box-shadow: 0 8px 22px rgba(60, 45, 30, 0.18);
+}
+
+.pick-bar button {
+  border: none;
+  border-radius: 7px;
+  padding: 3px 9px;
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+}
+
+.pick-bar button:hover {
+  background: var(--bg-hover);
+}
+
+.pick-bar .pick-rhyme {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.pick-bar .pick-close {
+  color: var(--text-muted);
+  padding: 3px 6px;
+}
+
 /* 帮助弹窗 */
 .help-dialog {
   width: min(640px, 92vw);
@@ -1605,6 +2046,34 @@ dialog::backdrop {
 .help-actions {
   justify-content: space-between;
   align-items: center;
+}
+
+.backup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.backup-row {
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.backup-row:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.help-actions-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* 框选时同步系统选区的隐藏镜像（右键→复制能拿到选中的字） */

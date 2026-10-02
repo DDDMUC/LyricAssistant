@@ -91,3 +91,54 @@ it("⌘A 全选的是格子（不是整页文字），再复制就是整首选�
   expect(mirrored).toContain("甲乙丙丁")
   expect(mirrored).not.toContain("导入") // 没有把界面文字也选进去
 })
+
+const inputIndex = () =>
+  document.querySelector<HTMLInputElement>("input.cell-input")?.dataset.index ?? null
+
+it("Ctrl+G 挑格模式：跳着挑格子，复制/删除只作用于选中的格子（不挪光标）", async () => {
+  // 清掉上一个用例留下的选择
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))
+  await tick(10)
+  await fillFirstSentence() // 甲乙丙丁，光标在第 4 格
+  const togglePickMode = () =>
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "g", ctrlKey: true, bubbles: true, cancelable: true }),
+    )
+  const pick = (el: HTMLElement) => {
+    const opts = { bubbles: true, cancelable: true, button: 0 }
+    el.dispatchEvent(new PointerEvent("pointerdown", opts))
+    el.dispatchEvent(new PointerEvent("pointerup", opts))
+    el.dispatchEvent(new MouseEvent("click", opts))
+  }
+
+  togglePickMode()
+  pick(cells()[0])
+  pick(cells()[2])
+  await tick(10)
+
+  expect(document.querySelectorAll(".cell.selected, .cell-input.selected").length).toBe(2)
+  // G 点击是"挑格子"，不该挪编辑光标
+  expect(inputIndex()).toBe("3")
+
+  // ⌘C 只复制这两个（按句分行）
+  document.body.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "c", metaKey: true, bubbles: true, cancelable: true }),
+  )
+  await tick(30)
+  expect(lastCopy()).toBe("甲\n丙")
+
+  // 复制后选择被清；再挑一次 + Backspace：只清掉这两格
+  pick(cells()[0])
+  pick(cells()[2])
+  await tick(10)
+  document.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true }),
+  )
+  await tick(30)
+  expect(cellText(cells()[0])).toBe("")
+  expect(cellText(cells()[1])).toBe("乙")
+  expect(cellText(cells()[2])).toBe("")
+
+  togglePickMode()
+  await tick(10)
+})

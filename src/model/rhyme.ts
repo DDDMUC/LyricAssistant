@@ -1,4 +1,6 @@
 import { pinyin } from "pinyin-pro"
+import { COMMON_HAN_ORDER } from "./common-han"
+import type { RhymeConstraint } from "./types"
 
 export interface RhymeInfo {
   char: string
@@ -207,6 +209,151 @@ export function charFitsRhyme(char: string, key: string): boolean {
   const known = finals.some((final) => FINAL_TO_GROUP.has(final))
   if (!known) return true
   return finals.some((final) => group.finals.includes(final))
+}
+
+export interface Pronunciation {
+  /** 声母（y/w 照常算声母；零声母 = ""） */
+  initial: string
+  /** 韵母（规范化：ü→v、iu/ui/un、y/w 还原） */
+  final: string
+  /** 1-4，0 = 轻声 */
+  tone: number
+}
+
+/** y/w 开头要还原成规范韵母（y 表和 w 表不一样：yu=v，但 wu=u） */
+const Y_FINALS: Record<string, string> = {
+  i: "i", ia: "ia", ie: "ie", iao: "iao", iou: "iu", ian: "ian", in: "in",
+  iang: "iang", ing: "ing", iong: "iong",
+  u: "v", ue: "ve", uan: "van", un: "vn",
+}
+const W_FINALS: Record<string, string> = {
+  u: "u", a: "ua", o: "uo", ai: "uai", ei: "ui", an: "uan", en: "un",
+  ang: "uang", eng: "ueng",
+}
+
+function parseReading(reading: string): Pronunciation | null {
+  const match = reading.match(/^([a-zü]+)([0-5])$/)
+  if (!match) return null
+  const tone = Number(match[2])
+  const raw = match[1].replace(/ü/g, "v")
+  let initial = ""
+  for (const candidate of PINYIN_INITIALS) {
+    if (raw.startsWith(candidate)) {
+      initial = candidate
+      break
+    }
+  }
+  let final = raw.slice(initial.length)
+  if (!final) return null
+  if (initial === "y") {
+    final = Y_FINALS[final] ?? final
+  } else if (initial === "w") {
+    final = W_FINALS[final] ?? final
+  } else if ((initial === "j" || initial === "q" || initial === "x") && final === "u") {
+    final = "v"
+  }
+  return { initial, final, tone }
+}
+
+const pronunciationCache = new Map<string, Pronunciation[]>()
+
+/** 一个字的所有读音（声母/韵母/声调；多音字全给） */
+export function pronunciationsOf(char: string): Pronunciation[] {
+  const cached = pronunciationCache.get(char)
+  if (cached !== undefined) return cached
+  let list: Pronunciation[] = []
+  if (CJK.test(char)) {
+    try {
+      const raw = String(pinyin(char, { toneType: "num", multiple: true }))
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+      const seen = new Set<string>()
+      for (const reading of raw) {
+        const parsed = parseReading(reading)
+        if (!parsed) continue
+        const key = `${parsed.initial}|${parsed.final}|${parsed.tone}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        list.push(parsed)
+      }
+    } catch {
+      list = []
+    }
+  }
+  pronunciationCache.set(char, list)
+  return list
+}
+
+/** 一个字是否符合押韵组约束：**同一条读音**要同时满足所有勾选项 */
+export function charFitsConstraint(char: string, constraint: RhymeConstraint): boolean {
+  const list = pronunciationsOf(char)
+  if (list.length === 0) return true // 不认识的字符放行（跟 charFitsRhyme 一个策略）
+  const hasAny = constraint.rhy !== undefined || constraint.final !== undefined || constraint.initial !== undefined || (constraint.tones?.length ?? 0) > 0
+  if (!hasAny) return true
+  return list.some((pron) => {
+    if (constraint.rhy !== undefined && FINAL_TO_GROUP.get(pron.final)?.key !== constraint.rhy) return false
+    if (constraint.final !== undefined && pron.final !== constraint.final) return false
+    if (constraint.initial !== undefined && pron.initial !== constraint.initial) return false
+    if ((constraint.tones?.length ?? 0) > 0 && !constraint.tones!.includes(pron.tone)) return false
+    return true
+  })
+}
+
+/** 约束的中文描述（徽章/tooltip/状态栏用） */
+export function constraintText(constraint: RhymeConstraint): string {
+  const parts: string[] = []
+  if (constraint.rhy !== undefined) {
+    parts.push(`${RHYME_LABEL_BY_KEY.get(constraint.rhy) ?? constraint.rhy}辙`)
+  }
+  if (constraint.final !== undefined) parts.push(`韵母 ${constraint.final}`)
+  if (constraint.initial !== undefined) parts.push(`声母 ${constraint.initial || "零"}`)
+  if ((constraint.tones?.length ?? 0) > 0) {
+    parts.push(`声调 ${[...constraint.tones!].sort().map((tone) => (tone === 0 ? "轻" : tone)).join("/")}`)
+  }
+  return parts.join(" · ") || "（没勾任何条件）"
+}
+
+let cjkCharsCache: string[] | null = null
+function allCjkChars(): string[] {
+  if (!cjkCharsCache) {
+    const list: string[] = []
+    for (let code = 0x4e00; code <= 0x9fff; code++) list.push(String.fromCharCode(code))
+    cjkCharsCache = list
+  }
+  return cjkCharsCache
+}
+
+let commonRankCache: Map<string, number> | null = null
+function commonRank(char: string): number {
+  if (!commonRankCache) {
+    commonRankCache = new Map()
+    for (let i = 0; i < COMMON_HAN_ORDER.length; i++) {
+      const ch = COMMON_HAN_ORDER[i]
+      if (!commonRankCache.has(ch)) commonRankCache.set(ch, i)
+    }
+  }
+  return commonRankCache.get(char) ?? Number.MAX_SAFE_INTEGER
+}
+
+const candidateCache = new Map<string, string[]>()
+
+/** 满足约束的所有汉字，常用字（GB2312 一级）排前面；首次约 100ms，之后有缓存 */
+export function candidateChars(constraint: RhymeConstraint, limit = 240): string[] {
+  const key = JSON.stringify([constraint.rhy ?? null, constraint.final ?? null, constraint.initial ?? null, constraint.tones ?? null])
+  const cached = candidateCache.get(key)
+  if (cached) return cached.slice(0, limit)
+  if (candidateCache.size > 40) candidateCache.clear()
+  const hits: string[] = []
+  for (const char of allCjkChars()) {
+    if (charFitsConstraint(char, constraint)) hits.push(char)
+  }
+  hits.sort(
+    (a, b) =>
+      commonRank(a) - commonRank(b) || (a.codePointAt(0) ?? 0) - (b.codePointAt(0) ?? 0),
+  )
+  candidateCache.set(key, hits)
+  return hits.slice(0, limit)
 }
 
 export function isHanChar(char: string): boolean {

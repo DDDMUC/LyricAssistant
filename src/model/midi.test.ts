@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   buildLyricMidi,
   keyswitchCount,
+  midiSourceText,
   midiTitle,
   midiToSections,
   noteTracks,
@@ -101,6 +102,25 @@ describe("parseMidi", () => {
     ]
     const file = parseMidi(build([events]))
     expect(file.tracks[0].notes.map((note) => note.midi)).toEqual([60, 62])
+  })
+})
+
+describe("midiSourceText", () => {
+  it("所有轨的歌词事件按 tick 排序、整段拼接", () => {
+    const track1 = [meta(0, 0x05, text("春")), meta(480, 0x05, text("风")), meta(0, 0x2f, [])]
+    const track2 = [meta(240, 0x05, text("吹")), meta(0, 0x2f, [])]
+    const file = parseMidi(build([track1, track2]))
+    expect(midiSourceText(file)).toBe("春吹风")
+  })
+
+  it("去掉占位连字符，其余标点 / 英文原样保留", () => {
+    const file = parseMidi(build([[meta(0, 0x05, text("Hello-世界--!")), meta(0, 0x2f, [])]]))
+    expect(midiSourceText(file)).toBe("Hello世界!")
+  })
+
+  it("没有歌词事件就是空串", () => {
+    const file = parseMidi(build([melody]))
+    expect(midiSourceText(file)).toBe("")
   })
 })
 

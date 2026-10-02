@@ -18,6 +18,8 @@
       <aside class="sidebar">
         <div class="sidebar-head">
           <span class="brand-badge">作词助手</span>
+          <button id="btn-docs-win" type="button" title="把文档栏拆成独立窗口（随时可以放回来）">拆出</button>
+          <button id="btn-docs-redock" type="button" title="放回主窗口" hidden>放回</button>
           <button id="btn-sidebar" type="button" title="收起侧边栏" aria-label="收起侧边栏">
             <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
               <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.4" />
@@ -90,6 +92,7 @@
           </div>
           <button id="btn-help" type="button" title="帮助：使用说明 / 快捷键 / 导出诊断日志">帮助</button>
           <button id="btn-ai" type="button" aria-expanded="false">AI</button>
+          <button id="btn-ai-redock-main" type="button" title="把 AI 面板放回主窗口" hidden>放回</button>
           <div id="scroll-progress" class="scroll-progress" aria-hidden="true"></div>
         </header>
 
@@ -99,7 +102,7 @@
           </div>
       <aside id="source-panel" class="source-panel" hidden>
         <div class="source-head">
-          <span>导入原文（核对用）</span>
+          <span>原文</span>
           <button id="btn-source-close" type="button" title="关闭">✕</button>
         </div>
         <textarea id="source-text" class="source-text" readonly spellcheck="false" placeholder="导入歌词后，原文会留在这里，方便核对"></textarea>
@@ -107,6 +110,7 @@
       <div id="ai-resizer" class="ai-resizer" role="separator" aria-orientation="vertical" aria-label="调整 AI 面板宽度" title="拖动调整宽度（双击恢复默认）" hidden></div>
       <aside id="ai-panel" class="ai-panel" hidden>
         <div class="ai-head">
+          <span id="ai-win-title" class="ai-win-title" hidden>AI 面板</span>
           <button id="btn-ai-expand" type="button" title="铺满工作区" aria-label="铺满工作区">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <polyline points="15 3 21 3 21 9" />
@@ -116,6 +120,10 @@
             </svg>
           </button>
           <button id="btn-ai-prompt" type="button" title="看发给模型的提示词">系统提示词</button>
+          <button id="btn-ai-detach" type="button" title="把 AI 面板拆成独立窗口（可随时放回）">拆出</button>
+          <button id="btn-ai-redock" type="button" title="放回主窗口" hidden>放回</button>
+          <button id="btn-ai-win-new" type="button" title="新建对话" hidden>＋ 新对话</button>
+          <button id="btn-ai-win-close" type="button" title="隐藏 AI 面板（生成会继续）" hidden>✕</button>
         </div>
         <div id="ai-messages" class="ai-messages"></div>
         <div class="ai-tools">
@@ -140,6 +148,7 @@
       <span id="status-stats" class="status-stats"></span>
       <span id="status-hint"></span>
       <span class="status-right">
+        <span id="status-groups"></span>
         <span id="status-rhyme"></span>
         <span id="status-path"></span>
         <span id="status-autosave"></span>

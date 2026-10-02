@@ -1,6 +1,13 @@
 import { addAlternative, allSentences, getCells, setCells } from "../state"
 import { totalCells } from "./pattern"
-import { RHYME_LABEL_BY_KEY, charFitsRhyme, isHanChar, rhymeFinals } from "./rhyme"
+import {
+  RHYME_LABEL_BY_KEY,
+  charFitsConstraint,
+  charFitsRhyme,
+  constraintText,
+  isHanChar,
+  rhymeFinals,
+} from "./rhyme"
 import type { Project } from "./types"
 
 export interface AiSentenceResult {
@@ -118,6 +125,14 @@ export function buildBrief(
       const want = !targetSet || targetSet.has(sentence.id)
       const parts: string[] = [`${sentence.id}｜${total} 字（${sentence.pattern.join("+")}）`]
       if (sentence.role === "harmony") parts.push("和声（与上一句同时唱）")
+      for (const ref of sentence.rhymeGroups ?? []) {
+        const found = project.rhymeGroups?.find((item) => item.id === ref.id)
+        if (found) {
+          parts.push(
+            `第 ${ref.indexes.map((index) => index + 1).join("、")} 格互相押：${constraintText(found.constraint)}`,
+          )
+        }
+      }
       const locks = Object.entries(sentence.cellLocks ?? {})
         .map(([index, key]) => ({ index: Number(index), key }))
         .sort((a, b) => a.index - b.index)
@@ -230,6 +245,22 @@ export function validateAiResults(
         message: `「${bad}」不是汉字，只能写汉字`,
       })
       return
+    }
+    for (const ref of sentence.rhymeGroups ?? []) {
+      const found = project.rhymeGroups?.find((item) => item.id === ref.id)
+      if (!found) continue
+      const bad = ref.indexes.find((index) => {
+        const char = chars[index]
+        return char !== undefined && char !== "" && !charFitsConstraint(char, found.constraint)
+      })
+      if (bad !== undefined) {
+        issues.push({
+          sentenceId: sentence.id,
+          label,
+          message: `第 ${bad + 1} 格「${chars[bad]}」不符合押韵组（${constraintText(found.constraint)}），请换一个`,
+        })
+        return
+      }
     }
     const locks = Object.entries(sentence.cellLocks ?? {})
       .map(([index, key]) => ({ index: Number(index), key }))
