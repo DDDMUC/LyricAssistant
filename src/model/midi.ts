@@ -289,6 +289,17 @@ export function midiTitle(file: MidiFile): string {
   return file.tracks[0]?.name?.trim() ?? ""
 }
 
+/** 所有轨的歌词事件（meta 0x05），按 tick 排序、整段拼接；没有歌词事件就是空串。
+ *  歌词事件里常拿连字符（- / --）当"延长/无字"占位，原文面板只留可读文本，把这些连字符去掉 */
+export function midiSourceText(file: MidiFile): string {
+  const raw = file.tracks
+    .flatMap((track, index) => track.lyrics.map((event) => ({ tick: event.tick, text: event.text, index })))
+    .sort((a, b) => a.tick - b.tick || a.index - b.index)
+    .map((event) => event.text)
+    .join("")
+  return raw.replace(/-/g, "")
+}
+
 export function noteTracks(file: MidiFile): { index: number; name: string; count: number }[] {
   return file.tracks
     .map((track, index) => ({

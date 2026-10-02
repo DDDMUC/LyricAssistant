@@ -1,4 +1,7 @@
 import { copyText, readClipboardText } from "./clipboard"
+import { emit, listen } from "@tauri-apps/api/event"
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow"
+import { getAllWindows, getCurrentWindow } from "@tauri-apps/api/window"
 import {
   canOverwriteInPlace,
   isDesktop,
@@ -52,6 +55,9 @@ import {
   createDoc,
   createDocFrom,
   loadDocs,
+  loadDocSnapshots,
+  restoreDocSnapshot,
+  snapshotDocs,
   parseDocsBackup,
   saveDocs,
   type DocRecord,
@@ -61,6 +67,7 @@ import {
   KEYSWITCH,
   buildLyricMidi,
   keyswitchCount,
+  midiSourceText,
   midiTitle,
   midiToSections,
   noteTracks,
@@ -84,8 +91,22 @@ import {
   cellLockAt,
   setCellLockAt,
   rhymeOfPinyin,
+  charFitsConstraint,
+  constraintText,
+  pronunciationsOf,
+  rhymeFinals,
+  candidateChars,
 } from "./model/rhyme"
-import type { Project, Section, Sentence } from "./model/types"
+import {
+  addRhymeGroup,
+  dissolveRhymeGroup,
+  groupAt,
+  shiftCellRefs,
+  dropCellRefs,
+  replaceCellRefs,
+  updateRhymeGroupConstraint,
+} from "./model/rhyme-groups"
+import type { Project, RhymeConstraint, Section, Sentence } from "./model/types"
 import type { ExportOptions } from "./state"
 import {
   autosaveState,
@@ -126,6 +147,7 @@ const statusHintEl = document.querySelector("#status-hint") as HTMLElement
 const statusPathEl = document.querySelector("#status-path") as HTMLElement
 const statusAutosaveEl = document.querySelector("#status-autosave") as HTMLElement
 const statusRhymeEl = document.querySelector("#status-rhyme") as HTMLElement
+const statusGroupsEl = document.querySelector("#status-groups") as HTMLElement
 const themeBtn = document.querySelector("#btn-theme") as HTMLButtonElement
 const docListEl = document.querySelector("#doc-list") as HTMLElement
 const newDocBtn = document.querySelector("#btn-new-doc") as HTMLButtonElement
@@ -155,6 +177,67 @@ const aiEffortChip = document.querySelector("#ai-effort-chip") as HTMLButtonElem
 const btnAiSend = document.querySelector("#btn-ai-send") as HTMLButtonElement
 const aiHint = document.querySelector("#ai-hint") as HTMLElement
 
+/** AI 独立窗口模式：`?win=ai&doc=<docId>`——同一份页面，只挂 AI 面板，主工作区不渲染。
+ *  主窗口那边的 AI 按钮负责开 / 聚焦这个窗（每篇歌词一个窗，关窗=隐藏，生成继续）。 */
+const AI_WINDOW_MODE = new URLSearchParams(window.location.search).get("win") === "ai"
+const AI_WINDOW_DOC_ID = new URLSearchParams(window.location.search).get("doc") ?? ""
+const AI_WIN_GEO_KEY = "cige-grid-ai-win-geometry"
+
+/** 文档栏独立窗口模式：`?win=docs`——同一份页面，只挂侧边栏。
+ *  默认**不拆**（还是主窗口左侧边栏）；用户点「拆出」才拆，点「放回」或关窗即收回。 */
+const DOCS_WINDOW_MODE = new URLSearchParams(window.location.search).get("win") === "docs"
+const DOCS_DETACHED_KEY = "cige-grid-docs-detached"
+const DOCS_WINDOW_LABEL = "docs"
+const DOCS_SYNC_CHANNEL = "docs-sync"
+const DOCS_INTENT_CHANNEL = "docs-intent"
+const DOCS_READY_CHANNEL = "docs-ready"
+const DOCS_REDOCK_CHANNEL = "docs-redock"
+
+function aiWindowLabel(docId: string): string {
+  return `ai-${docId}`
+}
+function syncChannel(docId: string): string {
+  return `project-sync-${docId}`
+}
+function applyChannel(docId: string): string {
+  return `ai-apply-${docId}`
+}
+function scopeChannel(docId: string): string {
+  return `ai-scope-${docId}`
+}
+const AI_READY_CHANNEL = "ai-ready"
+const AI_REDOCK_CHANNEL = "ai-redock"
+let aiDetached = false
+
+/** 事件只发不收：发不出去（比如没有 IPC 环境）也别变成未处理的 rejection */
+function emitQuiet(channel: string, payload: unknown): void {
+  try {
+    void Promise.resolve(emit(channel, payload)).catch((err) => {
+      diag("emit.failed", { channel, err: String(err) })
+    })
+  } catch (err) {
+    diag("emit.failed", { channel, err: String(err) })
+  }
+}
+
+/** 主窗口 → AI 窗口的工程快照 */
+interface ProjectSync {
+  docId: string
+  title: string
+  project: Project
+  /** 目标句子（scope 算好的）；null = 整首 */
+  targetIds: string[] | null
+  scope: string
+}
+
+/** AI 窗口里的 project 只是只读镜像（主窗口推快照过来） */
+let projectMirror: Project | null = null
+/** 主窗口随快照推来的目标句子（scope 已在主窗口算好） */
+let projectMirrorTargetIds: string[] | null = null
+function aiProject(): Project {
+  return AI_WINDOW_MODE ? (projectMirror ?? store.project) : store.project
+}
+
 let composing = false
 // 正在组字的那个输入框：render() 只在它仍然聚焦时才避让（防止 composition 卡死把整页冻住）
 let composingInput: HTMLInputElement | null = null
@@ -164,7 +247,18 @@ let imeJustEnded = false
 let statusOverride: { text: string; isError: boolean } | null = null
 let statusOverrideTimer: ReturnType<typeof setTimeout> | null = null
 
-let selection: { from: { sentenceId: string; cell: number }; to: { sentenceId: string; cell: number } } | null = null
+// 选中的格子：句子 id → 格号集合（拖拽=一段；挑格模式里点格子=任意加减）
+const pickedCells = new Map<string, Set<number>>()
+// 挑格模式（Ctrl/⌘+G 切换）：点击格子加/减选择，不挪编辑光标
+let pickSuppressClick = false
+// 浮动条跟随的锚点：最后挑中的那格（挑格点击 / 拖拽终点）
+let selectionAnchor: { sentenceId: string; index: number } | null = null
+// "解散这个押韵组"小条：挑格模式里点到成员（没在选择中）时出现
+let pickDissolve: { groupId: string } | null = null
+let pickDissolveTimer: ReturnType<typeof setTimeout> | null = null
+// 挑格模式下最近一次点格，用于识别"快速双击 = 取消勾选"
+let pickLastClick: { sentenceId: string; index: number; time: number; wasPicked: boolean } | null = null
+let pickMode = false
 let dragStart: { sentenceId: string; index: number; moved: boolean } | null = null
 let justDragged = false
 let midiSession: {
@@ -229,6 +323,10 @@ function renderStatusBar(): void {
   if (statusOverride) {
     statusHintEl.textContent = statusOverride.text
     statusHintEl.classList.toggle("error", statusOverride.isError)
+  } else if (pickMode) {
+    // 挑格模式常驻提示：模式开没开一眼可见，按 G / Esc 必有反应
+    statusHintEl.textContent = "挑格模式：点格子加/减 · 按 G 或 Esc 收起"
+    statusHintEl.classList.remove("error")
   } else {
     // 默认不占位：快捷键都在「帮助」弹窗里了
     statusHintEl.textContent = ""
@@ -237,6 +335,11 @@ function renderStatusBar(): void {
 
   undoBtn.disabled = !store.canUndo()
   redoBtn.disabled = !store.canRedo()
+
+  const groupCount = (store.project.rhymeGroups ?? []).length
+  statusGroupsEl.textContent = `韵组 ${groupCount}`
+  statusGroupsEl.classList.toggle("dim", groupCount === 0)
+  statusGroupsEl.hidden = docsState.docs.length === 0
 
   statusRhymeEl.textContent = rhymeSummaryText()
 
@@ -428,9 +531,14 @@ function renderDocList(): void {
     docListEl.appendChild(card)
   }
   sidebarRenderedSig = sidebarSig()
+  if (!DOCS_WINDOW_MODE) scheduleDocsSync()
 }
 
 function renameDoc(docId: string, rawName: string): void {
+  if (DOCS_WINDOW_MODE) {
+    emitQuiet(DOCS_INTENT_CHANNEL, { type: "rename", id: docId, name: rawName })
+    return
+  }
   const doc = docsState.docs.find((item) => item.id === docId)
   if (!doc) return
   const name = rawName.trim() || doc.project.title || "未命名"
@@ -495,6 +603,10 @@ function activateDoc(doc: DocRecord): void {
 }
 
 function switchDoc(id: string): void {
+  if (DOCS_WINDOW_MODE) {
+    emitQuiet(DOCS_INTENT_CHANNEL, { type: "activate", id })
+    return
+  }
   if (id === docsState.activeId) return
   const target = docsState.docs.find((doc) => doc.id === id)
   if (!target) return
@@ -508,6 +620,10 @@ function switchDoc(id: string): void {
 }
 
 function addDoc(): void {
+  if (DOCS_WINDOW_MODE) {
+    emitQuiet(DOCS_INTENT_CHANNEL, { type: "new-doc" })
+    return
+  }
   syncActiveDoc()
   const doc = createDoc(`未命名 ${docsState.docs.length + 1}`)
   docsState.docs.push(doc)
@@ -525,6 +641,10 @@ function addDoc(): void {
 }
 
 function deleteDoc(id: string): void {
+  if (DOCS_WINDOW_MODE) {
+    emitQuiet(DOCS_INTENT_CHANNEL, { type: "delete", id })
+    return
+  }
   const doc = docsState.docs.find((item) => item.id === id)
   if (!doc) return
   confirmDeleteDoc(id, doc.project.title || "未命名")
@@ -648,6 +768,8 @@ function renderEmptyState(): HTMLElement {
 function render(): void {
   // 组字期间绝不重绘（换掉输入框会打断输入法）；卡死状态由 pointerdown 兜底收掉
   if (composing) return
+  // AI 独立窗口：没有主工作区要画
+  if (AI_WINDOW_MODE) return
   const renderStarted = performance.now()
   const prevScrollY = window.scrollY
   const empty = docsState.docs.length === 0
@@ -674,10 +796,21 @@ function render(): void {
   renderDocList()
   syncSourcePanel()
   updateAiHint()
-  if (selection && (!store.findSentence(selection.from.sentenceId) || !store.findSentence(selection.to.sentenceId))) {
-    selection = null
+  // 选中集合的失效清理：句子没了 / 格号越界就从集合里剔掉
+  for (const [sentenceId, set] of [...pickedCells]) {
+    const sentence = store.findSentence(sentenceId)
+    if (!sentence) {
+      pickedCells.delete(sentenceId)
+      continue
+    }
+    const total = totalCells(sentence.pattern)
+    for (const index of [...set]) {
+      if (index < 0 || index >= total) set.delete(index)
+    }
+    if (set.size === 0) pickedCells.delete(sentenceId)
   }
   paintSelection()
+  paintGroupLit()
   syncFind()
   // replaceChildren 会先清空容器，高度瞬间归零导致 scrollTop 被钳到 0，这里补回
   if (window.scrollY !== prevScrollY) window.scrollTo(0, prevScrollY)
@@ -693,8 +826,56 @@ function render(): void {
   }
 }
 
+/** 只重画某一句（就地替换旧节点）。找不到就返回 false，交调用方退回全量 */
+function repaintSentence(sentenceId: string): boolean {
+  const sentence = store.findSentence(sentenceId)
+  if (!sentence) return false
+  const root = sentencesEl.querySelector<HTMLElement>(`.sentence[data-id="${sentenceId}"]`)
+  if (!root) return false
+  const index = allSentences(store.project).findIndex((item) => item.id === sentenceId)
+  root.replaceWith(renderSentence(sentence, index))
+  paintGroupLit()
+  return true
+}
+
+/** 轻量重画一批句子 + 状态栏 / 查找高亮 / 框选高亮；任何一句找不到就退回全量 */
+function repaintSentences(ids: Iterable<string>): void {
+  const list = [...new Set(ids)].filter((id) => store.findSentence(id) !== undefined)
+  let ok = true
+  for (const id of list) {
+    if (!repaintSentence(id)) ok = false
+  }
+  if (!ok) {
+    render()
+    return
+  }
+  renderStatusBar()
+  syncFind()
+  paintSelection()
+}
+
+/** 单句编辑（打字、删格、挪动、加锁…）：只重画这一句，别整页重建 */
+function mutateSentence(sentenceId: string, fn: () => void): void {
+  store.pushUndo()
+  fn()
+  store.ensureCursor()
+  store.touch()
+  repaintSentences([sentenceId])
+}
+
+/** 换格：只重画旧句 + 新句，不整页重建 */
+function moveCursorInPlace(next: { sentenceId: string; cell: number }): void {
+  const prev = store.cursor.sentenceId
+  store.cursor = next
+  repaintSentences(prev && prev !== next.sentenceId ? [prev, next.sentenceId] : [next.sentenceId])
+  focusCellInput()
+}
+
 function clearSelection(): void {
-  selection = null
+  clearGroupDissolve()
+  pickedCells.clear()
+  pickLastClick = null
+  selectionAnchor = null
   paintSelection()
 }
 
@@ -704,35 +885,90 @@ function consumeJustDragged(): boolean {
   return true
 }
 
+/** 把"选中的格子集合"按句归拢成连续段（复制/删除/AI 范围都吃这个） */
 function selectionSpans(): { sentence: Sentence; from: number; to: number }[] {
-  if (!selection) return []
-  const ordered = allSentences(store.project)
-  const fromIndex = ordered.findIndex((s) => s.id === selection!.from.sentenceId)
-  const toIndex = ordered.findIndex((s) => s.id === selection!.to.sentenceId)
-  if (fromIndex < 0 || toIndex < 0) return []
+  if (pickedCells.size === 0) return []
   const spans: { sentence: Sentence; from: number; to: number }[] = []
-  for (let i = fromIndex; i <= toIndex; i++) {
-    const sentence = ordered[i]
+  for (const sentence of allSentences(store.project)) {
+    const set = pickedCells.get(sentence.id)
+    if (!set || set.size === 0) continue
     const total = totalCells(sentence.pattern)
-    const from = i === fromIndex ? selection!.from.cell : 0
-    const to = i === toIndex ? selection!.to.cell : total - 1
-    const start = Math.max(0, from)
-    const end = Math.min(total - 1, to)
-    if (end >= start) spans.push({ sentence, from: start, to: end })
+    const indexes = [...set].filter((index) => index >= 0 && index < total).sort((a, b) => a - b)
+    let start = -1
+    let prev = -1
+    for (const index of indexes) {
+      if (start < 0) {
+        start = index
+        prev = index
+        continue
+      }
+      if (index === prev + 1) {
+        prev = index
+        continue
+      }
+      spans.push({ sentence, from: start, to: prev })
+      start = index
+      prev = index
+    }
+    if (start >= 0) spans.push({ sentence, from: start, to: prev })
   }
   return spans
 }
 
+/** 用一段连续区间**替换**当前选择（拖拽框选、⌘A 用） */
 function setSelectionBetween(
   a: { sentenceId: string; cell: number },
   b: { sentenceId: string; cell: number },
 ): void {
+  pickedCells.clear()
   const ordered = allSentences(store.project)
   const ai = ordered.findIndex((s) => s.id === a.sentenceId)
   const bi = ordered.findIndex((s) => s.id === b.sentenceId)
   if (ai < 0 || bi < 0) return
   const forward = ai < bi || (ai === bi && a.cell <= b.cell)
-  selection = forward ? { from: a, to: b } : { from: b, to: a }
+  const from = forward ? a : b
+  const to = forward ? b : a
+  const fromIndex = ordered.findIndex((s) => s.id === from.sentenceId)
+  const toIndex = ordered.findIndex((s) => s.id === to.sentenceId)
+  for (let i = fromIndex; i <= toIndex; i++) {
+    const sentence = ordered[i]
+    const total = totalCells(sentence.pattern)
+    const start = i === fromIndex ? Math.max(0, from.cell) : 0
+    const end = i === toIndex ? Math.min(total - 1, to.cell) : total - 1
+    if (end < start) continue
+    const set = new Set<number>()
+    for (let index = start; index <= end; index++) set.add(index)
+    pickedCells.set(sentence.id, set)
+  }
+}
+
+/** 把一格加入/移出选择（挑格模式下点格子调用；可跨句任意挑） */
+/** 把一格移出选择（快速双击取消时用；不在选择里就什么也不做） */
+function unpickCell(sentenceId: string, index: number): void {
+  clearGroupDissolve()
+  const set = pickedCells.get(sentenceId)
+  if (!set?.has(index)) return
+  set.delete(index)
+  if (set.size === 0) pickedCells.delete(sentenceId)
+  if (selectionAnchor?.sentenceId === sentenceId && selectionAnchor.index === index) {
+    selectionAnchor = null
+  }
+  paintSelection()
+}
+
+function togglePicked(sentenceId: string, index: number): void {
+  clearGroupDissolve()
+  const set = pickedCells.get(sentenceId) ?? new Set<number>()
+  if (set.has(index)) set.delete(index)
+  else set.add(index)
+  if (set.size === 0) pickedCells.delete(sentenceId)
+  else pickedCells.set(sentenceId, set)
+  // 浮动条跟着最后挑中的那格走
+  if (pickedCells.get(sentenceId)?.has(index)) selectionAnchor = { sentenceId, index }
+  else if (selectionAnchor?.sentenceId === sentenceId && selectionAnchor.index === index) {
+    selectionAnchor = null
+  }
+  paintSelection()
 }
 
 function paintSelection(): void {
@@ -748,21 +984,23 @@ function paintSelection(): void {
     })
   }
   syncNativeSelection()
+  refreshPickBar()
 }
 
 function removeSelectedCells(): void {
   const spans = selectionSpans()
   if (spans.length === 0) return
   clearSelection()
-  mutate(() => {
-    for (const span of spans) {
-      const sentence = store.findSentence(span.sentence.id)
-      if (!sentence) continue
-      const cells = getCells(sentence).slice()
-      for (let i = span.from; i <= span.to; i++) cells[i] = ""
-      setCells(sentence, cells)
-    }
-  })
+  store.pushUndo()
+  for (const span of spans) {
+    const sentence = store.findSentence(span.sentence.id)
+    if (!sentence) continue
+    const cells = getCells(sentence).slice()
+    for (let i = span.from; i <= span.to; i++) cells[i] = ""
+    setCells(sentence, cells)
+  }
+  store.touch()
+  repaintSentences(spans.map((span) => span.sentence.id))
   focusCellInput()
   setStatus("已清空选中的格子")
 }
@@ -813,17 +1051,105 @@ async function copySelection(): Promise<void> {
   clearSelection()
 }
 
+function setPickMode(on: boolean): void {
+  pickMode = on
+  clearGroupDissolve()
+  pickLastClick = null
+  document.body.classList.toggle("pick-mode", on)
+  if (on) {
+    // 进模式先把焦点从输入框移开：G / Esc 才收得动，输入法也不会截键
+    const active = document.activeElement
+    if (
+      active instanceof HTMLElement &&
+      (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active.isContentEditable)
+    ) {
+      active.blur()
+    }
+  } else {
+    clearSelection()
+  }
+  setStatus(on ? "挑格模式：点格子加/减（按 G 或 Esc 收起）" : "已退出挑格模式（选择已清空）")
+}
+
+/** Ctrl/⌘ + G：切换"挑格模式"；模式中直接按 G / Esc = 收起（退模式 + 清空选择）。输入框里不抢 g 的打字 */
+function bindPickMode(): void {
+  window.addEventListener("keydown", (event) => {
+    if (event.isComposing || event.repeat) return
+    const target = event.target as HTMLElement | null
+    const isCellInput = target instanceof HTMLInputElement && target.classList.contains("cell-input")
+    const typing =
+      target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || Boolean(target?.isContentEditable)
+    // 按 G：收起——在模式里就退模式；没模式但有选中（拖拽/⌘A 选的）就取消选中
+    // 格子输入框里也收（焦点常留在格子里）；真正的文本框（备注 / AI 输入）不抢 g 的打字
+    if (
+      (!typing || isCellInput) &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      event.key.toLowerCase() === "g"
+    ) {
+      if (!pickMode && pickedCells.size === 0) return
+      event.preventDefault()
+      if (pickMode) setPickMode(false)
+      else clearSelection()
+      return
+    }
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
+    if (event.key.toLowerCase() !== "g") return
+    if (!isCellInput && typing) return
+    event.preventDefault()
+    setPickMode(!pickMode)
+  })
+}
+
 function bindSelection(): void {
   sentencesEl.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return
     const cell = (event.target as HTMLElement).closest<HTMLElement>(".cell, .cell-input")
     if (!cell) return
+    if (pickMode) {
+      // 挑格子：不挪编辑光标、不进拖拽流程（pointerup 也就不会清空选择）
+      event.preventDefault()
+      pickSuppressClick = true
+      const sentenceId = cell.dataset.sentenceId ?? ""
+      const index = Number(cell.dataset.index)
+      // 已在押韵组里的格子：挑不动——整组闪一下提示（一次性，不常亮）
+      const sentence = store.findSentence(sentenceId)
+      const existingGroup = sentence ? groupAt(store.project, sentence, index) : null
+      if (existingGroup) {
+        pickLastClick = null
+        flashGroup(existingGroup.id)
+        showGroupDissolveBar(existingGroup.id)
+        setStatus(`这一格已经在韵组里（${constraintText(existingGroup.constraint)}）——点条上的「解散这个韵组」可以解散；已挑的格子不受影响`)
+        return
+      }
+      const picked = pickedCells.get(sentenceId)?.has(index) ?? false
+      const now = Date.now()
+      if (
+        pickLastClick !== null &&
+        pickLastClick.sentenceId === sentenceId &&
+        pickLastClick.index === index &&
+        now - pickLastClick.time <= 500
+      ) {
+        // 快速双击 = 只算一次点击：看"第一下之前"是什么状态（已选→取消；没选→选上），误点了双击就退
+        if (pickLastClick.wasPicked) unpickCell(sentenceId, index)
+        else if (!picked) togglePicked(sentenceId, index)
+        pickLastClick = null
+      } else {
+        pickLastClick = { sentenceId, index, time: now, wasPicked: picked }
+        togglePicked(sentenceId, index)
+      }
+      return
+    }
+    pickSuppressClick = false
     justDragged = false
     dragStart = {
       sentenceId: cell.dataset.sentenceId ?? "",
       index: Number(cell.dataset.index),
       moved: false,
     }
+    selectionAnchor = { sentenceId: dragStart.sentenceId, index: dragStart.index }
   })
 
   document.addEventListener("pointermove", (event) => {
@@ -839,14 +1165,29 @@ function bindSelection(): void {
       { sentenceId: dragStart.sentenceId, cell: dragStart.index },
       { sentenceId, cell: index },
     )
+    selectionAnchor = { sentenceId, index }
     paintSelection()
   })
 
+  // 任何一次 click 结束后兜底清掉"挑格点击抑制"：点到光标格（input）时没有格子按钮来消费它
+  document.addEventListener("click", (event) => {
+    pickSuppressClick = false
+    if (!pickDissolve) return
+    const target = event.target as HTMLElement | null
+    if (target?.closest(".pick-bar, .cell, .cell-input, dialog")) return
+    clearGroupDissolve()
+    refreshPickBar()
+  })
+
   document.addEventListener("pointerup", () => {
-    if (!dragStart) return
+    if (!dragStart) {
+      refreshPickBar()
+      return
+    }
     if (dragStart.moved) justDragged = true
     else clearSelection()
     dragStart = null
+    refreshPickBar()
   })
   document.addEventListener("pointercancel", () => {
     dragStart = null
@@ -874,11 +1215,23 @@ function bindSelection(): void {
           { sentenceId: first.id, cell: 0 },
           { sentenceId: last.id, cell: totalCells(last.pattern) - 1 },
         )
+        selectionAnchor = null
         paintSelection()
         return
       }
-      if (!selection) return
-      if (event.key === "Escape") {
+      if (!event.isComposing && event.key === "Escape" && pickMode) {
+        event.preventDefault()
+        setPickMode(false)
+        return
+      }
+      if (!event.isComposing && event.key === "Escape" && pickedCells.size === 0 && pickDissolve) {
+        event.preventDefault()
+        clearGroupDissolve()
+        refreshPickBar()
+        return
+      }
+      if (pickedCells.size === 0) return
+      if (!event.isComposing && event.key === "Escape") {
         event.preventDefault()
         clearSelection()
         return
@@ -1022,6 +1375,7 @@ function replaceCurrentMatch(): void {
   if (replacement === null) return
   const afterStart = match.start + [...replacement].length
   mutate(() => {
+    replaceCellRefs(sentence, match.start, match.length, [...replacement].length)
     replaceInSentence(sentence, match.start, match.length, replacement)
   })
   findMatchList = findMatches(allSentences(store.project), findInput.value)
@@ -1053,7 +1407,8 @@ function replaceAllMatches(): void {
       const sentence = store.findSentence(sentenceId)
       if (!sentence) continue
       for (const match of [...list].sort((a, b) => b.start - a.start)) {
-        replaceInSentence(sentence, match.start, match.length, replacement)
+        replaceCellRefs(sentence, match.start, match.length, [...replacement].length)
+    replaceInSentence(sentence, match.start, match.length, replacement)
       }
     }
   })
@@ -1269,6 +1624,68 @@ function moveSectionBy(sectionId: string, dir: -1 | 1): void {
   setStatus(dir < 0 ? "段落已上移" : "段落已下移")
 }
 
+/** 押韵组高亮：所有组同色；光标在哪格，同组所有格子亮起 */
+function applyGroupClasses(el: HTMLElement, sentence: Sentence, index: number): void {
+  const group = groupAt(store.project, sentence, index)
+  if (!group) return
+  el.classList.add("group-member")
+  const cursorSentence = store.findSentence(store.cursor.sentenceId)
+  const activeGroup = cursorSentence
+    ? groupAt(store.project, cursorSentence, store.cursor.cell)
+    : null
+  if (activeGroup?.id === group.id) el.classList.add("group-lit")
+}
+
+/**
+ * 押韵组的显示规则（用户定稿）：只显示"当前格所在的组"——
+ * 光标在哪一格，同组所有格子整格亮起（跨句同步）；光标不在组里就不显示任何标记。
+ * 只切类不重画，挂在 render / repaintSentence 尾部。
+ */
+function paintGroupLit(): void {
+  const cursorSentence = store.findSentence(store.cursor.sentenceId)
+  const activeGroup = cursorSentence ? groupAt(store.project, cursorSentence, store.cursor.cell) : null
+  document
+    .querySelectorAll<HTMLElement>(".cell.group-member, .cell-input.group-member")
+    .forEach((el) => {
+      const sentence = store.findSentence(el.dataset.sentenceId ?? "")
+      const index = Number(el.dataset.index)
+      const group = sentence ? groupAt(store.project, sentence, index) : null
+      el.classList.toggle(
+        "group-lit",
+        group !== null && activeGroup !== null && group.id === activeGroup.id,
+      )
+    })
+}
+
+/** 当前 DOM 里属于这个组的所有格子元素 */
+function groupMemberEls(groupId: string): HTMLElement[] {
+  return [
+    ...document.querySelectorAll<HTMLElement>(".cell.group-member, .cell-input.group-member"),
+  ].filter((el) => {
+    const sentence = store.findSentence(el.dataset.sentenceId ?? "")
+    const group = sentence ? groupAt(store.project, sentence, Number(el.dataset.index)) : null
+    return group?.id === groupId
+  })
+}
+
+/** 整组闪一下（一次性，不常亮）：挑格模式里点到已有组的格子时提示 */
+let groupFlashTimer: ReturnType<typeof setTimeout> | null = null
+let groupFlashEls: HTMLElement[] = []
+function flashGroup(groupId: string): void {
+  if (groupFlashTimer) clearTimeout(groupFlashTimer)
+  for (const el of groupFlashEls) el.classList.remove("group-flash")
+  groupFlashEls = groupMemberEls(groupId)
+  for (const el of groupFlashEls) {
+    void el.offsetWidth // 强制回流，保证连续点击时动画能重新开始
+    el.classList.add("group-flash")
+  }
+  groupFlashTimer = setTimeout(() => {
+    for (const el of groupFlashEls) el.classList.remove("group-flash")
+    groupFlashEls = []
+    groupFlashTimer = null
+  }, 650)
+}
+
 function renderSentence(sentence: Sentence, index: number): HTMLElement {
   const isActive = sentence.id === store.cursor.sentenceId
   const isHarmony = sentence.role === "harmony"
@@ -1366,7 +1783,7 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
     altSelect.appendChild(opt)
   })
   altSelect.addEventListener("change", () => {
-    mutate(() => {
+    mutateSentence(sentence.id, () => {
       const target = store.findSentence(sentence.id)
       if (target) switchAlternative(target, Number(altSelect.value))
     })
@@ -1383,7 +1800,7 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   addAltBtn.textContent = "+"
   addAltBtn.title = "新增备选"
   addAltBtn.addEventListener("click", () => {
-    mutate(() => {
+    mutateSentence(sentence.id, () => {
       const target = store.findSentence(sentence.id)
       if (target) addAlternative(target)
     })
@@ -1412,7 +1829,7 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   clearBtn.textContent = "清空"
   clearBtn.title = "清空这一句当前备选的所有字（韵辙保留，可撤销）"
   clearBtn.addEventListener("click", () => {
-    mutate(() => {
+    mutateSentence(sentence.id, () => {
       const s = store.findSentence(sentence.id)
       if (!s) return
       rememberRhyme(s)
@@ -1524,6 +1941,7 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
         input.className = "cell-input"
         input.dataset.sentenceId = sentence.id
         input.dataset.index = String(i)
+        applyGroupClasses(input, sentence, i)
         const base = cells[i] ?? ""
         input.value = base
         input.dataset.base = base
@@ -1538,11 +1956,14 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
         cell.textContent = cells[i]
         cell.dataset.sentenceId = sentence.id
         cell.dataset.index = String(i)
+        applyGroupClasses(cell, sentence, i)
         cell.addEventListener("click", () => {
           if (consumeJustDragged()) return
-          store.cursor = { sentenceId: sentence.id, cell: i }
-          render()
-          focusCellInput()
+          if (pickSuppressClick) {
+            pickSuppressClick = false
+            return
+          }
+          moveCursorInPlace({ sentenceId: sentence.id, cell: i })
         })
         groupEl.appendChild(cell)
       }
@@ -1695,6 +2116,11 @@ function initSidebarResizer(): void {
 
   sidebarToggleBtns.forEach((btn) => {
     btn.addEventListener("click", () => {
+      // 已经拆出去了：展开按钮的活儿变成"把文档栏窗聚焦回来"
+      if (document.documentElement.classList.contains("docs-detached")) {
+        void focusDocsWindow()
+        return
+      }
       setSidebarCollapsed(
         !document.documentElement.classList.contains("sidebar-collapsed"),
       )
@@ -1795,9 +2221,7 @@ function moveCursorToFlatIndex(currentId: string, nextFlat: number): void {
   const nextCell = current
     ? Math.min(store.cursor.cell, totalCells(next.pattern) - 1)
     : 0
-  store.cursor = { sentenceId: next.id, cell: nextCell }
-  render()
-  focusCellInput()
+  moveCursorInPlace({ sentenceId: next.id, cell: nextCell })
 }
 
 document.addEventListener(
@@ -1916,7 +2340,7 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
       if (editing) return
       e.preventDefault()
       if (input.value.length > 0) {
-        mutate(() => {
+        mutateSentence(sentenceId, () => {
           const s = store.findSentence(sentenceId)
           if (!s) return
           setCells(s, clearCell(getCells(s), store.cursor.cell))
@@ -1933,7 +2357,7 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
       // 平时在空格上按 Backspace：删掉前一格的字并左移（这是另一个明确动作）
       const target = store.cursor.cell - 1
       if (target < 0) return
-      mutate(() => {
+      mutateSentence(sentenceId, () => {
         const s = store.findSentence(sentenceId)
         if (!s) return
         setCells(s, clearCell(getCells(s), target))
@@ -1946,7 +2370,7 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
     if (e.key === "Delete") {
       if (editing) return
       e.preventDefault()
-      mutate(() => {
+      mutateSentence(sentenceId, () => {
         const s = store.findSentence(sentenceId)
         if (!s) return
         setCells(s, clearCell(getCells(s), store.cursor.cell))
@@ -1969,9 +2393,7 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
     if (e.key === "ArrowLeft" && !e.shiftKey) {
       e.preventDefault()
       if (store.cursor.cell > 0) {
-        store.cursor.cell -= 1
-        render()
-        focusCellInput()
+        moveCursorInPlace({ sentenceId, cell: store.cursor.cell - 1 })
       }
       return
     }
@@ -1980,9 +2402,7 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
       const s = store.findSentence(sentenceId)
       if (!s) return
       if (store.cursor.cell < totalCells(s.pattern) - 1) {
-        store.cursor.cell += 1
-        render()
-        focusCellInput()
+        moveCursorInPlace({ sentenceId, cell: store.cursor.cell + 1 })
       }
       return
     }
@@ -2038,6 +2458,12 @@ function commitInput(input: HTMLInputElement): void {
         setStatus(`第 ${i + 1} 格锁了「${name}」，「${chars[j]}」不押，已拦下`, true)
         return
       }
+      const group = groupAt(store.project, sentence, i)
+      if (group && !charFitsConstraint(chars[j], group.constraint)) {
+        input.value = base
+        setStatus(`第 ${i + 1} 格在韵组里（${constraintText(group.constraint)}），「${chars[j]}」不合，已拦下`, true)
+        return
+      }
     }
   }
 
@@ -2048,7 +2474,7 @@ function commitInput(input: HTMLInputElement): void {
   if (excess) sentence.overflow = sentence.overflow + excess
   store.cursor.cell = Math.min(start + result.written, totalCells(sentence.pattern) - 1)
   store.touch()
-  render()
+  repaintSentences([sentence.id])
   focusCellInput()
 
   setStatus(excess ? `多余 ${countRaw(excess)} 字已记为溢出` : "已填入")
@@ -2068,20 +2494,22 @@ function doShift(sentenceId: string, dir: -1 | 1): void {
     setStatus(dir === -1 ? "左移会挤出词格，已拦住" : "右移会挤出词格，已拦住", true)
     return
   }
-  store.pushUndo()
-  setCells(sentence, next)
-  store.touch()
-  render()
+  mutateSentence(sentence.id, () => {
+    const target = store.findSentence(sentence.id)
+    if (!target) return
+    setCells(target, next)
+  })
   if (sentence.id === store.cursor.sentenceId) focusCellInput()
   setStatus("整句已挪动")
 }
 
 function addCellHere(sentenceId: string): void {
   if (store.cursor.sentenceId !== sentenceId) store.cursor = { sentenceId, cell: 0 }
-  mutate(() => {
+  mutateSentence(sentenceId, () => {
     const target = store.findSentence(sentenceId)
     if (!target) return
     const result = addCellAt(target.pattern, getCells(target), store.cursor.cell)
+    shiftCellRefs(target, result.cursor, 1)
     setPattern(target, result.pattern)
     setCells(target, result.cells)
     store.cursor.cell = result.cursor
@@ -2098,9 +2526,10 @@ function removeCellHere(sentenceId: string): void {
     setStatus("这句只剩一格，不能再删", true)
     return
   }
-  mutate(() => {
+  mutateSentence(sentenceId, () => {
     const s = store.findSentence(sentenceId)
     if (!s) return
+    dropCellRefs(s, store.cursor.cell, 1)
     setPattern(s, result.pattern)
     setCells(s, result.cells)
     if (result.overflow) s.overflow = s.overflow + result.overflow
@@ -2120,7 +2549,7 @@ function splitHere(sentenceId: string): void {
     return
   }
   const merged = next.length < target.pattern.length
-  mutate(() => {
+  mutateSentence(sentenceId, () => {
     const s = store.findSentence(sentenceId)
     if (!s) return
     setPattern(s, next)
@@ -2144,7 +2573,7 @@ function duplicateSentence(sentenceId: string): void {
 }
 
 function toggleHarmony(sentenceId: string): void {
-  mutate(() => {
+  mutateSentence(sentenceId, () => {
     const s = store.findSentence(sentenceId)
     if (!s) return
     if (s.role === "harmony") delete s.role
@@ -2212,12 +2641,17 @@ async function pasteSentence(sentenceId: string): Promise<void> {
   if (!sentence) return
   const total = totalCells(sentence.pattern)
   const written = Math.min(chars.length, total)
-  // 逐格锁：粘进来的字落在有锁的格子上也要押
+  // 逐格锁 / 押韵组：粘进来的字落在受限格子上也要合
   for (let i = 0; i < written; i++) {
     const lock = cellLockAt(sentence, i)
     if (lock && !charFitsRhyme(chars[i], lock)) {
       const name = (RHYME_LABEL_BY_KEY.get(lock) ?? lock).replace(/辙$/, "")
       setStatus(`第 ${i + 1} 格锁了「${name}」，「${chars[i]}」不押，已拦下`, true)
+      return
+    }
+    const group = groupAt(store.project, sentence, i)
+    if (group && !charFitsConstraint(chars[i], group.constraint)) {
+      setStatus(`第 ${i + 1} 格在韵组里（${constraintText(group.constraint)}），「${chars[i]}」不合，已拦下`, true)
       return
     }
   }
@@ -2229,7 +2663,7 @@ async function pasteSentence(sentenceId: string): Promise<void> {
   if (excess) sentence.overflow = sentence.overflow + excess
   store.cursor = { sentenceId, cell: Math.max(0, written - 1) }
   store.touch()
-  render()
+  repaintSentences([sentenceId])
   focusCellInput()
   setStatus(excess ? `已粘贴，多余 ${excess.length} 字记为溢出` : "已粘贴该句")
 }
@@ -2405,7 +2839,34 @@ function openRhymeLockDialog(sentenceId: string, cellIndex: number, current: str
   cancel.textContent = "取消"
   actions.append(unlock, cancel)
 
-  form.append(title, hint, grid, actions)
+  form.append(title, hint, grid)
+
+  // 这格在押韵组里：给一个解散入口
+  {
+    const sentence = store.findSentence(sentenceId)
+    const group = sentence ? groupAt(store.project, sentence, cellIndex) : null
+    if (group) {
+      const row = document.createElement("p")
+      row.className = "dialog-note"
+      const info = document.createElement("span")
+      info.textContent = `这一格在韵组里（${constraintText(group.constraint)}）`
+      const dissolve = document.createElement("button")
+      dissolve.type = "button"
+      dissolve.className = "dialog-inline-btn"
+      dissolve.textContent = "解散这个韵组"
+      dissolve.addEventListener("click", () => {
+        dialog.close("cancel")
+        mutate(() => {
+          dissolveRhymeGroup(store.project, group.id)
+        })
+        setStatus("已解散韵组")
+      })
+      row.append(info, " ", dissolve)
+      form.appendChild(row)
+    }
+  }
+
+  form.appendChild(actions)
   dialog.appendChild(form)
   document.body.appendChild(dialog)
   dialog.addEventListener("close", () => {
@@ -2414,7 +2875,7 @@ function openRhymeLockDialog(sentenceId: string, cellIndex: number, current: str
     if (action === "cancel") return
     const key = action || ""
     if (key === current) return
-    mutate(() => {
+    mutateSentence(sentenceId, () => {
       const target = store.findSentence(sentenceId)
       if (!target) return
       setCellLockAt(target, cellIndex, key)
@@ -3143,6 +3604,7 @@ function applyMidiSections(
     return
   }
   let offset = 0
+  const sourceText = midiSourceText(file)
   mutate(() => {
     if (docsState.docs.length === 0) {
       const doc = createDoc()
@@ -3165,18 +3627,19 @@ function applyMidiSections(
     if (merge) {
       offset = store.project.sections.length
       store.project.sections.push(...imported)
-      // 合并导入：只补识别到的版权，不动歌名/原文
+      // 合并导入：只补识别到的版权，歌名不动；歌词事件非空就追加到原文（和文本导入一致）
       const found = copyrightsOf(file)
       if (found.length > 0) {
         store.project.credits = [...new Set([...(store.project.credits ?? []), ...found])]
       }
+      if (sourceText) applyImportedSource(store.project, sourceText, true)
     } else {
       offset = 0
       store.project.sections = imported
       // 和文本导入一样的防护：识别不到就清空旧的，不留上一首的残留
       store.project.title = midiTitle(file) || "未命名歌曲"
       store.project.credits = copyrightsOf(file)
-      store.project.source = ""
+      store.project.source = sourceText
     }
     const first = imported[0]?.sentences[0]
     if (first) store.cursor = { sentenceId: first.id, cell: 0 }
@@ -3187,6 +3650,7 @@ function applyMidiSections(
     trackIndex,
     sections: sections.length,
     lines: total,
+    sourceChars: sourceText.length,
     merge,
   })
   focusCellInput()
@@ -3219,6 +3683,8 @@ function setAiScope(scope: AiScope): void {
   localStorage.setItem(AI_SCOPE_KEY, scope)
   renderAiChips()
   updateAiHint()
+  // AI 独立窗口里改的范围要告诉主窗口：它那边要靠 scope 算下一次快照的目标
+  if (AI_WINDOW_MODE) emitQuiet(scopeChannel(AI_WINDOW_DOC_ID), scope)
 }
 const AI_OPEN_KEY = "cige-grid-ai-open"
 const AI_CONVOS_KEY = "cige-grid-ai-convos"
@@ -3702,6 +4168,7 @@ function setAiWidth(width: number): void {
 }
 
 function openAiPanel(): void {
+  if (aiDetached) return
   closeSourcePanel()
   aiPanel.hidden = false
   aiResizer.hidden = false
@@ -3724,8 +4191,29 @@ function closeAiPanel(): void {
 }
 
 function toggleAiPanel(): void {
+  if (aiDetached) return
   if (aiPanel.hidden) openAiPanel()
   else closeAiPanel()
+}
+
+/** AI 面板拆出去 / 放回来（默认内嵌，只有用户点「拆出」才拆；不落盘，重开应用一律回到内嵌） */
+function setAiDetached(detached: boolean): void {
+  aiDetached = detached
+  document.documentElement.classList.toggle("ai-detached", detached)
+  if (detached) {
+    // 内嵌那份让位给独立窗
+    closeAiPanel()
+    document.querySelector<HTMLElement>("#btn-ai-detach")?.setAttribute("hidden", "")
+    if (btnAi && !AI_WINDOW_MODE) btnAi.title = "聚焦这一篇的 AI 面板窗口（已拆出）"
+  } else {
+    document.querySelector<HTMLElement>("#btn-ai-detach")?.removeAttribute("hidden")
+    if (btnAi && !AI_WINDOW_MODE) btnAi.title = "打开 / 收起 AI 面板"
+    // 「放回」是用户明确要它回来：直接打开内嵌面板（不管拆出前是开是关）
+    openAiPanel()
+  }
+  const redockMain = document.querySelector<HTMLElement>("#btn-ai-redock-main")
+  if (redockMain) redockMain.hidden = !detached
+  updateAiHint()
 }
 
 function initAiResizer(): void {
@@ -3755,6 +4243,8 @@ function initAiResizer(): void {
 }
 
 function aiTargetIds(): string[] | null {
+  // AI 独立窗口：没有格子可选，直接用主窗口随快照推过来的目标
+  if (AI_WINDOW_MODE) return projectMirrorTargetIds
   const scope = aiScope
   const sentences = allSentences(store.project)
   if (scope === "empty") {
@@ -3780,7 +4270,7 @@ function updateAiHint(): void {
         : "先在格子里框选要写的句子"
     return
   }
-  const count = ids ? ids.length : allSentences(store.project).length
+  const count = ids ? ids.length : allSentences(aiProject()).length
   const label = scope === "all" ? "整首" : scope === "empty" ? "只填空句" : "当前段"
   aiHint.textContent = `已自动附上词格：${label} ${count} 句`
 }
@@ -3964,7 +4454,9 @@ function renderAiMessages(touchConvo = true): void {
   if (aiTurns.length === 0) {
     const empty = document.createElement("div")
     empty.className = "ai-msg system"
-    empty.textContent = "说要求（比如「写一段古风」），或点下面的「按词格写整首」；历史对话在左边栏「工作区」里。"
+    empty.textContent = AI_WINDOW_MODE
+      ? "说要求（比如「写一段古风」），或点下面的「按词格写整首」；「＋ 新对话」开新话题，「放回」收回主窗口。"
+      : "说要求（比如「写一段古风」），或点下面的「按词格写整首」；历史对话在左边栏「工作区」里。"
     aiMessagesEl.appendChild(empty)
     return
   }
@@ -4020,6 +4512,8 @@ function fillAssistantRow(
     toggle.addEventListener("click", () => {
       reply.thinkingOpen = !reply.thinkingOpen
       renderAiMessages()
+      // 折叠态也要跨刷新留住：落盘一次（touch=false 不动会话排序）
+      persistConvosSoon(false)
     })
     el.appendChild(toggle)
     if (reply.streaming) {
@@ -4281,6 +4775,15 @@ function aiHistoryMessages(before?: AiTurn): ChatMessage[] {
 
 function applyAiReply(reply: AiVersion): void {
   if (!reply.ok || reply.ok.length === 0 || reply.applied) return
+  // AI 独立窗口：自己不碰工程，把结果丢回主窗口去填（那边 mutate + 撤销 + 保存一条龙）
+  if (AI_WINDOW_MODE) {
+    emitQuiet(applyChannel(AI_WINDOW_DOC_ID), { ok: reply.ok })
+    reply.applied = true
+    renderAiMessages()
+    persistConvosSoon(false)
+    setStatus(`已让主窗口填入 ${reply.ok.length} 句（在主窗口里可撤销）`)
+    return
+  }
   let filled = 0
   let alternatives = 0
   mutate(() => {
@@ -4294,6 +4797,7 @@ function applyAiReply(reply: AiVersion): void {
   setStatus(
     `AI 已填 ${filled} 句${alternatives > 0 ? `，其中 ${alternatives} 句进了「AI」备选` : ""}（可撤销）`,
   )
+  pushProjectSync()
 }
 
 function updateAiSendButton(): void {
@@ -4373,8 +4877,8 @@ async function runAiGeneration(
   const scopeIds =
     targets && targets.length > 0
       ? targets
-      : allSentences(store.project).map((sentence) => sentence.id)
-  const cells = allSentences(store.project)
+      : allSentences(aiProject()).map((sentence) => sentence.id)
+  const cells = allSentences(aiProject())
     .filter((sentence) => scopeIds.includes(sentence.id))
     .reduce((total, sentence) => total + totalCells(sentence.pattern), 0)
   const effort = effortOf(aiSettings)
@@ -4397,7 +4901,7 @@ async function runAiGeneration(
       {
         role: "user",
         content: writing
-          ? `${requestText}\n\n${buildBrief(store.project, targets, requestText)}`
+          ? `${requestText}\n\n${buildBrief(aiProject(), targets, requestText)}`
           : requestText,
       },
     ]
@@ -4415,7 +4919,7 @@ async function runAiGeneration(
       },
     })
     let results = parseAiSentences(raw)
-    let validation = validateAiResults(store.project, results)
+    let validation = validateAiResults(aiProject(), results)
     let rounds = 0
     while (validation.issues.length > 0 && rounds < 3) {
       rounds += 1
@@ -4452,7 +4956,7 @@ async function runAiGeneration(
         if (id) byId.set(id, { id, text: result.text })
       })
       results = [...byId.values()]
-      validation = validateAiResults(store.project, results)
+      validation = validateAiResults(aiProject(), results)
     }
     version.streaming = false
     version.parsed = results
@@ -4741,21 +5245,23 @@ const HELP_GUIDE: string[] = [
   "<b>格子</b>：点格子直接打字，一格一字——<b>只收汉字</b>（英文、拼音、数字、标点自动跳过）",
   "<b>词格</b>：句子左边的小框改这句的词格（如 <code>4/4</code> 表示 4+4）；「＋ 新增一句」沿用本句 / 本段最后一句的词格",
   "<b>韵辙</b>：右侧徽章显示<b>光标所在那一格</b>的辙，点它给<b>这一格</b>加锁（任意一格都能锁）；锁住的格子只收押该辙的字；正在打拼音时徽章会实时显示这段拼音的辙",
+  "<b>韵组</b>：<b>拖拽框选</b>一段格子，或按 <kbd>Ctrl/⌘+G</kbd> 进「挑格模式」后点格子加/减（跨句跳着挑；按 <kbd>G</kbd> 或 <kbd>Esc</kbd> 退）→ 选中后格子上方会出现小浮动条（复制 / 清空 / 成组 / 解散 / ✕）→ 点「成组」勾要锁的项（<b>辙 / 韵母 / 声母 / 声调</b>，默认只锁辙）→ 这几格互相押：**光标在哪一格 → 同组所有格子（跨句也算）整格亮起**，光标不在组里时不显示任何标记、**建组时不合约束的字直接清空**、打字不合会被拦；对话框里还有「<b>推荐同韵字</b>」（常用字排前，点字直接填入）；想解散：点成员格子弹出的「解散这个韵组」小条 / 状态栏「韵组 N」总览里逐组解散 / 点那格的徽章 →「解散这个韵组」",
   "<b>状态栏 · 韵脚</b>：底部那串「韵脚 江阳×12 …」是**整首每句最后一个有字的格**的辙统计（按出现次数排序）——句尾还空着时，看的就是它前面最近的有字格；用来一眼看清押韵分布",
   "<b>和声</b>：句子上「和声」按钮标记 / 取消；段落头「＋ 和声」在段尾加一句",
   "<b>备选</b>：句首「备选 N ◇」可以开新备选，写不同版本",
-  "<b>导入</b>：<code>导入</code> 收歌词（可直接粘贴、选 <code>.txt/.lrc/.md</code>、或把文件拖进窗口）与 <code>选择 MIDI…</code>；导入会自动断句（连续 8 句以内不动，超过就在第 4、5 句之间断；一小节 ≤16 字、一句 ≤32 字）；多轨 MIDI：不重叠的带词轨合并循序读字，重叠的按字数定主歌 / 和声",
+  "<b>导入</b>：<code>导入</code> 收歌词（可直接粘贴、选 <code>.txt/.lrc/.md</code>、或把文件拖进窗口）与 <code>选择 MIDI…</code>；导入会自动断句（连续 8 句以内不动，超过就在第 4、5 句之间断；一小节 ≤16 字、一句 ≤32 字）；多轨 MIDI：不重叠的带词轨合并循序读字，重叠的按字数定主歌 / 和声；MIDI 里带的歌词事件会整段抄进原文",
   "<b>导出 / 复制</b>：导出 → 歌词 / 词格 / 带歌词 MIDI（写回原 MIDI）；复制 → 歌词 / 词格",
   "<b>查找替换</b>：工具栏「查找」或 <kbd>Cmd/Ctrl+F</kbd>；替换会<b>按字数改词格</b>（短了删格、长了插格），可一步撤销",
   "<b>工作区（左栏）</b>：歌词分组，每组下面是它的 AI 会话；鼠标悬浮歌名行时左边的文件夹会变成三角，点它折叠 / 展开；「＋ 新建对话」开新会话",
-  "<b>AI 面板（桌面版）</b>：选模型和等级 → 说要求（或点「按词格写整首」）；范围可选整首 / 只填空句 / 当前段 / 选中的句子；回复能翻页（输入版本 × 回复版本）；「填入词格」把通过的句子写进格子（可撤销）",
+  "<b>AI 面板（桌面版）</b>：点工具栏「AI」开一个<b>独立窗口</b>（每篇歌词一个，关窗＝隐藏、生成继续；主窗口一保存就把最新词格推过去；「填入词格」写回主窗口，可撤销；Enter 发送 / Esc 收弹层）；选模型和等级 → 说要求（或点「按词格写整首」）；范围可选整首 / 只填空句 / 当前段（网页版是内嵌面板，其余相同）；回复能翻页（输入版本 × 回复版本）",
   "<b>保存</b>：草稿自动存本机；<code>保存工程</code> 存成 <code>.json</code> 文件，可换机 / 分享",
   "<b>网页版</b>：AI 不可用；Chrome / Edge 保存就地覆盖，Safari 走下载",
 ]
 
 const HELP_KEYS: string[] = [
   "输入：<kbd>Enter</kbd> 下一句 · <kbd>←</kbd><kbd>→</kbd> 换格 · <kbd>↑</kbd><kbd>↓</kbd> 换句 · <kbd>Alt+←/→</kbd> 整句挪动 · <kbd>Backspace</kbd> 删当前格（空格时删前一格）",
-  "框选：按住拖动选一串格子 → <kbd>Backspace</kbd>/<kbd>Delete</kbd> 清空 · <kbd>Cmd/Ctrl+C</kbd> 复制选中 · <kbd>Esc</kbd> 取消；<kbd>Cmd/Ctrl+A</kbd> 全选格子",
+  "框选：按住拖动选一串格子（连续一段）→ <kbd>Backspace</kbd>/<kbd>Delete</kbd> 清空 · <kbd>Cmd/Ctrl+C</kbd> 复制选中 · <kbd>Esc</kbd> 取消；<kbd>Cmd/Ctrl+A</kbd> 全选格子",
+  "跳着选：<b><kbd>Ctrl/⌘+G</kbd> 进「挑格模式」</b>点格子加/减（跨句任意挑；再点取消；**已在韵组里的格子挑不动**——点它会整组闪一下、弹出「解散这个韵组」小条（1.2 秒自动收）；**误点了一格，快速双击那一格就退**；按 <kbd>G</kbd> 或 <kbd>Esc</kbd> 收起（退出模式并清空选择））；选中后上方出现浮动条（复制 / 清空 / 成组 / 解散 / ✕ 取消；误点空白处不会清掉已挑的格子）",
   "全局：<kbd>Cmd/Ctrl+S</kbd> 保存工程（加 <kbd>Shift</kbd> 另存为）· <kbd>Cmd/Ctrl+Z</kbd> 撤销 · <kbd>Shift+Cmd/Ctrl+Z</kbd> 重做 · <kbd>Cmd/Ctrl+F</kbd> 查找替换",
   "AI：输入框 <kbd>Enter</kbd> 发送（<kbd>Shift+Enter</kbd> 换行）；编辑消息 <kbd>Enter</kbd> 发送、<kbd>Esc</kbd> 取消",
   "弹窗：<kbd>Esc</kbd> 关闭；查找面板 <kbd>Enter</kbd> 下一处、<kbd>Shift+Enter</kbd> 上一处",
@@ -4791,23 +5297,845 @@ function openHelpDialog(): void {
 
   const actions = document.createElement("div")
   actions.className = "dialog-actions help-actions"
+  const leftGroup = document.createElement("div")
+  leftGroup.className = "help-actions-left"
+  const resetBtn = document.createElement("button")
+  resetBtn.type = "button"
+  resetBtn.className = "dialog-inline-btn"
+  resetBtn.textContent = "重置界面状态"
+  resetBtn.title = "输入框点不动 / 卡住时点这里：收拾残局，不碰数据"
+  resetBtn.addEventListener("click", () => resetUiState())
+  const backupBtn = document.createElement("button")
+  backupBtn.type = "button"
+  backupBtn.className = "dialog-inline-btn"
+  backupBtn.textContent = "恢复草稿备份"
+  backupBtn.title = "从本机自动留存的最多 5 份草稿快照里恢复（恢复前会把当前状态也留一份）"
+  backupBtn.addEventListener("click", () => openDraftBackupsDialog())
   const diagBtn = document.createElement("button")
   diagBtn.type = "button"
   diagBtn.className = "dialog-inline-btn"
   diagBtn.textContent = "导出诊断日志"
   diagBtn.title = "运行信息 + 最近内部事件（不含歌词正文和提示词），出问题时发给开发者"
   diagBtn.addEventListener("click", () => void exportDiagLog())
+  leftGroup.append(resetBtn, backupBtn, diagBtn)
   const close = document.createElement("button")
   close.type = "submit"
   close.value = "ok"
   close.textContent = "知道了"
-  actions.append(diagBtn, close)
+  actions.append(leftGroup, close)
 
   form.appendChild(actions)
   dialog.appendChild(form)
   document.body.appendChild(dialog)
   dialog.addEventListener("close", () => dialog.remove())
   dialog.showModal()
+}
+
+function formatBackupTime(t: number): string {
+  const d = new Date(t)
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** 恢复草稿备份：列出快照 → 确认 → 覆盖当前草稿并重载（恢复前把当前也留一份） */
+function openDraftBackupsDialog(): void {
+  const snapshots = loadDocSnapshots().slice().sort((a, b) => b.t - a.t)
+  if (snapshots.length === 0) {
+    setStatus("还没有草稿备份（自动保存过几次之后就会出现）", true)
+    return
+  }
+  const dialog = document.createElement("dialog")
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body"
+  const title = document.createElement("strong")
+  title.textContent = "恢复草稿备份"
+  const hint = document.createElement("p")
+  hint.textContent = "选一份覆盖当前草稿；恢复前会把当前状态也留一份，随时可以再换回来。"
+  const list = document.createElement("div")
+  list.className = "backup-list"
+  for (const snapshot of snapshots) {
+    const row = document.createElement("button")
+    row.type = "button"
+    row.className = "backup-row"
+    const sentences = snapshot.docs.reduce(
+      (total, doc) => total + allSentences(doc.project).length,
+      0,
+    )
+    row.textContent = `${formatBackupTime(snapshot.t)} · ${snapshot.docs.length} 个歌词文件 · ${sentences} 句`
+    row.addEventListener("click", () => confirmRestoreBackup(snapshot.t, dialog))
+    list.appendChild(row)
+  }
+  const actions = document.createElement("div")
+  actions.className = "dialog-actions"
+  const cancel = document.createElement("button")
+  cancel.type = "submit"
+  cancel.value = "cancel"
+  cancel.textContent = "取消"
+  actions.appendChild(cancel)
+  form.append(title, hint, list, actions)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  dialog.addEventListener("close", () => dialog.remove())
+  dialog.showModal()
+}
+
+function confirmRestoreBackup(t: number, parent: HTMLDialogElement): void {
+  parent.close("cancel")
+  const dialog = document.createElement("dialog")
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body"
+  const title = document.createElement("strong")
+  title.textContent = "恢复这份备份？"
+  const text = document.createElement("p")
+  text.textContent = `会用 ${formatBackupTime(t)} 的草稿覆盖当前内容（当前状态会先留一份备份）。`
+  const actions = document.createElement("div")
+  actions.className = "dialog-actions"
+  const cancel = document.createElement("button")
+  cancel.type = "submit"
+  cancel.value = "cancel"
+  cancel.textContent = "取消"
+  const ok = document.createElement("button")
+  ok.type = "submit"
+  ok.value = "ok"
+  ok.textContent = "恢复"
+  ok.className = "danger"
+  actions.append(cancel, ok)
+  form.append(title, text, actions)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  dialog.addEventListener("close", () => {
+    const action = dialog.returnValue
+    dialog.remove()
+    if (action !== "ok") return
+    // 先落盘当前状态并留一份（可反悔），再覆盖并重载
+    syncActiveDoc()
+    persistDocs()
+    snapshotDocs(docsState)
+    if (!restoreDocSnapshot(t)) {
+      setStatus("恢复失败：找不到这份备份", true)
+      return
+    }
+    diag("drafts.restore", { t })
+    setStatus("已恢复草稿备份，正在重载…")
+    try {
+      window.location.reload()
+    } catch {
+      render()
+    }
+  })
+  dialog.showModal()
+}
+
+// ---------- 押韵组：框选浮动条 / 建组对话框 / 推荐同韵字 ----------
+
+const pickBar = document.createElement("div")
+pickBar.className = "pick-bar"
+pickBar.hidden = true
+
+function pickBarButton(label: string, onClick: () => void, className = ""): HTMLButtonElement {
+  const button = document.createElement("button")
+  button.type = "button"
+  button.textContent = label
+  if (className) button.className = className
+  button.addEventListener("click", onClick)
+  return button
+}
+
+let pickBarCopyBtn: HTMLButtonElement | null = null
+let pickBarClearBtn: HTMLButtonElement | null = null
+let pickBarGroupBtn: HTMLButtonElement | null = null
+let pickBarDissolveBtn: HTMLButtonElement | null = null
+let dissolvePressAt = 0
+
+function initPickBar(): void {
+  pickBarCopyBtn = pickBarButton("复制", () => void copySelection())
+  pickBarClearBtn = pickBarButton("清空", () => removeSelectedCells())
+  pickBarGroupBtn = pickBarButton("成组", () => openRhymeGroupDialog(), "pick-rhyme")
+  pickBarDissolveBtn = pickBarButton("解散", () => {
+    // pointerdown 已处理过就别重复（真机上 click 有时会晚到/被吞）
+    if (Date.now() - dissolvePressAt < 500) return
+    if (pickDissolve) dissolveFlashedGroup()
+    else dissolveSelectedGroups()
+  })
+  // 解散小条：按下的那一刻就生效——不赌 click 一定到
+  pickBarDissolveBtn.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || !pickDissolve) return
+    event.preventDefault()
+    dissolvePressAt = Date.now()
+    dissolveFlashedGroup()
+  })
+  pickBar.append(
+    pickBarCopyBtn,
+    pickBarClearBtn,
+    pickBarGroupBtn,
+    pickBarDissolveBtn,
+    pickBarButton("✕", () => {
+      if (pickDissolve) {
+        clearGroupDissolve()
+        refreshPickBar()
+      } else {
+        clearSelection()
+      }
+    }, "pick-close"),
+  )
+  document.body.appendChild(pickBar)
+  window.addEventListener("scroll", () => refreshPickBar(), { passive: true })
+}
+
+/** 挑格模式里点到成员（没有选择时）：出"解散这个押韵组"小条（1.2 秒自动收；光标在条上不收 / 点别处收） */
+function showGroupDissolveBar(groupId: string): void {
+  pickDissolve = { groupId }
+  startGroupDissolveTimer()
+  refreshPickBar()
+}
+
+function startGroupDissolveTimer(): void {
+  if (pickDissolveTimer) clearTimeout(pickDissolveTimer)
+  pickDissolveTimer = setTimeout(() => {
+    // 鼠标还停在条上就先不收：不然你刚要点它就消失了
+    let hovering = false
+    try {
+      hovering = pickBar.matches(":hover")
+    } catch {
+      hovering = false
+    }
+    if (hovering) {
+      startGroupDissolveTimer()
+      return
+    }
+    pickDissolve = null
+    pickDissolveTimer = null
+    refreshPickBar()
+  }, 1200)
+}
+
+function clearGroupDissolve(): void {
+  if (!pickDissolve) return
+  pickDissolve = null
+  if (pickDissolveTimer) clearTimeout(pickDissolveTimer)
+  pickDissolveTimer = null
+  refreshPickBar()
+}
+
+/** 解散小条上的动作：解散那一组 */
+function dissolveFlashedGroup(): void {
+  const id = pickDissolve?.groupId
+  if (!id) return
+  clearGroupDissolve()
+  mutate(() => {
+    dissolveRhymeGroup(store.project, id)
+  })
+  setStatus("已解散韵组")
+}
+
+/** 状态栏「押韵组 N」：点开总览 */
+function bindStatusGroups(): void {
+  statusGroupsEl.title = "查看这首歌的韵组"
+  statusGroupsEl.addEventListener("click", () => openRhymeGroupsOverview())
+}
+
+/** 押韵组总览：有几组、什么约束、成员在哪；可悬停闪现 / 定位 / 解散 */
+function openRhymeGroupsOverview(): void {
+  const dialog = document.createElement("dialog")
+  dialog.className = "rhyme-groups-dialog"
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body"
+  const title = document.createElement("strong")
+  title.className = "dialog-drag-handle"
+  title.tabIndex = -1
+  const hint = document.createElement("p")
+  hint.className = "rhyme-groups-hint"
+  hint.textContent = "悬停一行会在网格里闪一下；「定位」把光标挪到那里；成员格子在挑格模式里点不动（会闪）"
+  const list = document.createElement("div")
+  list.className = "rhyme-groups-list"
+  const actions = document.createElement("div")
+  actions.className = "dialog-actions"
+  const close = document.createElement("button")
+  close.type = "submit"
+  close.value = "cancel"
+  close.textContent = "关闭"
+
+  const renderList = (): void => {
+    const groups = store.project.rhymeGroups ?? []
+    title.textContent = `韵组 · ${groups.length} 组`
+    hint.hidden = groups.length === 0
+    list.replaceChildren()
+    if (groups.length === 0) {
+      const empty = document.createElement("p")
+      empty.className = "rhyme-groups-empty"
+      empty.textContent = "这首歌还没有韵组。拖拽框选或按 Ctrl/⌘+G 挑格子 → 浮动条「成组」。"
+      list.appendChild(empty)
+      return
+    }
+    const sentences = allSentences(store.project)
+    for (const group of groups) {
+      const row = document.createElement("div")
+      row.className = "rhyme-group-row"
+
+      const main = document.createElement("div")
+      main.className = "rhyme-group-main"
+      const constraint = document.createElement("button")
+      constraint.type = "button"
+      constraint.className = "rhyme-group-constraint"
+      constraint.title = "点它改这个组的约束"
+      constraint.textContent = constraintText(group.constraint)
+      constraint.addEventListener("click", () => {
+        dialog.close("cancel")
+        openRhymeGroupEditDialog(group.id)
+      })
+      /** 跳到某一格：关弹窗 + 光标挪过去 + 滚到可见 + 整组闪一下 */
+      const locate = (sentenceId: string, index: number): void => {
+        dialog.close("cancel")
+        moveCursorInPlace({ sentenceId, cell: index })
+        const el = sentencesEl.querySelector<HTMLElement>(
+          `.sentence[data-id="${sentenceId}"] .cell[data-index="${index}"], ` +
+            `.sentence[data-id="${sentenceId}"] .cell-input[data-index="${index}"]`,
+        )
+        if (el && typeof el.scrollIntoView === "function") {
+          el.scrollIntoView({ block: "center", behavior: "smooth" })
+        }
+        flashGroup(group.id)
+      }
+
+      // 成员位置：按句分组，每个格子一个小按钮（「3格·空」「4格·风」），点了跳到那一格
+      const membersText = document.createElement("span")
+      membersText.className = "rhyme-group-members"
+      let first: { sentenceId: string; index: number } | null = null
+      let firstPart = true
+      sentences.forEach((sentence, sentenceIndex) => {
+        const ref = (sentence.rhymeGroups ?? []).find((item) => item.id === group.id)
+        if (!ref) return
+        const cells = getCells(sentence)
+        const indexes = [...ref.indexes].sort((a, b) => a - b)
+        if (!firstPart) membersText.append(document.createTextNode("；"))
+        firstPart = false
+        membersText.append(document.createTextNode(`第 ${sentenceIndex + 1} 句 `))
+        indexes.forEach((index) => {
+          if (!first) first = { sentenceId: sentence.id, index }
+          const button = document.createElement("button")
+          button.type = "button"
+          button.className = "rhyme-group-cell-button"
+          button.textContent = `${index + 1}格·${cells[index] || "空"}`
+          button.title = `点它跳到第 ${index + 1} 格`
+          button.addEventListener("click", () => locate(sentence.id, index))
+          membersText.appendChild(button)
+        })
+      })
+      main.append(constraint, membersText)
+
+      const locateBtn = document.createElement("button")
+      locateBtn.type = "button"
+      locateBtn.textContent = "定位"
+      locateBtn.addEventListener("click", () => {
+        const target = first as { sentenceId: string; index: number } | null
+        if (target) locate(target.sentenceId, target.index)
+      })
+      const dissolve = document.createElement("button")
+      dissolve.type = "button"
+      dissolve.textContent = "解散"
+      dissolve.addEventListener("click", () => {
+        mutate(() => {
+          dissolveRhymeGroup(store.project, group.id)
+        })
+        setStatus("已解散韵组")
+        renderList()
+      })
+      row.append(main, locateBtn, dissolve)
+      row.addEventListener("mouseenter", () => flashGroup(group.id))
+      list.appendChild(row)
+    }
+  }
+
+  renderList()
+  actions.append(close)
+  form.append(title, hint, list, actions)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  dialog.addEventListener("close", () => dialog.remove())
+  makeDialogDraggable(dialog, title)
+  dialog.showModal()
+  title.focus()
+}
+
+/** 让对话框可以按标题拖着走：限制在窗口内，至少留 80px 可见 */
+function makeDialogDraggable(dialog: HTMLDialogElement, handle: HTMLElement): void {
+  let dragging = false
+  let offsetX = 0
+  let offsetY = 0
+  let startX = 0
+  let startY = 0
+  let baseX = 0
+  let baseY = 0
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return
+    dragging = true
+    startX = event.clientX
+    startY = event.clientY
+    baseX = offsetX
+    baseY = offsetY
+    try {
+      handle.setPointerCapture(event.pointerId)
+    } catch {
+      /* happy-dom 等环境可能不支持 */
+    }
+    event.preventDefault()
+  })
+  handle.addEventListener("pointermove", (event) => {
+    if (!dragging) return
+    let x = baseX + (event.clientX - startX)
+    let y = baseY + (event.clientY - startY)
+    const dialogWidth = dialog.offsetWidth
+    const dialogHeight = dialog.offsetHeight
+    if (dialogWidth > 0 && window.innerWidth > 0) {
+      const centeredLeft = (window.innerWidth - dialogWidth) / 2
+      const centeredTop = (window.innerHeight - dialogHeight) / 2
+      x = Math.min(Math.max(x, -(dialogWidth - 80) - centeredLeft), window.innerWidth - 80 - centeredLeft)
+      y = Math.min(
+        Math.max(y, Math.min(0, -(dialogHeight - 80) - centeredTop)),
+        Math.max(0, window.innerHeight - 80 - centeredTop),
+      )
+    }
+    offsetX = x
+    offsetY = y
+    dialog.style.transform = `translate(${x}px, ${y}px)`
+  })
+  const stop = (event: PointerEvent) => {
+    if (!dragging) return
+    dragging = false
+    try {
+      handle.releasePointerCapture(event.pointerId)
+    } catch {
+      /* 忽略 */
+    }
+  }
+  handle.addEventListener("pointerup", stop)
+  handle.addEventListener("pointercancel", stop)
+}
+
+/** 浮动条「解散」：把选中格子所在的押韵组全部解散 */
+function dissolveSelectedGroups(): void {
+  const ids = new Set<string>()
+  for (const [sentenceId, indexes] of pickedCells) {
+    const sentence = store.findSentence(sentenceId)
+    if (!sentence) continue
+    for (const index of indexes) {
+      const group = groupAt(store.project, sentence, index)
+      if (group) ids.add(group.id)
+    }
+  }
+  if (ids.size === 0) {
+    setStatus("选中的格子里没有韵组", true)
+    return
+  }
+  mutate(() => {
+    for (const id of ids) dissolveRhymeGroup(store.project, id)
+  })
+  clearSelection()
+  setStatus(ids.size === 1 ? "已解散韵组" : `已解散 ${ids.size} 个韵组`)
+}
+
+/** 有选择时把浮动条贴在第一个选中格上方 */
+function refreshPickBar(): void {
+  // 按钮形态：选择模式（复制/清空/成组/解散/✕） vs 点成员后的解散小条（解散这个押韵组/✕）
+  const dissolving = pickDissolve !== null
+  if (pickBarCopyBtn) pickBarCopyBtn.hidden = dissolving
+  if (pickBarClearBtn) pickBarClearBtn.hidden = dissolving
+  if (pickBarGroupBtn) pickBarGroupBtn.hidden = dissolving
+  if (pickBarDissolveBtn) pickBarDissolveBtn.textContent = dissolving ? "解散这个韵组" : "解散"
+
+  // 解散小条优先：贴在那一组第一个成员格上方（不管有没有已挑的格子）
+  if (pickDissolve && !dragStart) {
+    const member = groupMemberEls(pickDissolve.groupId)[0]
+    if (member) {
+      positionPickBarAbove(member)
+      return
+    }
+  }
+  if (pickedCells.size === 0) {
+    pickBar.hidden = true
+    return
+  }
+  if (dragStart) {
+    pickBar.hidden = true
+    return
+  }
+  const anchorEl = anchorCellEl()
+  const first = anchorEl ?? document.querySelector<HTMLElement>(".cell.selected, .cell-input.selected")
+  if (!first) {
+    pickBar.hidden = true
+    return
+  }
+  positionPickBarAbove(first)
+}
+
+/** 锚点格（最后挑中的那格）还在选择里的话，返回它的元素 */
+function anchorCellEl(): HTMLElement | null {
+  if (!selectionAnchor) return null
+  if (!(pickedCells.get(selectionAnchor.sentenceId)?.has(selectionAnchor.index) ?? false)) return null
+  return document.querySelector<HTMLElement>(
+    `.sentence[data-id="${selectionAnchor.sentenceId}"] .cell[data-index="${selectionAnchor.index}"], ` +
+      `.sentence[data-id="${selectionAnchor.sentenceId}"] .cell-input[data-index="${selectionAnchor.index}"]`,
+  )
+}
+
+/** 把浮动条贴在某个格子上方（滚出视野也贴边不消失） */
+function positionPickBarAbove(el: HTMLElement): void {
+  const rect = el.getBoundingClientRect()
+  const left = Math.min(Math.max(rect.left + rect.width / 2, 150), window.innerWidth - 150)
+  const top = Math.min(Math.max(rect.top - 38, 8), window.innerHeight - 40)
+  pickBar.style.left = `${left}px`
+  pickBar.style.top = `${top}px`
+  pickBar.hidden = false
+}
+
+const GROUP_FINALS = [
+  "a", "o", "e", "i", "u", "v", "er", "ai", "ei", "ao", "ou", "an", "en", "ang", "eng", "ong",
+  "ia", "ie", "iao", "iu", "ian", "in", "iang", "ing", "iong",
+  "ua", "uo", "uai", "ui", "uan", "un", "uang", "ueng", "ve", "van", "vn",
+]
+const GROUP_INITIALS = [
+  "", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h", "j", "q", "x",
+  "zh", "ch", "sh", "r", "z", "c", "s", "y", "w",
+]
+
+function openRhymeGroupDialog(): void {
+  const spans = selectionSpans()
+  const cells: { sentenceId: string; index: number }[] = []
+  for (const span of spans) {
+    for (let index = span.from; index <= span.to; index++) {
+      cells.push({ sentenceId: span.sentence.id, index })
+    }
+  }
+  if (cells.length < 2) {
+    setStatus("先选中至少 2 个格子（拖拽框选，或按住 G 逐个点）", true)
+    return
+  }
+  for (const cell of cells) {
+    const sentence = store.findSentence(cell.sentenceId)
+    if (sentence && groupAt(store.project, sentence, cell.index)) {
+      setStatus("选中的格子里已经有人属于别的韵组了，先解散那个组", true)
+      return
+    }
+  }
+  // 预填：拿第一个有字的选中格当种子
+  let seed = null
+  for (const cell of cells) {
+    const sentence = store.findSentence(cell.sentenceId)
+    const char = sentence ? getCells(sentence)[cell.index] : ""
+    if (char) {
+      seed = pronunciationsOf(char)[0] ?? null
+      if (seed) break
+    }
+  }
+  openRhymeGroupConstraintDialog({
+    title: `建立韵组（${cells.length} 格）`,
+    hint: "勾哪几项就锁哪几项；同一条读音要同时满足。建组时，选中格里不合约束的字会被直接清空；建好后这几格之间互相押，打字不合会被拦。",
+    okLabel: "建立韵组",
+    cells,
+    seed,
+    initialConstraint: null,
+    onSubmit: (constraint) => {
+      let clearedCount = 0
+      mutate(() => {
+        addRhymeGroup(store.project, cells, constraint)
+        // 选中的格里，有字但不合约束的：直接清空（⌘Z 可一步恢复）
+        for (const cell of cells) {
+          const sentence = store.findSentence(cell.sentenceId)
+          if (!sentence) continue
+          const char = getCells(sentence)[cell.index]
+          if (char && !charFitsConstraint(char, constraint)) {
+            setCells(sentence, clearCell(getCells(sentence), cell.index))
+            clearedCount += 1
+          }
+        }
+      })
+      clearSelection()
+      focusCellInput()
+      setStatus(
+        `已建立韵组（${cells.length} 格）：${constraintText(constraint)}${
+          clearedCount > 0 ? `——已清空 ${clearedCount} 格不合的字` : ""
+        }`,
+        clearedCount > 0,
+      )
+    },
+  })
+}
+
+/** 某个韵组的全部成员格（按文档顺序） */
+function groupMemberCells(groupId: string): { sentenceId: string; index: number }[] {
+  const cells: { sentenceId: string; index: number }[] = []
+  for (const sentence of allSentences(store.project)) {
+    const ref = (sentence.rhymeGroups ?? []).find((item) => item.id === groupId)
+    if (!ref) continue
+    for (const index of [...ref.indexes].sort((a, b) => a - b)) {
+      cells.push({ sentenceId: sentence.id, index })
+    }
+  }
+  return cells
+}
+
+/** 点总览里的约束（「发花辙」那处）进来：只改约束，成员一个不动 */
+function openRhymeGroupEditDialog(groupId: string): void {
+  const group = (store.project.rhymeGroups ?? []).find((item) => item.id === groupId)
+  if (!group) {
+    setStatus("这个韵组已经不在了", true)
+    return
+  }
+  const cells = groupMemberCells(groupId)
+  if (cells.length === 0) {
+    setStatus("这个韵组没有成员格", true)
+    return
+  }
+  let seed = null
+  for (const cell of cells) {
+    const sentence = store.findSentence(cell.sentenceId)
+    const char = sentence ? getCells(sentence)[cell.index] : ""
+    if (char) {
+      seed = pronunciationsOf(char)[0] ?? null
+      if (seed) break
+    }
+  }
+  const before = constraintText(group.constraint)
+  openRhymeGroupConstraintDialog({
+    title: `编辑韵组（${cells.length} 格）`,
+    hint: "改这个组的约束：勾哪几项就锁哪几项；只改约束，成员格子一个不动。",
+    okLabel: "保存",
+    cells,
+    seed,
+    initialConstraint: group.constraint,
+    onSubmit: (constraint) => {
+      mutate(() => {
+        updateRhymeGroupConstraint(store.project, groupId, constraint)
+      })
+      setStatus(`已更新韵组约束：${before} → ${constraintText(constraint)}`)
+      openRhymeGroupsOverview()
+    },
+  })
+}
+
+/** 建组 / 编辑组共用的约束对话框 */
+interface RhymeGroupConstraintConfig {
+  title: string
+  hint: string
+  okLabel: string
+  cells: { sentenceId: string; index: number }[]
+  seed: { final: string; initial: string; tone: number } | null
+  initialConstraint: RhymeConstraint | null
+  onSubmit: (constraint: RhymeConstraint) => void
+}
+
+function openRhymeGroupConstraintDialog(config: RhymeGroupConstraintConfig): void {
+  const cells = config.cells
+  const seed = config.seed
+  const dialog = document.createElement("dialog")
+  dialog.className = "rhyme-group-dialog"
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body"
+  const title = document.createElement("strong")
+  title.className = "dialog-drag-handle"
+  title.tabIndex = -1
+  title.textContent = config.title
+  const hint = document.createElement("p")
+  hint.textContent = config.hint
+
+  const makeRow = (label: string, control: HTMLElement): { row: HTMLLabelElement; check: HTMLInputElement } => {
+    const row = document.createElement("label")
+    row.className = "dialog-field group-field"
+    const check = document.createElement("input")
+    check.type = "checkbox"
+    row.append(check, document.createTextNode(label), control)
+    return { row, check }
+  }
+
+  const rhySelect = document.createElement("select")
+  RHYME_LABEL_BY_KEY.forEach((label, key) => {
+    const option = document.createElement("option")
+    option.value = key
+    option.textContent = label
+    rhySelect.appendChild(option)
+  })
+  // 用种子的韵母反推辙
+  if (seed) {
+    const matched = [...RHYME_LABEL_BY_KEY.keys()].find((key) => rhymeFinals(key).includes(seed.final))
+    if (matched) rhySelect.value = matched
+  }
+
+  const finalSelect = document.createElement("select")
+  for (const final of GROUP_FINALS) {
+    const option = document.createElement("option")
+    option.value = final
+    option.textContent = final
+    finalSelect.appendChild(option)
+  }
+  if (seed) finalSelect.value = seed.final
+
+  const initialSelect = document.createElement("select")
+  for (const initial of GROUP_INITIALS) {
+    const option = document.createElement("option")
+    option.value = initial
+    option.textContent = initial === "" ? "零声母" : initial
+    initialSelect.appendChild(option)
+  }
+  if (seed) initialSelect.value = seed.initial
+
+  const toneBox = document.createElement("span")
+  toneBox.className = "group-tones"
+  const toneChecks: HTMLInputElement[] = []
+  for (const [value, label] of [[1, "1"], [2, "2"], [3, "3"], [4, "4"], [0, "轻"]] as [number, string][]) {
+    const toneLabel = document.createElement("label")
+    const check = document.createElement("input")
+    check.type = "checkbox"
+    check.value = String(value)
+    if (seed && seed.tone === value) check.checked = true
+    toneChecks.push(check)
+    toneLabel.append(check, document.createTextNode(label))
+    toneBox.appendChild(toneLabel)
+  }
+
+  const rhyRow = makeRow("辙", rhySelect)
+  rhyRow.check.checked = true
+  const finalRow = makeRow("韵母", finalSelect)
+  const initialRow = makeRow("声母", initialSelect)
+  const toneRow = makeRow("声调", toneBox)
+
+  // 编辑已有组：按现有约束预填勾选与取值
+  const initial = config.initialConstraint
+  if (initial) {
+    rhyRow.check.checked = initial.rhy !== undefined
+    finalRow.check.checked = initial.final !== undefined
+    initialRow.check.checked = initial.initial !== undefined
+    const tones = initial.tones ?? []
+    toneRow.check.checked = tones.length > 0
+    for (const check of toneChecks) check.checked = tones.includes(Number(check.value))
+    if (initial.rhy !== undefined) rhySelect.value = initial.rhy
+    if (initial.final !== undefined) finalSelect.value = initial.final
+    if (initial.initial !== undefined) initialSelect.value = initial.initial
+  }
+
+  const buildConstraint = (): RhymeConstraint => {
+    const constraint: RhymeConstraint = {}
+    if (rhyRow.check.checked) constraint.rhy = rhySelect.value
+    if (finalRow.check.checked) constraint.final = finalSelect.value
+    if (initialRow.check.checked) constraint.initial = initialSelect.value
+    const tones = toneChecks.filter((check) => check.checked).map((check) => Number(check.value))
+    if (toneRow.check.checked && tones.length > 0) constraint.tones = tones
+    return constraint
+  }
+
+  const previewTitle = document.createElement("div")
+  previewTitle.className = "ai-provider-note"
+  const preview = document.createElement("div")
+  preview.className = "candidate-grid"
+  const renderPreview = (): void => {
+    const constraint = buildConstraint()
+    const list = candidateChars(constraint, 120)
+    previewTitle.textContent = `推荐同韵字（${list.length}${list.length >= 120 ? "+" : ""}）：点一个字填进选中格`
+    preview.replaceChildren()
+    for (const char of list) {
+      const chip = document.createElement("button")
+      chip.type = "button"
+      chip.textContent = char
+      chip.title = constraintText(constraint)
+      chip.addEventListener("click", () => pickCandidate(char, cells, constraint))
+      preview.appendChild(chip)
+    }
+  }
+  for (const control of [rhySelect, finalSelect, initialSelect, ...toneChecks]) {
+    control.addEventListener("change", renderPreview)
+  }
+  for (const row of [rhyRow, finalRow, initialRow, toneRow]) {
+    row.check.addEventListener("change", renderPreview)
+  }
+  renderPreview()
+
+  const actions = document.createElement("div")
+  actions.className = "dialog-actions"
+  const cancel = document.createElement("button")
+  cancel.type = "submit"
+  cancel.value = "cancel"
+  cancel.textContent = "取消"
+  const ok = document.createElement("button")
+  ok.type = "button"
+  ok.textContent = config.okLabel
+  ok.className = "primary"
+  ok.disabled = cells.length < 2
+  ok.addEventListener("click", () => {
+    const constraint = buildConstraint()
+    if (Object.keys(constraint).length === 0) {
+      setStatus("至少勾一项（辙 / 韵母 / 声母 / 声调）", true)
+      return
+    }
+    dialog.close("cancel")
+    config.onSubmit(constraint)
+  })
+  actions.append(cancel, ok)
+
+  form.append(title, hint, rhyRow.row, finalRow.row, initialRow.row, toneRow.row, previewTitle, preview, actions)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  dialog.addEventListener("close", () => dialog.remove())
+  makeDialogDraggable(dialog, title)
+  dialog.showModal()
+  title.focus()
+}
+
+/** 把推荐字填进选中格：优先光标那格，其次第一个空格，都没有就第一格 */
+function pickCandidate(
+  char: string,
+  cells: { sentenceId: string; index: number }[],
+  constraint: RhymeConstraint,
+): void {
+  const fitsCell = (cell: { sentenceId: string; index: number }): boolean => {
+    const sentence = store.findSentence(cell.sentenceId)
+    if (!sentence) return false
+    const lock = cellLockAt(sentence, cell.index)
+    if (lock && !charFitsRhyme(char, lock)) return false
+    return true
+  }
+  const preferred = cells.find(
+    (cell) => cell.sentenceId === store.cursor.sentenceId && cell.index === store.cursor.cell,
+  )
+  const empty = cells.find((cell) => {
+    const sentence = store.findSentence(cell.sentenceId)
+    return sentence && !getCells(sentence)[cell.index] && fitsCell(cell)
+  })
+  const target = preferred && fitsCell(preferred) ? preferred : empty ?? cells[0]
+  const sentence = store.findSentence(target.sentenceId)
+  if (!sentence) return
+  mutateSentence(target.sentenceId, () => {
+    const s = store.findSentence(target.sentenceId)
+    if (!s) return
+    const cellsNext = getCells(s).slice()
+    cellsNext[target.index] = char
+    setCells(s, cellsNext)
+  })
+  setStatus(`已填入「${char}」（${constraintText(constraint)}）`)
+}
+
+/** 重置界面状态：把可能卡住的全局交互状态收干净（不碰任何数据） */
+function resetUiState(): void {
+  diag("ui.reset")
+  restoreComposingBadge()
+  composing = false
+  composingInput = null
+  justDragged = false
+  dragStart = null
+  imeJustEnded = false
+  pickSuppressClick = false
+  pickLastClick = null
+  pickMode = false
+  document.body.classList.remove("pick-mode")
+  pickedCells.clear()
+  // 关掉所有弹窗（用 cancel 语义，避免误应用锁/导入等）
+  document.querySelectorAll<HTMLDialogElement>("dialog[open]").forEach((dialog) => dialog.close("cancel"))
+  closeAiPops()
+  render()
+  focusCellInput()
+  setStatus("界面状态已重置（数据没动）")
 }
 
 /** 导出诊断日志：桌面端走保存对话框，网页版直接下载 */
@@ -5012,6 +6340,10 @@ function confirmDeleteConvo(convo: AiConversation): void {
 }
 
 function newConvo(): void {
+  if (DOCS_WINDOW_MODE) {
+    emitQuiet(DOCS_INTENT_CHANNEL, { type: "new-convo" })
+    return
+  }
   const created = createConvo(docsState.activeId || null)
   convos.unshift(created)
   setActiveConvo(created.id)
@@ -5023,6 +6355,386 @@ function newConvo(): void {
   setStatus("已新建对话")
 }
 
+/** 把未知类型的错误说成人话（Tauri 的事件 payload 常常不是 Error） */
+function describeErr(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === "string") return err
+  try {
+    return JSON.stringify(err) ?? String(err)
+  } catch {
+    return String(err)
+  }
+}
+
+/** 主窗口 → AI 窗口推工程快照（scope/目标句子在主窗口算好，AI 窗口只读） */
+function pushProjectSync(docId?: string): void {
+  if (AI_WINDOW_MODE || !isDesktop() || !aiDetached) return
+  const id = docId ?? docsState.activeId
+  if (!id) return
+  const payload: ProjectSync = {
+    docId: id,
+    title: store.project.title || "未命名歌曲",
+    project: store.project,
+    targetIds: aiTargetIds(),
+    scope: aiScope,
+  }
+  emitQuiet(syncChannel(id), payload)
+}
+
+function readAiWinGeometry(): { width: number; height: number; x?: number; y?: number } {
+  try {
+    const raw = localStorage.getItem(AI_WIN_GEO_KEY)
+    if (!raw) return { width: 520, height: 720 }
+    const data = JSON.parse(raw) as { width?: unknown; height?: unknown; x?: unknown; y?: unknown }
+    const w = typeof data.width === "number" ? data.width : 520
+    const h = typeof data.height === "number" ? data.height : 720
+    const geo: { width: number; height: number; x?: number; y?: number } = {
+      width: Math.max(360, w),
+      height: Math.max(420, h),
+    }
+    if (typeof data.x === "number" && typeof data.y === "number") {
+      geo.x = data.x
+      geo.y = data.y
+    }
+    return geo
+  } catch {
+    return { width: 520, height: 720 }
+  }
+}
+
+/** 新窗别压在主机窗上：能放右边就贴右边，放不下就级联到右下 */
+function aiWindowPlacement(): { x?: number; y?: number } {
+  try {
+    const screen = window.screen as Screen & { availLeft?: number; availTop?: number }
+    const avail = {
+      w: screen.availWidth,
+      h: screen.availHeight,
+      left: screen.availLeft ?? 0,
+      top: screen.availTop ?? 0,
+    }
+    const mainX = window.screenX
+    const mainY = window.screenY
+    const mainW = window.outerWidth
+    const geo = readAiWinGeometry()
+    const x = mainX + mainW + 10
+    if (x + geo.width <= avail.left + avail.w) return { x, y: Math.max(avail.top, mainY) }
+    return { x: mainX + 80, y: mainY + 60 }
+  } catch {
+    return {}
+  }
+}
+
+function writeAiWinGeometry(): void {
+  if (!isDesktop()) return
+  void (async () => {
+    try {
+      const win = getCurrentWindow()
+      const [size, position] = await Promise.all([win.outerSize(), win.outerPosition()])
+      localStorage.setItem(
+        AI_WIN_GEO_KEY,
+        JSON.stringify({ width: size.width, height: size.height, x: position.x, y: position.y }),
+      )
+    } catch {
+      // 拿不到尺寸就算了，不影响隐藏
+    }
+  })()
+}
+
+/** 已拆出去就把那篇的 AI 窗聚焦回来；没开就开一个 */
+async function focusAiWindow(docId: string): Promise<void> {
+  try {
+    const opened = (await getAllWindows()).find((win) => win.label === aiWindowLabel(docId))
+    if (opened) {
+      await opened.show()
+      await opened.setFocus()
+      pushProjectSync(docId)
+      return
+    }
+    await openAiWindow(docId)
+  } catch (err) {
+    setStatus(`AI 窗口打开失败：${describeErr(err)}`, true)
+    diagError("ai.window.error", err)
+  }
+}
+
+/** 开 / 聚焦某篇歌词的 AI 窗口（每篇一个，label = ai-<docId>；已存在就 show + focus） */
+async function openAiWindow(docId: string): Promise<void> {
+  try {
+    await openAiWindowInner(docId)
+  } catch (err) {
+    setStatus(`AI 窗口打开失败：${describeErr(err)}`, true)
+    diagError("ai.window.error", err)
+  }
+}
+
+async function openAiWindowInner(docId: string): Promise<void> {
+  const label = aiWindowLabel(docId)
+  const opened = (await getAllWindows()).find((win) => win.label === label)
+  if (opened) {
+    await opened.show()
+    await opened.setFocus()
+    setAiDetached(true)
+    pushProjectSync(docId)
+    return
+  }
+  const url = `${window.location.origin}${window.location.pathname}?win=ai&doc=${encodeURIComponent(docId)}`
+  const geo = readAiWinGeometry()
+  const place = geo.x !== undefined && geo.y !== undefined ? { x: geo.x, y: geo.y } : aiWindowPlacement()
+  const doc = docsState.docs.find((item) => item.id === docId)
+  const win = new WebviewWindow(label, {
+    url,
+    title: `AI 面板 · ${doc?.project.title || "未命名歌曲"}`,
+    width: geo.width,
+    height: geo.height,
+    minWidth: 360,
+    minHeight: 420,
+    ...place,
+  })
+  // 「填入词格」从 AI 窗口回来：主窗口 mutate + 撤销栈 + 保存
+  void listen(applyChannel(docId), (event) => {
+    const ok = (event.payload as { ok?: AiSentenceResult[] } | null)?.ok
+    if (!ok || ok.length === 0) return
+    let filled = 0
+    let alternatives = 0
+    mutate(() => {
+      const summary = applyAiResults(store.project, ok)
+      filled = summary.filled
+      alternatives = summary.alternatives
+    })
+    focusCellInput()
+    setStatus(
+      `AI 已填 ${filled} 句${alternatives > 0 ? `，其中 ${alternatives} 句进了「AI」备选` : ""}（可撤销）`,
+    )
+    pushProjectSync(docId)
+  })
+  // AI 窗口问主窗口要一次当前状态（刚打开、或隐藏后重新显示）
+  void listen(AI_READY_CHANNEL, (event) => {
+    const id = (event.payload as { docId?: string } | null)?.docId
+    diag("ai.ready", { docId: id ?? "" })
+    if (id) pushProjectSync(id)
+  })
+  // AI 窗口点「放回」= 收回内嵌
+  void listen(AI_REDOCK_CHANNEL, (event) => {
+    diag("ai.redock", { docId: (event.payload as { docId?: string } | null)?.docId ?? "" })
+    setAiDetached(false)
+    openAiPanel()
+  })
+  // AI 窗口里改了生成范围：主窗口这边的 scope 跟着变（下一次快照的目标才对）
+  void listen(scopeChannel(docId), (event) => {
+    setAiScope(event.payload as AiScope)
+  })
+  await win.once("tauri://created", () => pushProjectSync(docId))
+  await win.once("tauri://error", (err: unknown) => {
+    setStatus(`AI 窗口打开失败：${describeErr(err)}`, true)
+    diagError("ai.window.error", err)
+    // 没拆成：收回内嵌，别让用户两边都摸不到
+    setAiDetached(false)
+  })
+}
+
+/** AI 独立窗口模式初始化：只挂 AI 面板，等主窗口推快照 */
+/** 主窗口 → 文档栏窗口推全量列表（DocRecord 可直接 JSON，两份窗口各自的 docsState 用同一份数据） */
+function pushDocsSync(): void {
+  if (DOCS_WINDOW_MODE || !isDesktop()) return
+  emitQuiet(DOCS_SYNC_CHANNEL, { docs: docsState.docs, activeId: docsState.activeId })
+}
+
+let docsSyncTimer: number | undefined
+/** 列表重画很频繁（切换 / 新建 / 改名 / 建组都会）：合并成一次推送 */
+function scheduleDocsSync(): void {
+  if (DOCS_WINDOW_MODE || !isDesktop()) return
+  if (docsSyncTimer !== undefined) window.clearTimeout(docsSyncTimer)
+  docsSyncTimer = window.setTimeout(() => {
+    docsSyncTimer = undefined
+    pushDocsSync()
+  }, 60)
+}
+
+/** 文档栏是否拆在主窗口外（拆出时主窗口的侧边栏让位） */
+function setDocsDetached(detached: boolean): void {
+  document.documentElement.classList.toggle("docs-detached", detached)
+  const sidebar = document.querySelector<HTMLElement>(".sidebar")
+  if (sidebar) sidebar.inert = detached
+  try {
+    localStorage.setItem(DOCS_DETACHED_KEY, detached ? "1" : "0")
+  } catch {
+    // 忽略配额错误
+  }
+}
+
+/** 已拆出去就把那个窗聚焦回来；没开就开一个 */
+async function focusDocsWindow(): Promise<void> {
+  try {
+    const opened = (await getAllWindows()).find((win) => win.label === DOCS_WINDOW_LABEL)
+    if (opened) {
+      await opened.show()
+      await opened.setFocus()
+      return
+    }
+    await openDocsWindow()
+  } catch (err) {
+    setStatus(`文档栏窗口打开失败：${describeErr(err)}`, true)
+    diagError("docs.window.error", err)
+  }
+}
+
+/** 开文档栏独立窗口（单实例；默认不拆，只有用户点「拆出」或上次就是拆开状态才走这里） */
+async function openDocsWindow(): Promise<void> {
+  try {
+    const opened = (await getAllWindows()).find((win) => win.label === DOCS_WINDOW_LABEL)
+    if (opened) {
+      await opened.show()
+      await opened.setFocus()
+      setDocsDetached(true)
+      pushDocsSync()
+      return
+    }
+    const url = `${window.location.origin}${window.location.pathname}?win=docs`
+    const win = new WebviewWindow(DOCS_WINDOW_LABEL, {
+      url,
+      title: "文档栏",
+      width: 300,
+      height: 760,
+      minWidth: 260,
+      minHeight: 420,
+    })
+    // 文档栏里的操作都是"意向"：真正动工程 / 弹确认的还在主窗口
+    void listen(DOCS_INTENT_CHANNEL, (event) => {
+      const intent = event.payload as {
+        type?: string
+        id?: string
+        name?: string
+      } | null
+      switch (intent?.type) {
+        case "activate":
+          if (intent.id) switchDoc(intent.id)
+          break
+        case "new-doc":
+          addDoc()
+          break
+        case "delete":
+          if (intent.id) deleteDoc(intent.id)
+          break
+        case "rename":
+          if (intent.id) renameDoc(intent.id, intent.name ?? "")
+          break
+        case "new-convo":
+          newConvo()
+          break
+      }
+    })
+    // 文档栏窗关掉 / 点「放回」= 收回主窗口
+    void listen(DOCS_REDOCK_CHANNEL, () => setDocsDetached(false))
+    void listen(DOCS_READY_CHANNEL, () => pushDocsSync())
+    await win.once("tauri://created", () => {
+      setDocsDetached(true)
+      pushDocsSync()
+    })
+    await win.once("tauri://error", (err: unknown) => {
+      setStatus(`文档栏窗口打开失败：${describeErr(err)}`, true)
+      diagError("docs.window.error", err)
+    })
+  } catch (err) {
+    setStatus(`文档栏窗口打开失败：${describeErr(err)}`, true)
+    diagError("docs.window.error", err)
+  }
+}
+
+/** 文档栏独立窗口模式初始化：只挂侧边栏铺满，操作以意向发回主窗口 */
+function initDocsWindowMode(): void {
+  document.body.classList.add("docs-window")
+  document.querySelector<HTMLElement>("#btn-docs-win")?.setAttribute("hidden", "")
+  document.querySelector<HTMLElement>("#btn-docs-redock")?.removeAttribute("hidden")
+  const win = getCurrentWindow()
+  // 关窗 = 放回主窗口（用户不会因此够不着文档列表）
+  const redock = async (): Promise<void> => {
+    emitQuiet(DOCS_REDOCK_CHANNEL, {})
+    await win.hide()
+  }
+  void win.onCloseRequested(async (event) => {
+    event.preventDefault()
+    await redock()
+  })
+  document.querySelector("#btn-docs-redock")?.addEventListener("click", () => void redock())
+  // 这两个按钮的 handler 平时挂在 bindToolbar / initAiPanel 里，文档栏窗口模式自己绑
+  document.querySelector("#btn-new-doc")?.addEventListener("click", () => addDoc())
+  document.querySelector("#btn-new-convo")?.addEventListener("click", () => newConvo())
+  document.querySelector("#btn-sidebar")?.setAttribute("hidden", "")
+  // 主窗口推来的全量列表：直接换成本地副本再画（复用 renderDocList 那一套）
+  void listen(DOCS_SYNC_CHANNEL, (event) => {
+    const payload = event.payload as { docs?: unknown; activeId?: unknown } | null
+    const docs = Array.isArray(payload?.docs) ? (payload!.docs as DocRecord[]) : null
+    if (docs) docsState.docs = docs
+    if (typeof payload?.activeId === "string") docsState.activeId = payload.activeId
+    renderDocList()
+  })
+  emitQuiet(DOCS_READY_CHANNEL, {})
+  // 先用本地（localStorage，同源共享）画一版，主窗口的快照随后到
+  renderDocList()
+}
+
+function initAiWindowMode(): void {
+  document.body.classList.add("ai-window")
+  btnAi.hidden = true
+  if (AI_WINDOW_DOC_ID && docsState.docs.some((doc) => doc.id === AI_WINDOW_DOC_ID)) {
+    docsState.activeId = AI_WINDOW_DOC_ID
+  }
+  const winTitle = document.querySelector<HTMLElement>("#ai-win-title")
+  const doc = docsState.docs.find((item) => item.id === AI_WINDOW_DOC_ID)
+  if (winTitle) winTitle.textContent = `AI 面板 · ${doc?.project.title || "未命名歌曲"}`
+  const win = getCurrentWindow()
+  // 关窗 = 隐藏：流式生成继续跑，不丢状态
+  void win.onCloseRequested(async (event) => {
+    event.preventDefault()
+    writeAiWinGeometry()
+    await win.hide()
+  })
+  // 「放回」：收回主窗口内嵌（主窗口那边恢复面板、清除拆出状态）
+  const redockBtn = document.querySelector<HTMLButtonElement>("#btn-ai-redock")
+  if (redockBtn) {
+    redockBtn.hidden = false
+    redockBtn.addEventListener("click", async () => {
+      diag("ai.redock.click", { docId: AI_WINDOW_DOC_ID })
+      emitQuiet(AI_REDOCK_CHANNEL, { docId: AI_WINDOW_DOC_ID })
+      writeAiWinGeometry()
+      await win.hide()
+    })
+  }
+  const newBtn = document.querySelector<HTMLButtonElement>("#btn-ai-win-new")
+  const closeBtn = document.querySelector<HTMLButtonElement>("#btn-ai-win-close")
+  if (newBtn) {
+    newBtn.hidden = false
+    newBtn.addEventListener("click", () => {
+      newConvo()
+      aiInput.focus()
+    })
+  }
+  if (closeBtn) {
+    closeBtn.hidden = false
+    closeBtn.addEventListener("click", async () => {
+      writeAiWinGeometry()
+      await win.hide()
+    })
+  }
+  // 快捷键：Esc 收 AI 弹层；Enter 发送在 aiInput 上本来就绑着
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !event.isComposing) closeAiPops()
+  })
+  // 收主窗口推来的快照（打开时问一次，之后随主窗口的改动持续推）
+  void listen<ProjectSync>(syncChannel(AI_WINDOW_DOC_ID), (event) => {
+    diag("ai.sync", { docId: AI_WINDOW_DOC_ID })
+    projectMirror = event.payload.project
+    projectMirrorTargetIds = event.payload.targetIds
+    if (event.payload.scope) setAiScope(event.payload.scope as AiScope)
+    if (winTitle) winTitle.textContent = `AI 面板 · ${event.payload.title || "未命名歌曲"}`
+    updateAiHint()
+  })
+  emitQuiet(AI_READY_CHANNEL, { docId: AI_WINDOW_DOC_ID })
+  // 画一版消息区：没人发过消息时至少显示引导语，别留一片空白
+  renderAiMessages(false)
+  scrollAiToBottom()
+}
+
 function initAiPanel(): void {
   if (!isDesktop()) {
     btnAi.disabled = true
@@ -5031,7 +6743,26 @@ function initAiPanel(): void {
     document.querySelector<HTMLElement>("#btn-new-convo")?.setAttribute("hidden", "")
     return
   }
-  initAiResizer()
+  if (AI_WINDOW_MODE) {
+    initAiWindowMode()
+  } else {
+    initAiResizer()
+    // 桌面端默认内嵌（和以前一样开合）；点「拆出」才变成独立窗口
+    btnAi.title = "打开 / 收起 AI 面板"
+    btnAi.addEventListener("click", () => {
+      if (aiDetached) void focusAiWindow(docsState.activeId)
+      else toggleAiPanel()
+    })
+    document.querySelector<HTMLButtonElement>("#btn-ai-redock-main")?.addEventListener("click", () => {
+      setAiDetached(false)
+      openAiPanel()
+    })
+    document.querySelector<HTMLButtonElement>("#btn-ai-detach")?.addEventListener("click", () => {
+      // 点了就让位（不等窗口真正建出来）；建窗失败会自动收回
+      setAiDetached(true)
+      void openAiWindow(docsState.activeId)
+    })
+  }
   renderAiChips()
   updateAiSendButton()
   updateAiHint()
@@ -5047,7 +6778,6 @@ function initAiPanel(): void {
     },
     { passive: false },
   )
-  btnAi.addEventListener("click", toggleAiPanel)
   document.querySelector("#btn-ai-expand")?.addEventListener("click", () => {
     if (aiCovered()) {
       setAiWidth(aiRestoreWidth || AI_DEFAULT_WIDTH)
@@ -5077,7 +6807,12 @@ function initAiPanel(): void {
     event.preventDefault()
     if (!aiBusy) void sendAi(aiInput.value)
   })
-  if (localStorage.getItem(AI_OPEN_KEY) === "1") openAiPanel()
+  if (AI_WINDOW_MODE) {
+    aiPanel.hidden = false
+    scrollAiToBottom()
+} else if (localStorage.getItem(AI_OPEN_KEY) === "1") {
+    openAiPanel()
+  }
 }
 
 function refreshThemeButton(): void {
@@ -5177,6 +6912,7 @@ function bindToolbar(): void {
     const mod = e.metaKey || e.ctrlKey
     if (!mod) return
     const key = e.key.toLowerCase()
+    if (e.repeat && key !== "z" && key !== "y") return
     if (key === "f") {
       e.preventDefault()
       toggleFindPanel()
@@ -5245,22 +6981,52 @@ if (IS_DEV) {
 }
 onAutosave(() => renderStatusBar())
 onAutosaveWrite((s) => {
+  // AI 窗口里的 project 只是镜像：不回写、不自动保存（那是主窗口的事）
+  if (AI_WINDOW_MODE) return
   const doc = docsState.docs.find((d) => d.id === docsState.activeId)
   if (!doc) return
   doc.project = s.project
   doc.filePath = s.filePath
   doc.updatedAt = s.project.updatedAt
   saveDocs(docsState)
+  pushProjectSync()
 })
-bindToolbar()
-initSidebarResizer()
-bindSelection()
-bindDrop()
-initFindPanel()
-initAiPanel()
-window.addEventListener("scroll", updateScrollProgress, { passive: true })
-window.addEventListener("resize", updateScrollProgress)
-render()
-focusCellInput()
+if (DOCS_WINDOW_MODE) {
+  // 独立文档栏窗口：只挂侧边栏铺满，操作以意向发回主窗口
+  initDocsWindowMode()
+  document.querySelector<HTMLButtonElement>("#btn-theme")?.addEventListener("click", () => {
+    cycleTheme()
+    refreshThemeButton()
+  })
+} else if (AI_WINDOW_MODE) {
+  // 独立 AI 窗口：只挂 AI 面板 + 状态提示，主工作区那一整套不初始化
+  initAiPanel()
+  document.querySelector<HTMLButtonElement>("#btn-theme")?.addEventListener("click", () => {
+    cycleTheme()
+    refreshThemeButton()
+  })
+} else {
+  bindToolbar()
+  initSidebarResizer()
+  bindSelection()
+  bindPickMode()
+  initPickBar()
+  bindStatusGroups()
+  bindDrop()
+  initFindPanel()
+  initAiPanel()
+  window.addEventListener("scroll", updateScrollProgress, { passive: true })
+  window.addEventListener("resize", updateScrollProgress)
+  render()
+  focusCellInput()
+  // 文档栏：默认内嵌（左侧边栏）；上次是拆开状态就把窗找回来
+  const docsWinBtn = document.querySelector<HTMLButtonElement>("#btn-docs-win")
+  if (docsWinBtn && isDesktop()) {
+    docsWinBtn.addEventListener("click", () => void openDocsWindow())
+    if (localStorage.getItem(DOCS_DETACHED_KEY) === "1") void openDocsWindow()
+  } else {
+    docsWinBtn?.setAttribute("hidden", "")
+  }
+}
 
 export type { Project }

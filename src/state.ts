@@ -196,6 +196,26 @@ function normalizeSentence(sentence: Sentence): void {
     delete sentence.cellLocks
   }
   if (sentence.role !== "harmony") delete sentence.role
+  // 押韵组引用：id 字符串 + 格号数组（去掉越界/重复）
+  if (Array.isArray(sentence.rhymeGroups)) {
+    const size = totalCells(sentence.pattern)
+    const refs = sentence.rhymeGroups.flatMap((ref) => {
+      if (!ref || typeof ref !== "object") return []
+      const item = ref as { id?: unknown; indexes?: unknown }
+      if (typeof item.id !== "string" || !item.id || !Array.isArray(item.indexes)) return []
+      const indexes = [...new Set(
+        item.indexes.filter(
+          (index): index is number => typeof index === "number" && Number.isInteger(index) && index >= 0 && index < size,
+        ),
+      )].sort((a, b) => a - b)
+      if (indexes.length === 0) return []
+      return [{ id: item.id, indexes }]
+    })
+    if (refs.length > 0) sentence.rhymeGroups = refs
+    else delete sentence.rhymeGroups
+  } else {
+    delete sentence.rhymeGroups
+  }
   if (typeof sentence.id !== "string" || !sentence.id) sentence.id = newId("s")
 }
 
@@ -242,6 +262,45 @@ export function parseProject(raw: string): Project {
 }
 
 /** 老数据兜底：所有备选的格子和溢出里只留汉字（早年版本可能混进过标点、符号、英文） */
+/** 押韵组兜底：越界引用已在句子层清过；这里清孤儿组（没被引用 / 只剩 1 格）并核对约束 */
+function sanitizeRhymeGroups(project: Project): void {
+  const referenced = new Set<string>()
+  const counts = new Map<string, number>()
+  for (const section of project.sections) {
+    for (const sentence of section.sentences) {
+      for (const ref of sentence.rhymeGroups ?? []) {
+        referenced.add(ref.id)
+        counts.set(ref.id, (counts.get(ref.id) ?? 0) + ref.indexes.length)
+      }
+    }
+  }
+  const groups = (project.rhymeGroups ?? []).flatMap((item) => {
+    if (!item || typeof item.id !== "string" || !referenced.has(item.id)) return []
+    if ((counts.get(item.id) ?? 0) < 2) return []
+    const raw = (item.constraint ?? {}) as Record<string, unknown>
+    const constraint: { rhy?: string; final?: string; initial?: string; tones?: number[] } = {}
+    if (typeof raw.rhy === "string" && raw.rhy) constraint.rhy = raw.rhy
+    if (typeof raw.final === "string") constraint.final = raw.final
+    if (typeof raw.initial === "string") constraint.initial = raw.initial
+    if (Array.isArray(raw.tones)) {
+      const tones = [...new Set(raw.tones.filter((tone): tone is number => typeof tone === "number" && tone >= 0 && tone <= 5))]
+      if (tones.length > 0) constraint.tones = tones
+    }
+    return [{ id: item.id, constraint }]
+  })
+  // 约束全没了 / 只剩 1 格的组：把句子上的引用也清掉
+  const alive = new Set(groups.map((item) => item.id))
+  for (const section of project.sections) {
+    for (const sentence of section.sentences) {
+      if (!sentence.rhymeGroups) continue
+      sentence.rhymeGroups = sentence.rhymeGroups.filter((ref) => alive.has(ref.id))
+      if (sentence.rhymeGroups.length === 0) delete sentence.rhymeGroups
+    }
+  }
+  if (groups.length > 0) project.rhymeGroups = groups
+  else delete project.rhymeGroups
+}
+
 export function sanitizeProject(project: Project): number {
   let cleaned = 0
   for (const section of project.sections) {
@@ -261,6 +320,7 @@ export function sanitizeProject(project: Project): number {
       }
     }
   }
+  sanitizeRhymeGroups(project)
   return cleaned
 }
 

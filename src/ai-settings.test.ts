@@ -1,8 +1,38 @@
 import html from "../index.html?raw"
 import { expect, it, beforeAll, vi } from "vitest"
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow"
+import { getAllWindows } from "@tauri-apps/api/window"
 
 const { fetchMock } = vi.hoisted(() => ({ fetchMock: vi.fn() }))
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: fetchMock }))
+
+// AI 面板已拆成独立窗口：给 Tauri 的窗口 / 事件 API 打桩（happy-dom 里没有真 IPC）
+const aiListeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>())
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: vi.fn(() => Promise.resolve()),
+  listen: vi.fn((channel: string, handler: (event: { payload: unknown }) => void) => {
+    aiListeners.set(channel, handler)
+    return Promise.resolve(() => {})
+  }),
+}))
+vi.mock("@tauri-apps/api/window", () => ({
+  getAllWindows: vi.fn(() => Promise.resolve([])),
+  getCurrentWindow: vi.fn(() => ({
+    show: vi.fn(() => Promise.resolve()),
+    hide: vi.fn(() => Promise.resolve()),
+    setFocus: vi.fn(() => Promise.resolve()),
+    outerSize: vi.fn(() => Promise.resolve({ width: 520, height: 720 })),
+    outerPosition: vi.fn(() => Promise.resolve({ x: 0, y: 0 })),
+    onCloseRequested: vi.fn(() => Promise.resolve(() => {})),
+    once: vi.fn(() => Promise.resolve()),
+  })),
+}))
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  // 必须是可 new 的：构造时返回带 once 的假窗口（返回值对象会被 new 采用）
+  WebviewWindow: vi.fn(function WebviewWindow() {
+    return { once: vi.fn(() => Promise.resolve()) }
+  }),
+}))
 
 const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -233,15 +263,59 @@ it("导入原文面板开合会挂 source-open（进度条也避开）", () => {
   expect(document.documentElement.classList.contains("source-open")).toBe(false)
 })
 
-it("AI 面板开合会挂 ai-open（进度条跟着收窄用）", () => {
-  const panel = document.querySelector<HTMLElement>("#ai-panel")!
+it("AI 面板默认内嵌：AI 按钮开合面板，不建窗；点「拆出」才拆", async () => {
   const btn = document.querySelector<HTMLButtonElement>("#btn-ai")!
-  const wasOpen = !panel.hasAttribute("hidden")
-  expect(document.documentElement.classList.contains("ai-open")).toBe(wasOpen)
+  const panel = document.querySelector<HTMLElement>("#ai-panel")!
+  const detach = document.querySelector<HTMLButtonElement>("#btn-ai-detach")!
+  vi.mocked(getAllWindows).mockResolvedValue([])
+  vi.mocked(WebviewWindow).mockClear()
+
+  // 默认内嵌：点 AI 就是开合面板（不碰窗口 API）
   btn.click()
-  expect(document.documentElement.classList.contains("ai-open")).toBe(!wasOpen)
+  await tick(0)
+  expect(panel.hasAttribute("hidden")).toBe(false)
+  expect(document.documentElement.classList.contains("ai-detached")).toBe(false)
+  expect(WebviewWindow).not.toHaveBeenCalled()
   btn.click()
-  expect(document.documentElement.classList.contains("ai-open")).toBe(wasOpen)
+  await tick(0)
+  expect(panel.hasAttribute("hidden")).toBe(true)
+
+  // 点「拆出」才建独立窗（label = ai-<docId>，URL 带 ?win=ai&doc=）
+  btn.click()
+  await tick(0)
+  detach.click()
+  await tick(0)
+  expect(getAllWindows).toHaveBeenCalled()
+  expect(WebviewWindow).toHaveBeenCalledTimes(1)
+  const [label, options] = vi.mocked(WebviewWindow).mock.calls[0] as [
+    string,
+    { url: string; title: string },
+  ]
+  expect(label.startsWith("ai-")).toBe(true)
+  expect(options.url).toContain("?win=ai&doc=")
+  // 拆出后：主窗口的内嵌面板让位
+  expect(document.documentElement.classList.contains("ai-detached")).toBe(true)
+  expect(panel.hasAttribute("hidden")).toBe(true)
+
+  // 已经有这个窗了就 show + focus，不再新建
+  vi.mocked(getAllWindows).mockResolvedValue([
+    Object.assign(Object.create(Object.getPrototypeOf(btn)), {
+      label,
+      show: vi.fn(() => Promise.resolve()),
+      setFocus: vi.fn(() => Promise.resolve()),
+    }),
+  ])
+  btn.click()
+  await tick(0)
+  expect(WebviewWindow).toHaveBeenCalledTimes(1)
+
+  // AI 窗点「放回」→ 主窗口收回内嵌（detached 清掉、面板恢复）
+  const redock = aiListeners.get("ai-redock")
+  expect(redock).toBeTruthy()
+  redock!({ payload: { docId: "doc-1" } })
+  await tick(0)
+  expect(document.documentElement.classList.contains("ai-detached")).toBe(false)
+  expect(panel.hasAttribute("hidden")).toBe(false)
 })
 
 it("工具栏「帮助」：弹窗里有使用说明、快捷键和导出诊断日志", () => {

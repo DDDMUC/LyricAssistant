@@ -1,7 +1,7 @@
 import html from "../index.html?raw"
 import { beforeAll, describe, expect, it } from "vitest"
 
-function demoMidi(): Uint8Array {
+function demoMidi(lyrics = ""): Uint8Array {
   const vlq = (value: number): number[] => {
     const bytes = [value & 0x7f]
     value >>= 7
@@ -14,11 +14,16 @@ function demoMidi(): Uint8Array {
   const u16 = (v: number): number[] => [(v >> 8) & 255, v & 255]
   const u32 = (v: number): number[] => [(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255]
   const text = (s: string): number[] => [...new TextEncoder().encode(s)]
+  const lyric = (s: string): number[] => {
+    const bytes = text(s)
+    return [...vlq(0), 0xff, 0x05, ...vlq(bytes.length), ...bytes]
+  }
   const on = (note: number): number[] => [...vlq(0), 0x90, note, 100]
   const off = (note: number): number[] => [...vlq(240), 0x80, note, 0]
   const data = [
     ...on(60),
     ...off(60),
+    ...(lyrics ? lyric(lyrics) : []),
     ...on(24),
     ...off(24),
     ...on(62),
@@ -165,4 +170,22 @@ it("MIDI 导入的元数据防护：识别不到就清空旧的歌名 / 原文 /
   expect(titleInput()).toBe("未命名歌曲")
   expect(document.querySelector<HTMLElement>("#btn-source")!.hidden).toBe(true)
   expect(document.querySelector<HTMLElement>("#btn-credits")!.hidden).toBe(true)
+})
+
+it("MIDI 里的歌词事件整段抄进原文面板", async () => {
+  const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  const file = new File([new Uint8Array(demoMidi("春-风--吹又生"))], "withlyrics.mid")
+  const event = new Event("drop", { bubbles: true }) as Event & { dataTransfer?: unknown }
+  Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files: [file] } })
+  window.dispatchEvent(event)
+  await tick(30)
+  const midiDialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  Array.from(midiDialog.querySelectorAll("button"))
+    .find((button) => button.textContent === "导入")!
+    .click()
+  await tick(30)
+
+  expect(document.querySelector<HTMLElement>("#btn-source")!.hidden).toBe(false)
+  expect(document.querySelector<HTMLTextAreaElement>("#source-text")!.value).toBe("春风吹又生")
 })
