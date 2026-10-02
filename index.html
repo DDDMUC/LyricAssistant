@@ -9,6 +9,19 @@
   </head>
 
   <body>
+    <!-- 共享图标定义：「拆出 / 放回」共用同一个方框（#ic-frame），只换箭头；线宽/尺寸走 .btn-icon 一处 -->
+    <svg class="icon-sprite" aria-hidden="true" focusable="false">
+      <defs>
+        <g id="ic-frame">
+          <rect x="3" y="9" width="12" height="12" rx="2" />
+        </g>
+        <path id="ic-arrow-out" d="M10 14 21 3" />
+        <path id="ic-arrow-out-head" d="M15 3h6v6" />
+        <path id="ic-arrow-in" d="M21 3 12 12" />
+        <path id="ic-arrow-in-head" d="M12 7v5h5" />
+      </defs>
+    </svg>
+
     <div class="titlebar" data-tauri-drag-region>
       <span class="titlebar-title" data-tauri-drag-region>作词助手</span>
       <button id="btn-theme" type="button" title="切换主题" aria-label="切换主题">☁️</button>
@@ -18,14 +31,20 @@
       <aside class="sidebar">
         <div class="sidebar-head">
           <span class="brand-badge">作词助手</span>
-          <button id="btn-docs-win" type="button" title="把文档栏拆成独立窗口（随时可以放回来）">拆出</button>
-          <button id="btn-docs-redock" type="button" title="放回主窗口" hidden>放回</button>
-          <button id="btn-sidebar" type="button" title="收起侧边栏" aria-label="收起侧边栏">
-            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-              <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.4" />
-              <rect x="3.4" y="4.4" width="3.1" height="7.2" rx="0.9" fill="currentColor" />
-            </svg>
-          </button>
+          <span class="sidebar-head-actions">
+            <button id="btn-docs-win" class="icon-btn" type="button" title="拆出为独立窗口" aria-label="拆出为独立窗口">
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-out" /><use href="#ic-arrow-out-head" /></svg>
+            </button>
+            <button id="btn-docs-redock" class="icon-btn" type="button" title="放回主窗口" aria-label="放回主窗口" hidden>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>
+            </button>
+            <button id="btn-sidebar" type="button" title="收起侧边栏" aria-label="收起侧边栏">
+              <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+                <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.4" />
+                <rect x="3.4" y="4.4" width="3.1" height="7.2" rx="0.9" fill="currentColor" />
+              </svg>
+            </button>
+          </span>
         </div>
         <button id="btn-new-doc" class="new-doc" type="button" title="新建歌词文件" aria-label="新建歌词文件">＋ 新建歌词</button>
         <div class="work-head">
@@ -40,6 +59,13 @@
         </div>
         <div id="doc-list" class="doc-list"></div>
       </aside>
+      <div id="docs-detached-placeholder" class="panel-placeholder panel-placeholder-docs" hidden>
+        <p class="panel-placeholder-text">文档栏已在独立窗口中打开</p>
+        <button id="btn-docs-redock-placeholder" class="placeholder-redock" type="button" title="放回主窗口" aria-label="放回主窗口">
+          <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>
+          <span>放回</span>
+        </button>
+      </div>
       <div
         id="sidebar-resizer"
         class="sidebar-resizer"
@@ -92,7 +118,10 @@
           </div>
           <button id="btn-help" type="button" title="帮助：使用说明 / 快捷键 / 导出诊断日志">帮助</button>
           <button id="btn-ai" type="button" aria-expanded="false">AI</button>
-          <button id="btn-ai-redock-main" type="button" title="把 AI 面板放回主窗口" hidden>放回</button>
+          <button id="btn-ai-redock-main" type="button" title="放回主窗口" aria-label="放回主窗口" hidden>
+            <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>
+            <span>AI</span>
+          </button>
           <div id="scroll-progress" class="scroll-progress" aria-hidden="true"></div>
         </header>
 
@@ -120,17 +149,21 @@
             </svg>
           </button>
           <button id="btn-ai-prompt" type="button" title="看发给模型的提示词">系统提示词</button>
-          <button id="btn-ai-detach" type="button" title="把 AI 面板拆成独立窗口（可随时放回）">拆出</button>
-          <button id="btn-ai-redock" type="button" title="放回主窗口" hidden>放回</button>
+          <button id="btn-ai-detach" class="icon-btn" type="button" title="拆出为独立窗口" aria-label="拆出为独立窗口">
+            <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-out" /><use href="#ic-arrow-out-head" /></svg>
+          </button>
+          <button id="btn-ai-redock" class="icon-btn" type="button" title="放回主窗口" aria-label="放回主窗口" hidden>
+            <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>
+          </button>
           <button id="btn-ai-win-new" type="button" title="新建对话" hidden>＋ 新对话</button>
-          <button id="btn-ai-win-close" type="button" title="隐藏 AI 面板（生成会继续）" hidden>✕</button>
+          <button id="btn-ai-win-close" type="button" title="隐藏窗口（AI 生成会继续）" aria-label="隐藏窗口（AI 生成会继续）" hidden>✕</button>
         </div>
         <div id="ai-messages" class="ai-messages"></div>
         <div class="ai-tools">
           <button id="btn-ai-write-all" type="button" title="按当前词格写完整首">按词格写整首</button>
         </div>
         <div class="ai-composer">
-          <textarea id="ai-input" rows="2" placeholder="说要求，比如：写一段古风，押江阳；或「第 3 句重写」"></textarea>
+          <textarea id="ai-input" rows="2"></textarea>
           <div class="ai-composer-foot">
             <button id="ai-scope-chip" class="ai-chip" type="button" title="生成范围"></button>
             <button id="ai-model-chip" class="ai-chip" type="button" title="选择模型"></button>
@@ -139,6 +172,13 @@
           </div>
         </div>
         <div id="ai-hint" class="ai-hint">已自动附上词格</div>
+      </aside>
+      <aside id="ai-detached-placeholder" class="panel-placeholder panel-placeholder-ai" hidden>
+        <p class="panel-placeholder-text">AI 面板已在独立窗口中打开</p>
+        <button id="btn-ai-redock-placeholder" class="placeholder-redock" type="button" title="放回主窗口" aria-label="放回主窗口">
+          <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>
+          <span>放回</span>
+        </button>
       </aside>
         </div>
       </div>
