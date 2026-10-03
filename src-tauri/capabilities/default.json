@@ -17,6 +17,7 @@
     "core:window:allow-create",
     "core:window:allow-get-all-windows",
     "core:window:allow-show",
+    "core:window:allow-hide",
     "core:window:allow-set-focus",
     "core:webview:allow-create-webview-window",
     {
