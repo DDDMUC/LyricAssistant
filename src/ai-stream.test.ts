@@ -105,6 +105,47 @@ it("流式回复按行预览，delta 合并后 DOM 重建次数远小于 chunk �
   spy.mockRestore()
 })
 
+it("散文 / 聊天回复按 Markdown 渲染（结构 + 链接安全属性）", async () => {
+  await setupKey()
+  const prose = [
+    "你好，**收到**！",
+    "",
+    "> 这是引用",
+    "",
+    "1. 第一",
+    "2. 第二",
+    "",
+    "[去官网](https://example.com)",
+  ].join("\n")
+  fetchMock.mockReset()
+  fetchMock.mockImplementation(() =>
+    Promise.resolve(sseResponse([sse(prose), "data: [DONE]\n\n"], 10)),
+  )
+  const input = document.querySelector<HTMLTextAreaElement>("#ai-input")!
+  const send = document.querySelector<HTMLButtonElement>("#btn-ai-send")!
+  input.value = "你好"
+  send.click()
+
+  // 忙态：按钮变 ■；生成结束回到 ↑（不靠 disabled，那个一直不置）
+  await waitFor(() => send.textContent === "■")
+  await waitFor(() => send.textContent === "↑")
+
+  await waitFor(() => !!document.querySelector(".ai-msg.assistant .ai-md strong"))
+
+  const assistants = document.querySelectorAll<HTMLElement>(".ai-msg.assistant")
+  const last = assistants[assistants.length - 1]
+  const md = last.querySelector<HTMLElement>(".ai-md")!
+  expect(md.querySelector("strong")?.textContent).toBe("收到")
+  expect(md.querySelector("blockquote")?.textContent).toContain("这是引用")
+  expect(md.querySelectorAll("ol li")).toHaveLength(2)
+  const link = md.querySelector("a")!
+  expect(link.getAttribute("href")).toBe("https://example.com")
+  expect(link.getAttribute("target")).toBe("_blank")
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer")
+  // 结构化句子（填词）那条路不该被 Markdown 接管
+  expect(last.querySelector(".ai-lines")).toBeNull()
+})
+
 it("生成中往上翻就不拽回底部；滚回底部又继续跟随", async () => {
   const box = document.querySelector<HTMLElement>("#ai-messages")!
   Object.defineProperty(box, "scrollHeight", { get: () => 1000, configurable: true })

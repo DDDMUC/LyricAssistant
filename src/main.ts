@@ -1,4 +1,5 @@
 import { copyText, readClipboardText } from "./clipboard"
+import { fillMarkdown } from "./markdown"
 import { emit, listen } from "@tauri-apps/api/event"
 import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow"
@@ -4389,6 +4390,15 @@ function aiNearBottom(): boolean {
   return aiMessagesEl.scrollHeight - aiMessagesEl.scrollTop - aiMessagesEl.clientHeight < 80
 }
 
+// Markdown 回复里的链接：不在应用里开页面，交给系统浏览器
+aiMessagesEl.addEventListener("click", (event) => {
+  const target = event.target as HTMLElement | null
+  const anchor = target?.closest?.("a")
+  if (!anchor) return
+  event.preventDefault()
+  void openExternal(anchor.getAttribute("href") ?? "")
+})
+
 aiMessagesEl.addEventListener("scroll", () => {
   aiStickBottom = aiNearBottom()
 })
@@ -4450,9 +4460,11 @@ function paintStreamText(reply: AiVersion): void {
     list.dataset.streamSig = items.map((item) => `${item.id}\u0000${item.text}`).join("\u0001")
     fillAiLines(list, aiLineViews(reply, items))
   } else {
-    const next = text || "…"
-    if (aiStreamEl.textContent === next) return
-    aiStreamEl.textContent = next
+    // 聊天 / 没解析成句子的回复：按 Markdown 渲染（原文没变就不重画）
+    if (aiStreamEl.dataset.mdText === text) return
+    aiStreamEl.dataset.mdText = text
+    aiStreamEl.classList.add("ai-md")
+    fillMarkdown(aiStreamEl, text || "…")
   }
   followAiScroll()
 }
@@ -4652,9 +4664,13 @@ function fillAssistantRow(
     if (reply.streaming) aiStreamEl = list
   } else {
     const text = document.createElement("div")
-    text.textContent = reply.error
-      ? `出错了：${reply.error}`
-      : bodyText || (reply.streaming ? "…" : "")
+    if (reply.error) {
+      text.textContent = `出错了：${reply.error}`
+    } else {
+      text.classList.add("ai-md")
+      fillMarkdown(text, bodyText || (reply.streaming ? "…" : ""))
+      if (reply.streaming) text.dataset.mdText = bodyText
+    }
     el.appendChild(text)
     if (reply.streaming) aiStreamEl = text
   }
