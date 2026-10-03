@@ -293,6 +293,14 @@ it("AI 面板默认内嵌：AI 按钮开合面板，不建窗；点「拆出」�
   ]
   expect(label.startsWith("ai-")).toBe(true)
   expect(options.url).toContain("?win=ai&doc=")
+  // 默认尺寸：宽 = 内嵌面板宽（默认 400）；高 = 拆出时应用窗口的高度（钳到屏幕内）
+  const aiOptions = options as unknown as { width: number; height: number }
+  expect(aiOptions.width).toBe(400)
+  const expectedHeight = Math.min(
+    Math.round(window.outerHeight || window.innerHeight || 780),
+    Math.max(300, (window.screen.availHeight || 780) - 40),
+  )
+  expect(aiOptions.height).toBe(expectedHeight)
   // 拆出后：主窗口的内嵌面板让位
   expect(document.documentElement.classList.contains("ai-detached")).toBe(true)
   expect(panel.hasAttribute("hidden")).toBe(true)
