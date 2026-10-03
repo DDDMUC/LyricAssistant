@@ -24,7 +24,12 @@
 
     <div class="titlebar" data-tauri-drag-region>
       <span class="titlebar-title" data-tauri-drag-region>作词助手</span>
-      <button id="btn-theme" type="button" title="切换主题" aria-label="切换主题">☁️</button>
+      <div class="titlebar-controls">
+        <button id="btn-theme" type="button" title="切换主题" aria-label="切换主题">☁️</button>
+        <button id="win-min" class="win-ctrl" type="button" title="最小化" aria-label="最小化">─</button>
+        <button id="win-max" class="win-ctrl" type="button" title="最大化" aria-label="最大化">▢</button>
+        <button id="win-close" class="win-ctrl close" type="button" title="关闭" aria-label="关闭">✕</button>
+      </div>
     </div>
 
     <div class="workspace">
@@ -59,13 +64,6 @@
         </div>
         <div id="doc-list" class="doc-list"></div>
       </aside>
-      <div id="docs-detached-placeholder" class="panel-placeholder panel-placeholder-docs" hidden>
-        <p class="panel-placeholder-text">文档栏已在独立窗口中打开</p>
-        <button id="btn-docs-redock-placeholder" class="placeholder-redock" type="button" title="放回主窗口" aria-label="放回主窗口">
-          <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>
-          <span>放回</span>
-        </button>
-      </div>
       <div
         id="sidebar-resizer"
         class="sidebar-resizer"
@@ -116,12 +114,18 @@
               <button id="btn-clear-all" class="danger" type="button" title="清空所有格子（韵辙、歌名、备注保留，可撤销）">清空</button>
             </div>
           </div>
-          <button id="btn-help" type="button" title="帮助：使用说明 / 快捷键 / 导出诊断日志">帮助</button>
-          <button id="btn-ai" type="button" aria-expanded="false">AI</button>
-          <button id="btn-ai-redock-main" type="button" title="放回主窗口" aria-label="放回主窗口" hidden>
-            <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>
-            <span>AI</span>
-          </button>
+          <span class="topbar-right">
+            <button id="btn-help" type="button" title="帮助：使用说明 / 快捷键 / 导出诊断日志">帮助</button>
+            <button id="btn-ai" type="button" aria-expanded="false">AI</button>
+            <button id="btn-ai-redock-main" type="button" title="放回主窗口" aria-label="放回主窗口" hidden>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>
+              <span>AI</span>
+            </button>
+            <button id="btn-docs-redock-main" type="button" title="收回文档栏" aria-label="收回文档栏" hidden>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>
+              <span>收回</span>
+            </button>
+          </span>
           <div id="scroll-progress" class="scroll-progress" aria-hidden="true"></div>
         </header>
 
@@ -159,9 +163,6 @@
           <button id="btn-ai-win-close" type="button" title="隐藏窗口（AI 生成会继续）" aria-label="隐藏窗口（AI 生成会继续）" hidden>✕</button>
         </div>
         <div id="ai-messages" class="ai-messages"></div>
-        <div class="ai-tools">
-          <button id="btn-ai-write-all" type="button" title="按当前词格写完整首">按词格写整首</button>
-        </div>
         <div class="ai-composer">
           <textarea id="ai-input" rows="2"></textarea>
           <div class="ai-composer-foot">
@@ -172,13 +173,6 @@
           </div>
         </div>
         <div id="ai-hint" class="ai-hint">已自动附上词格</div>
-      </aside>
-      <aside id="ai-detached-placeholder" class="panel-placeholder panel-placeholder-ai" hidden>
-        <p class="panel-placeholder-text">AI 面板已在独立窗口中打开</p>
-        <button id="btn-ai-redock-placeholder" class="placeholder-redock" type="button" title="放回主窗口" aria-label="放回主窗口">
-          <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>
-          <span>放回</span>
-        </button>
       </aside>
         </div>
       </div>

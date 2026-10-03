@@ -124,9 +124,10 @@ describe("sentencePlace", () => {
 })
 
 describe("buildChatSystemPrompt", () => {
-  it("是聊天提示词，不要求输出词格 JSON", () => {
+  it("是聊天提示词，带总前置，不要求输出词格 JSON", () => {
     const prompt = buildChatSystemPrompt()
-    expect(prompt).toContain("闲聊")
+    expect(prompt).toContain("作词助手")
+    expect(prompt).toContain("聊天")
     expect(prompt).not.toContain('{"sentences"')
   })
 })

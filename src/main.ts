@@ -193,6 +193,9 @@ const DOCS_INTENT_CHANNEL = "docs-intent"
 const DOCS_READY_CHANNEL = "docs-ready"
 const DOCS_REDOCK_CHANNEL = "docs-redock"
 
+/** Windows 桌面版（主窗与拆出窗都用自绘标题栏；见下方 win-desktop 初始化） */
+const IS_WINDOWS_DESKTOP = isDesktop() && /Windows/i.test(navigator.userAgent)
+
 function aiWindowLabel(docId: string): string {
   return `ai-${docId}`
 }
@@ -3660,13 +3663,14 @@ function applyMidiSections(
 const AI_WIDTH_KEY = "cige-grid-ai-width"
 const AI_SCOPE_KEY = "cige-grid-ai-scope"
 
-type AiScope = "all" | "empty" | "section" | "selected"
+type AiScope = "all" | "empty" | "section" | "selected" | "chat"
 
 const AI_SCOPE_OPTIONS: { value: AiScope; label: string }[] = [
   { value: "all", label: "整首" },
-  { value: "empty", label: "只填空句" },
-  { value: "section", label: "当前段" },
-  { value: "selected", label: "选中的句子" },
+  { value: "empty", label: "空句" },
+  { value: "section", label: "选段" },
+  { value: "selected", label: "选句" },
+  { value: "chat", label: "对话" },
 ]
 
 function loadAiScope(): AiScope {
@@ -4213,8 +4217,6 @@ function setAiDetached(detached: boolean): void {
   }
   const redockMain = document.querySelector<HTMLElement>("#btn-ai-redock-main")
   if (redockMain) redockMain.hidden = !detached
-  const placeholder = document.querySelector<HTMLElement>("#ai-detached-placeholder")
-  if (placeholder) placeholder.hidden = !detached
   updateAiHint()
 }
 
@@ -4248,6 +4250,7 @@ function aiTargetIds(): string[] | null {
   // AI 独立窗口：没有格子可选，直接用主窗口随快照推过来的目标
   if (AI_WINDOW_MODE) return projectMirrorTargetIds
   const scope = aiScope
+  if (scope === "chat") return []
   const sentences = allSentences(store.project)
   if (scope === "empty") {
     return sentences
@@ -4264,6 +4267,10 @@ function aiTargetIds(): string[] | null {
 
 function updateAiHint(): void {
   const scope = aiScope
+  if (scope === "chat") {
+    aiHint.textContent = "对话模式：不附带词格，直接聊"
+    return
+  }
   const ids = aiTargetIds()
   if (scope === "selected") {
     aiHint.textContent =
@@ -5246,7 +5253,7 @@ const HELP_GUIDE: string[] = [
   "<b>导出 / 复制</b>：导出 → 歌词 / 词格 / 带歌词 MIDI（写回原 MIDI）；复制 → 歌词 / 词格",
   "<b>查找替换</b>：工具栏「查找」或 <kbd>Cmd/Ctrl+F</kbd>；替换会<b>按字数改词格</b>（短了删格、长了插格），可一步撤销",
   "<b>工作区（左栏）</b>：歌词分组，每组下面是它的 AI 会话；鼠标悬浮歌名行时左边的文件夹会变成三角，点它折叠 / 展开；「＋ 新建对话」开新会话",
-  "<b>AI 面板（桌面版）</b>：点工具栏「AI」开一个<b>独立窗口</b>（每篇歌词一个，关窗＝隐藏、生成继续；主窗口一保存就把最新词格推过去；「填入词格」写回主窗口，可撤销；Enter 发送 / Esc 收弹层）；选模型和等级 → 说要求（或点「按词格写整首」）；范围可选整首 / 只填空句 / 当前段（网页版是内嵌面板，其余相同）；回复能翻页（输入版本 × 回复版本）",
+  "<b>AI 面板（桌面版）</b>：点工具栏「AI」开一个<b>独立窗口</b>（每篇歌词一个，关窗＝隐藏、生成继续；主窗口一保存就把最新词格推过去；「填入词格」写回主窗口，可撤销；Enter 发送 / Esc 收弹层）；选模型和等级 → 说要求；范围可选 整首 / 空句 / 选段 / 选句 / 对话（对话＝不附词格，直接聊；网页版是内嵌面板，其余相同）；回复能翻页（输入版本 × 回复版本）",
   "<b>保存</b>：草稿自动存本机；<code>保存工程</code> 存成 <code>.json</code> 文件，可换机 / 分享",
   "<b>网页版</b>：AI 不可用；Chrome / Edge 保存就地覆盖，Safari 走下载",
 ]
@@ -6153,6 +6160,7 @@ async function exportDiagLog(): Promise<void> {
 
 function openAiPromptView(): void {
   const targets = aiTargetIds()
+  const writing = targets === null || targets.length > 0
   const userText = aiInput.value.trim() || "（这里会带上你在输入框里写的要求）"
   const scopeLabel = AI_SCOPE_OPTIONS.find((option) => option.value === aiScope)?.label ?? "整首"
   const target = resolveTarget(aiSettings)
@@ -6165,9 +6173,11 @@ function openAiPromptView(): void {
   title.textContent = "发给模型的提示词"
 
   const hint = document.createElement("p")
-  hint.textContent = `系统提示词每次都一样；范围「${scopeLabel}」只影响下面第二段——标「→ 要写」的句子会让模型生成，其余只作上下文。当前模型：${
-    target ? modelLabel(target.model) : "（还没配）"
-  }`
+  hint.textContent = writing
+    ? `范围「${scopeLabel}」只影响下面第二段——标「→ 要写」的句子会让模型生成，其余只作上下文。当前模型：${
+        target ? modelLabel(target.model) : "（还没配）"
+      }`
+    : `对话模式：不附带词格，只发你说的话。当前模型：${target ? modelLabel(target.model) : "（还没配）"}`
 
   const sysTitle = document.createElement("div")
   sysTitle.className = "ai-provider-note"
@@ -6175,15 +6185,15 @@ function openAiPromptView(): void {
   const sysArea = document.createElement("textarea")
   sysArea.readOnly = true
   sysArea.className = "ai-pre"
-  sysArea.value = buildSystemPrompt()
+  sysArea.value = writing ? buildSystemPrompt() : buildChatSystemPrompt()
 
   const userTitle = document.createElement("div")
   userTitle.className = "ai-provider-note"
-  userTitle.textContent = "② 本次请求（附在你说的话后面）"
+  userTitle.textContent = writing ? "② 本次请求（附在你说的话后面）" : "② 你说的话"
   const userArea = document.createElement("textarea")
   userArea.readOnly = true
   userArea.className = "ai-pre"
-  userArea.value = buildBrief(store.project, targets, userText)
+  userArea.value = writing ? buildBrief(store.project, targets, userText) : userText
 
   const actions = document.createElement("div")
   actions.className = "dialog-actions"
@@ -6374,25 +6384,41 @@ function pushProjectSync(docId?: string): void {
   emitQuiet(syncChannel(id), payload)
 }
 
+/** 把尺寸钳到当前屏幕工作区内（各留 40px），两个拆出窗共用 */
+function screenClampedSize(width: number, height: number): { width: number; height: number } {
+  try {
+    const scr = window.screen
+    width = Math.min(width, Math.max(200, (scr.availWidth || width) - 40))
+    height = Math.min(height, Math.max(300, (scr.availHeight || height) - 40))
+  } catch {
+    // window.screen 不可用就用原值
+  }
+  return { width: Math.round(width), height: Math.round(height) }
+}
+
+/** 拆出 AI 时的默认尺寸：宽 = 内嵌面板宽（默认 400），高 = 拆出时主窗口的高度 */
+function detachedAiDefaultSize(): { width: number; height: number } {
+  const width = Math.max(AI_MIN_WIDTH, Math.round(aiCurrentWidth || AI_DEFAULT_WIDTH))
+  const height = Math.round(window.outerHeight || window.innerHeight || 780)
+  return screenClampedSize(width, height)
+}
+
+/** 拆出窗口的尺寸：一律用内嵌面板的默认大小（不沿用上次拉大的尺寸）；只记住上次的位置 */
 function readAiWinGeometry(): { width: number; height: number; x?: number; y?: number } {
+  const geo: { width: number; height: number; x?: number; y?: number } = detachedAiDefaultSize()
   try {
     const raw = localStorage.getItem(AI_WIN_GEO_KEY)
-    if (!raw) return { width: 520, height: 720 }
-    const data = JSON.parse(raw) as { width?: unknown; height?: unknown; x?: unknown; y?: unknown }
-    const w = typeof data.width === "number" ? data.width : 520
-    const h = typeof data.height === "number" ? data.height : 720
-    const geo: { width: number; height: number; x?: number; y?: number } = {
-      width: Math.max(360, w),
-      height: Math.max(420, h),
+    if (raw) {
+      const data = JSON.parse(raw) as { x?: unknown; y?: unknown }
+      if (typeof data.x === "number" && typeof data.y === "number") {
+        geo.x = data.x
+        geo.y = data.y
+      }
     }
-    if (typeof data.x === "number" && typeof data.y === "number") {
-      geo.x = data.x
-      geo.y = data.y
-    }
-    return geo
   } catch {
-    return { width: 520, height: 720 }
+    // 解析失败：默认尺寸 + 自动位置
   }
+  return geo
 }
 
 /** 新窗别压在主机窗上：能放右边就贴右边，放不下就级联到右下 */
@@ -6507,6 +6533,8 @@ async function openAiWindowInner(docId: string): Promise<void> {
     height: geo.height,
     minWidth: 360,
     minHeight: 420,
+    // Windows：和主窗一样用页面内自绘标题栏；macOS 保留系统窗框
+    decorations: !IS_WINDOWS_DESKTOP,
     ...place,
   })
   // 「填入词格」从 AI 窗口回来：主窗口 mutate + 撤销栈 + 保存
@@ -6574,8 +6602,8 @@ function setDocsDetached(detached: boolean): void {
   document.documentElement.classList.toggle("docs-detached", detached)
   const sidebar = document.querySelector<HTMLElement>(".sidebar")
   if (sidebar) sidebar.inert = detached
-  const placeholder = document.querySelector<HTMLElement>("#docs-detached-placeholder")
-  if (placeholder) placeholder.hidden = !detached
+  const redockMain = document.querySelector<HTMLElement>("#btn-docs-redock-main")
+  if (redockMain) redockMain.hidden = !detached
   try {
     localStorage.setItem(DOCS_DETACHED_KEY, detached ? "1" : "0")
   } catch {
@@ -6622,13 +6650,16 @@ async function openDocsWindow(): Promise<void> {
       return
     }
     const url = `${window.location.origin}${window.location.pathname}?win=docs`
+    const docsSize = screenClampedSize(300, Math.round(window.outerHeight || window.innerHeight || 780))
     const win = new WebviewWindow(DOCS_WINDOW_LABEL, {
       url,
       title: "文档栏",
-      width: 300,
-      height: 760,
+      width: docsSize.width,
+      height: docsSize.height,
       minWidth: 260,
       minHeight: 420,
+      // Windows：和主窗一样用页面内自绘标题栏；macOS 保留系统窗框
+      decorations: !IS_WINDOWS_DESKTOP,
     })
     // 文档栏里的操作都是"意向"：真正动工程 / 弹确认的还在主窗口
     void listen(DOCS_INTENT_CHANNEL, (event) => {
@@ -6677,6 +6708,9 @@ function initDocsWindowMode(): void {
   document.body.classList.add("docs-window")
   document.querySelector<HTMLElement>("#btn-docs-win")?.setAttribute("hidden", "")
   document.querySelector<HTMLElement>("#btn-docs-redock")?.removeAttribute("hidden")
+  // Windows 自绘标题栏上的标题
+  const barTitle = document.querySelector<HTMLElement>(".titlebar-title")
+  if (barTitle) barTitle.textContent = "文档栏"
   const win = getCurrentWindow()
   // 关窗 = 放回主窗口（用户不会因此够不着文档列表）
   const redock = async (): Promise<void> => {
@@ -6712,8 +6746,11 @@ function initAiWindowMode(): void {
     docsState.activeId = AI_WINDOW_DOC_ID
   }
   const winTitle = document.querySelector<HTMLElement>("#ai-win-title")
+  const barTitle = document.querySelector<HTMLElement>(".titlebar-title")
   const doc = docsState.docs.find((item) => item.id === AI_WINDOW_DOC_ID)
-  if (winTitle) winTitle.textContent = `AI 面板 · ${doc?.project.title || "未命名歌曲"}`
+  const aiTitle = `AI 面板 · ${doc?.project.title || "未命名歌曲"}`
+  if (winTitle) winTitle.textContent = aiTitle
+  if (barTitle) barTitle.textContent = aiTitle
   const win = getCurrentWindow()
   // 关窗 = 隐藏：流式生成继续跑，不丢状态
   void win.onCloseRequested(async (event) => {
@@ -6759,6 +6796,7 @@ function initAiWindowMode(): void {
     projectMirrorTargetIds = event.payload.targetIds
     if (event.payload.scope) setAiScope(event.payload.scope as AiScope)
     if (winTitle) winTitle.textContent = `AI 面板 · ${event.payload.title || "未命名歌曲"}`
+    if (barTitle) barTitle.textContent = `AI 面板 · ${event.payload.title || "未命名歌曲"}`
     updateAiHint()
   })
   emitQuiet(AI_READY_CHANNEL, { docId: AI_WINDOW_DOC_ID })
@@ -6786,9 +6824,6 @@ function initAiPanel(): void {
       else toggleAiPanel()
     })
     document.querySelector<HTMLButtonElement>("#btn-ai-redock-main")?.addEventListener("click", () => {
-      void redockAiFromMain()
-    })
-    document.querySelector<HTMLButtonElement>("#btn-ai-redock-placeholder")?.addEventListener("click", () => {
       void redockAiFromMain()
     })
     document.querySelector<HTMLButtonElement>("#btn-ai-detach")?.addEventListener("click", () => {
@@ -6824,10 +6859,6 @@ function initAiPanel(): void {
   document.querySelector("#btn-ai-prompt")?.addEventListener("click", openAiPromptView)
   aiModelChip.addEventListener("click", openModelPop)
   aiEffortChip.addEventListener("click", openEffortPop)
-  document.querySelector("#btn-ai-write-all")?.addEventListener("click", () => {
-    setAiScope("all")
-    void sendAi(aiInput.value.trim() || "按词格写完整首歌词。")
-  })
   aiScopeChip.addEventListener("click", openScopePop)
   btnAiSend.addEventListener("click", () => {
     if (aiBusy) {
@@ -7008,15 +7039,39 @@ function doRedo(): void {
 initDiag()
 initTheme()
 refreshThemeButton()
-// Windows 桌面版：系统已有原生标题栏，隐掉页面内那条自绘标题栏；主题按钮挪到顶栏
-if (isDesktop() && /Windows/i.test(navigator.userAgent)) {
+// Windows 桌面版：系统标题栏已去掉（见 Rust 端 set_decorations(false)），用页面内自绘标题栏，自己实现窗口控制
+if (IS_WINDOWS_DESKTOP) {
   document.documentElement.classList.add("win-desktop")
-  const topbar = document.querySelector<HTMLElement>(".topbar")
-  const helpBtn = document.querySelector<HTMLButtonElement>("#btn-help")
-  if (topbar && helpBtn) topbar.insertBefore(themeBtn, helpBtn)
+  const win = getCurrentWindow()
+  const maxBtn = document.querySelector<HTMLButtonElement>("#win-max")
+  const syncMax = async (): Promise<void> => {
+    if (!maxBtn) return
+    let maximized = false
+    try {
+      maximized = await win.isMaximized()
+    } catch {
+      // 拿不到状态就按未最大化显示
+    }
+    maxBtn.textContent = maximized ? "❐" : "▢"
+    maxBtn.title = maximized ? "还原" : "最大化"
+    maxBtn.setAttribute("aria-label", maxBtn.title)
+  }
+  const toggleMax = (): void => {
+    void win.toggleMaximize().then(syncMax)
+  }
+  document.querySelector("#win-min")?.addEventListener("click", () => void win.minimize())
+  maxBtn?.addEventListener("click", toggleMax)
+  void win.onResized(() => void syncMax())
+  void syncMax()
+  document.querySelector("#win-close")?.addEventListener("click", () => void win.close())
+  // 双击标题栏空白处切换最大化（原生行为）
+  document.querySelector<HTMLElement>(".titlebar")?.addEventListener("dblclick", (event) => {
+    if ((event.target as HTMLElement).closest(".titlebar-controls")) return
+    toggleMax()
+  })
 }
 trackTopbarHeight()
-if (IS_DEV) {
+if (IS_DEV && !DOCS_WINDOW_MODE && !AI_WINDOW_MODE) {
   const titlebarTitle = document.querySelector<HTMLElement>(".titlebar-title")
   if (titlebarTitle) titlebarTitle.textContent = "作词助手（开发版）"
 }
@@ -7067,7 +7122,7 @@ if (DOCS_WINDOW_MODE) {
   if (docsWinBtn && isDesktop()) {
     docsWinBtn.addEventListener("click", () => void openDocsWindow())
     document
-      .querySelector<HTMLButtonElement>("#btn-docs-redock-placeholder")
+      .querySelector<HTMLButtonElement>("#btn-docs-redock-main")
       ?.addEventListener("click", () => void redockDocsWindow())
     if (localStorage.getItem(DOCS_DETACHED_KEY) === "1") void openDocsWindow()
   } else {

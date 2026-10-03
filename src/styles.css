@@ -210,13 +210,56 @@ select {
   border-color: transparent;
 }
 
-/* Windows 桌面版：系统已有原生标题栏，隐掉页面内这条自绘标题栏 */
+/* 标题栏右侧一组：主题 + 窗口控制（窗口控制只在 Windows 自绘标题栏里出现） */
+.titlebar-controls {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  margin-left: auto;
+}
+
+.win-ctrl {
+  display: none;
+}
+
+/* Windows 桌面版：去掉系统标题栏（见 tauri.windows.conf.json），用页面内自绘标题栏 + 自绘窗口控制 */
 html.win-desktop {
-  --titlebar-h: 0px;
+  --titlebar-h: 32px;
 }
 
 html.win-desktop .titlebar {
-  display: none;
+  padding: 0 0 0 12px;
+}
+
+html.win-desktop .win-ctrl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: default;
+}
+
+html.win-desktop .win-ctrl:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+html.win-desktop .win-ctrl.close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+html.win-desktop .titlebar #btn-theme {
+  height: 100%;
+  border-radius: 0;
 }
 
 .workspace {
@@ -279,12 +322,16 @@ html.docs-detached #sidebar-resizer {
 }
 
 /* 独立文档栏窗口（?win=docs）：只留侧边栏铺满整个窗口 */
-body.docs-window .titlebar,
 body.docs-window .workbench,
 body.docs-window .statusbar,
 body.docs-window #ai-resizer,
 body.docs-window #ai-panel,
 body.docs-window #source-panel {
+  display: none;
+}
+
+/* 标题栏：macOS 用系统交通灯（藏页面内标题栏）；Windows 用自绘标题栏 */
+html:not(.win-desktop) body.docs-window .titlebar {
   display: none;
 }
 
@@ -298,6 +345,15 @@ body.docs-window .sidebar {
   position: static;
   height: 100vh;
   padding: 10px 10px 14px;
+}
+
+/* Windows 自绘标题栏占了顶部一条：内容相应让位 */
+html.win-desktop body.docs-window .workspace {
+  min-height: calc(100vh - var(--titlebar-h));
+}
+
+html.win-desktop body.docs-window .sidebar {
+  height: calc(100vh - var(--titlebar-h));
 }
 
 body.docs-window .statusbar {
@@ -656,7 +712,10 @@ button:disabled {
   flex-wrap: wrap;
 }
 
-.topbar #btn-ai {
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-left: auto;
 }
 
@@ -1633,13 +1692,17 @@ dialog::backdrop {
 }
 
 /* ===== 独立 AI 窗口（?win=ai）：只留 AI 面板铺满整个窗口 ===== */
-body.ai-window .titlebar,
 body.ai-window .sidebar,
 body.ai-window #sidebar-resizer,
 body.ai-window .topbar,
 body.ai-window .main-col,
 body.ai-window #source-panel,
 body.ai-window #ai-resizer {
+  display: none;
+}
+
+/* 标题栏：macOS 用系统标题栏（藏页面内）；Windows 用自绘标题栏 */
+html:not(.win-desktop) body.ai-window .titlebar {
   display: none;
 }
 
@@ -1667,9 +1730,14 @@ body.ai-window #ai-panel {
   border-left: none;
 }
 
+/* Windows 自绘标题栏占了顶部一条：面板从标题栏下方铺满 */
+html.win-desktop body.ai-window #ai-panel {
+  top: var(--titlebar-h);
+  height: calc(100% - var(--titlebar-h));
+}
+
 /* 独立窗口里：消息与输入区限宽居中，别把整片宽度拉满 */
 body.ai-window .ai-messages,
-body.ai-window .ai-tools,
 body.ai-window .ai-composer,
 body.ai-window #ai-hint {
   width: 100%;
@@ -1679,11 +1747,6 @@ body.ai-window #ai-hint {
 
 body.ai-window .ai-composer {
   margin-bottom: 14px;
-}
-
-body.ai-window .ai-tools {
-  border-top: none;
-  padding-bottom: 0;
 }
 
 body.ai-window .ai-head #btn-ai-expand {
@@ -1716,8 +1779,9 @@ body.ai-window #btn-ai-detach {
   display: none;
 }
 
-/* 顶栏「放回」（拆出期间才出现）：图标 + AI，和 AI 按钮并排 */
-#btn-ai-redock-main {
+/* 顶栏「放回 / 收回」（拆出期间才出现）：小按钮，不占面板空间 */
+#btn-ai-redock-main,
+#btn-docs-redock-main {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1731,7 +1795,8 @@ body.ai-window #btn-ai-detach {
   cursor: pointer;
 }
 
-#btn-ai-redock-main:hover {
+#btn-ai-redock-main:hover,
+#btn-docs-redock-main:hover {
   background: var(--bg-hover);
 }
 
@@ -1739,66 +1804,6 @@ body.ai-window #btn-ai-detach {
 .ai-head #btn-ai-detach:hover,
 .ai-head #btn-ai-redock:hover {
   color: var(--accent);
-}
-
-/* ===== 面板拆出后：原位置的占位 ===== */
-.panel-placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 16px 12px;
-  color: var(--text-muted);
-  font-size: 13px;
-  text-align: center;
-  border-left: 1px solid var(--border);
-}
-
-.panel-placeholder-text {
-  margin: 0;
-}
-
-.panel-placeholder-docs {
-  width: var(--sidebar-width, 240px);
-  flex-shrink: 0;
-  align-self: flex-start;
-  position: sticky;
-  top: var(--titlebar-h);
-  height: calc(100vh - var(--titlebar-h) - var(--statusbar-height, 35px));
-  border-left: none;
-}
-
-.panel-placeholder-ai {
-  width: var(--ai-width, 400px);
-  flex-shrink: 0;
-  align-self: flex-start;
-  position: sticky;
-  top: calc(var(--titlebar-h) + var(--topbar-h, 64px));
-  height: calc(100vh - var(--titlebar-h) - var(--topbar-h, 64px) - var(--statusbar-height, 35px));
-}
-
-.placeholder-redock {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0.35em 0.8em;
-  font-size: 13px;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.placeholder-redock:hover {
-  background: var(--bg-hover);
-}
-
-/* 独立窗口里不显示占位 */
-body.ai-window .panel-placeholder,
-body.docs-window .panel-placeholder {
-  display: none;
 }
 
 .ai-messages {
@@ -2678,19 +2683,6 @@ body.pick-mode .cell-input:not(.selected):hover {
   font-size: 11.5px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
-}
-
-.ai-tools {
-  display: flex;
-  gap: 6px;
-  padding: 6px 10px;
-  border-top: 1px solid var(--border);
-}
-
-.ai-tools button {
-  font-size: 12px;
-  padding: 0.2em 0.6em;
-  white-space: nowrap;
 }
 
 .ai-composer {
