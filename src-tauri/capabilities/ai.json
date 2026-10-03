@@ -2,12 +2,21 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "ai",
   "description": "Capability for the detached AI panel windows (ai-<docId>)",
-  "windows": ["ai-*"],
+  "windows": [
+    "ai-*"
+  ],
   "permissions": [
     "core:default",
     {
       "identifier": "http:default",
-      "allow": [{ "url": "https://*" }, { "url": "http://*" }]
+      "allow": [
+        {
+          "url": "https://*"
+        },
+        {
+          "url": "http://*"
+        }
+      ]
     },
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
@@ -20,6 +29,8 @@
     "core:window:allow-is-maximized",
     "core:window:allow-outer-size",
     "core:window:allow-outer-position",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-position",
+    "core:window:allow-get-all-windows"
   ]
 }

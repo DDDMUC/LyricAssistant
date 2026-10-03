@@ -678,16 +678,6 @@ button:disabled {
   gap: 8px;
 }
 
-.brand-badge {
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 700;
-  padding: 3px 8px;
-  border-radius: 999px;
-  letter-spacing: 0.04em;
-}
-
 .title-input {
   border: none;
   background: transparent;
@@ -1689,6 +1679,52 @@ dialog::backdrop {
 /* 图标转 90°：从副对角线（↗↙）变成正对角线（↖↘） */
 .ai-head #btn-ai-expand svg {
   transform: rotate(90deg);
+}
+
+/* ===== PS 式拖出 / 磁吸回归 ===== */
+/* 面板头就是拖出手柄（按钮除外） */
+.ai-head,
+.sidebar-head {
+  cursor: grab;
+}
+
+.ai-head button,
+.sidebar-head button,
+.sidebar-head .icon-btn,
+.ai-head .ai-chip {
+  cursor: pointer;
+}
+
+/* 正在拖出：别选中文字 */
+html.panel-dragging,
+html.panel-dragging * {
+  user-select: none;
+}
+
+/* 独立窗拖回主窗口时，在主窗里高亮它的停靠位 */
+.dock-preview {
+  position: fixed;
+  top: calc(var(--titlebar-h, 28px) + var(--topbar-h, 64px));
+  bottom: var(--statusbar-height, 35px);
+  z-index: 30;
+  pointer-events: none;
+  border: 1px dashed var(--accent);
+  background: var(--accent-soft);
+  opacity: 0.6;
+}
+
+.dock-preview-left {
+  left: 0;
+  width: var(--sidebar-width, 240px);
+  border-left: none;
+  border-radius: 0 10px 10px 0;
+}
+
+.dock-preview-right {
+  right: 0;
+  width: var(--ai-width, 400px);
+  border-right: none;
+  border-radius: 10px 0 0 10px;
 }
 
 /* ===== 独立 AI 窗口（?win=ai）：只留 AI 面板铺满整个窗口 ===== */

@@ -1,7 +1,8 @@
 import { copyText, readClipboardText } from "./clipboard"
 import { emit, listen } from "@tauri-apps/api/event"
+import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow"
-import { getAllWindows, getCurrentWindow } from "@tauri-apps/api/window"
+import { getAllWindows, getCurrentWindow, type Window as TauriWindow } from "@tauri-apps/api/window"
 import {
   canOverwriteInPlace,
   isDesktop,
@@ -210,7 +211,23 @@ function scopeChannel(docId: string): string {
 }
 const AI_READY_CHANNEL = "ai-ready"
 const AI_REDOCK_CHANNEL = "ai-redock"
+/** 拖回主窗口时的停靠高亮（独立窗 → 主窗口） */
+const DOCK_HOVER_AI = "ai-dock-hover"
+const DOCK_HOVER_DOCS = "docs-dock-hover"
+/** 拖出的独立窗与主窗口重叠到这个比例，就算"拖回来了" */
+const DOCK_BACK_RATIO = 0.3
 let aiDetached = false
+
+/** 事件监听注册：失败（比如没有 IPC 环境）也别变成未处理的 rejection */
+function listenQuiet(channel: string, handler: (event: { payload: unknown }) => void): void {
+  try {
+    void Promise.resolve(listen(channel, handler)).catch((err) => {
+      diag("listen.failed", { channel, err: String(err) })
+    })
+  } catch (err) {
+    diag("listen.failed", { channel, err: String(err) })
+  }
+}
 
 /** 事件只发不收：发不出去（比如没有 IPC 环境）也别变成未处理的 rejection */
 function emitQuiet(channel: string, payload: unknown): void {
@@ -6502,29 +6519,222 @@ async function redockAiFromMain(): Promise<void> {
   openAiPanel()
 }
 
-/** 开 / 聚焦某篇歌词的 AI 窗口（每篇一个，label = ai-<docId>；已存在就 show + focus） */
-async function openAiWindow(docId: string): Promise<void> {
+/** 面板头按住往外拖：生成 / 唤出独立窗并跟随鼠标；松手还在主窗口里 = 取消，外面 = 留在那。
+ *  PS 面板式的「直接拖出」。取消时把独立窗销毁、内嵌面板恢复。 */
+function bindPanelDragOut(
+  handle: HTMLElement,
+  spawn: (x: number, y: number) => Promise<TauriWindow | null>,
+  cancel: () => void,
+): void {
+  let drag: {
+    startX: number
+    startY: number
+    offsetX: number
+    offsetY: number
+    win: TauriWindow | null
+    spawning: boolean
+    moved: boolean
+  } | null = null
+
+  const move = (e: PointerEvent): void => {
+    if (!drag) return
+    if (!drag.moved) {
+      if (Math.abs(e.screenX - drag.startX) + Math.abs(e.screenY - drag.startY) < 8) return
+      drag.moved = true
+      document.documentElement.classList.add("panel-dragging")
+    }
+    const x = Math.round(e.screenX - drag.offsetX)
+    const y = Math.round(e.screenY - drag.offsetY)
+    if (!drag.win) {
+      if (drag.spawning) return
+      drag.spawning = true
+      const current = drag
+      void spawn(x, y)
+        .then((win) => {
+          if (drag === current) current.win = win
+          else if (win) void win.destroy().catch(() => {})
+        })
+        .finally(() => {
+          if (drag === current) current.spawning = false
+        })
+      return
+    }
+    void drag.win.setPosition(new LogicalPosition(x, y)).catch(() => {})
+  }
+
+  const up = (e: PointerEvent): void => {
+    if (!drag) return
+    const current = drag
+    drag = null
+    handle.removeEventListener("pointermove", move)
+    handle.removeEventListener("pointerup", up)
+    handle.removeEventListener("pointercancel", up)
+    try {
+      handle.releasePointerCapture(e.pointerId)
+    } catch {
+      // 没捕获过就算了
+    }
+    document.documentElement.classList.remove("panel-dragging")
+    if (!current.moved) return
+    const insideMain =
+      e.screenX >= window.screenX &&
+      e.screenX <= window.screenX + window.outerWidth &&
+      e.screenY >= window.screenY &&
+      e.screenY <= window.screenY + window.outerHeight
+    if (insideMain) {
+      // 松手还在主窗口里：这次拆出作废
+      if (current.win) void current.win.destroy().catch(() => {})
+      cancel()
+    }
+    // 否则：留在松手的位置，保持拆出
+  }
+
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return
+    if ((e.target as Element).closest("button, input, textarea, select, a")) return
+    const rect = handle.getBoundingClientRect()
+    drag = {
+      startX: e.screenX,
+      startY: e.screenY,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+      win: null,
+      spawning: false,
+      moved: false,
+    }
+    try {
+      handle.setPointerCapture(e.pointerId)
+    } catch {
+      // 不支持捕获也能用：move/up 仍然按元素派发
+    }
+    handle.addEventListener("pointermove", move)
+    handle.addEventListener("pointerup", up)
+    handle.addEventListener("pointercancel", up)
+  })
+}
+
+/** 独立窗拖回主窗口：重叠即高亮停靠位；停手还在上面 → 滑过去磁吸收回内嵌 */
+function bindDockBack(
+  win: TauriWindow,
+  hoverChannel: string,
+  dockSide: "right" | "left",
+  redock: () => void,
+): void {
+  let hovering = false
+  let stopTimer: number | undefined
+
+  const overlapRatio = async (): Promise<number> => {
+    const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()])
+    const main = (await getAllWindows()).find((item) => item.label === "main")
+    if (!main) return 0
+    const [mainPos, mainSize] = await Promise.all([main.outerPosition(), main.outerSize()])
+    const w = Math.max(
+      0,
+      Math.min(pos.x + size.width, mainPos.x + mainSize.width) - Math.max(pos.x, mainPos.x),
+    )
+    const h = Math.max(
+      0,
+      Math.min(pos.y + size.height, mainPos.y + mainSize.height) - Math.max(pos.y, mainPos.y),
+    )
+    if (size.width === 0 || size.height === 0) return 0
+    return (w * h) / (size.width * size.height)
+  }
+
+  const onMoved = (): void => {
+    void overlapRatio()
+      .then((ratio) => {
+        const over = ratio >= DOCK_BACK_RATIO
+        if (over !== hovering) {
+          hovering = over
+          emitQuiet(hoverChannel, { over })
+        }
+      })
+      .catch(() => {})
+    if (stopTimer !== undefined) window.clearTimeout(stopTimer)
+    stopTimer = window.setTimeout(() => {
+      stopTimer = undefined
+      if (!hovering) return
+      hovering = false
+      emitQuiet(hoverChannel, { over: false })
+      void snapBackDocked()
+    }, 220)
+  }
+  // 没有 onMoved（测试桩 / 老环境）就退化成只有「放回」按钮的旧行为
   try {
-    await openAiWindowInner(docId)
-  } catch (err) {
-    setStatus(`AI 窗口打开失败：${describeErr(err)}`, true)
-    diagError("ai.window.error", err)
+    void Promise.resolve(win.onMoved(onMoved)).catch(() => {})
+  } catch {
+    // 忽略
+  }
+
+  /** 磁吸动画：滑向主窗停靠边，然后收回内嵌、藏起自己 */
+  const snapBackDocked = async (): Promise<void> => {
+    try {
+      const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()])
+      const main = (await getAllWindows()).find((item) => item.label === "main")
+      if (main) {
+        const [mainPos, mainSize] = await Promise.all([main.outerPosition(), main.outerSize()])
+        const targetX = dockSide === "right" ? mainPos.x + mainSize.width - size.width : mainPos.x
+        const targetY = mainPos.y
+        const steps = 6
+        for (let i = 1; i <= steps; i++) {
+          const t = i / steps
+          await win
+            .setPosition(
+              new LogicalPosition(
+                Math.round(pos.x + (targetX - pos.x) * t),
+                Math.round(pos.y + (targetY - pos.y) * t),
+              ),
+            )
+            .catch(() => {})
+          await new Promise((resolve) => setTimeout(resolve, 18))
+        }
+      }
+    } catch {
+      // 拿不到位置就直接收回
+    }
+    redock()
+    void win.hide().catch(() => {})
   }
 }
 
-async function openAiWindowInner(docId: string): Promise<void> {
+/** 主窗口监听停靠高亮：显示 / 隐藏对应那条预览 */
+function bindDockPreviews(): void {
+  listenQuiet(DOCK_HOVER_AI, (event) => {
+    const preview = document.querySelector<HTMLElement>("#ai-dock-preview")
+    if (preview) preview.hidden = !(event.payload as { over?: boolean } | null)?.over
+  })
+  listenQuiet(DOCK_HOVER_DOCS, (event) => {
+    const preview = document.querySelector<HTMLElement>("#docs-dock-preview")
+    if (preview) preview.hidden = !(event.payload as { over?: boolean } | null)?.over
+  })
+}
+
+/** 开 / 聚焦某篇歌词的 AI 窗口（每篇一个，label = ai-<docId>；已存在就 show + focus） */
+async function openAiWindow(docId: string, at?: { x: number; y: number }): Promise<TauriWindow | null> {
+  try {
+    return await openAiWindowInner(docId, at)
+  } catch (err) {
+    setStatus(`AI 窗口打开失败：${describeErr(err)}`, true)
+    diagError("ai.window.error", err)
+    return null
+  }
+}
+
+async function openAiWindowInner(docId: string, at?: { x: number; y: number }): Promise<TauriWindow | null> {
   const label = aiWindowLabel(docId)
   const opened = (await getAllWindows()).find((win) => win.label === label)
   if (opened) {
     await opened.show()
     await opened.setFocus()
+    // 拖出时让旧窗直接落到鼠标位置
+    if (at) await opened.setPosition(new LogicalPosition(Math.round(at.x), Math.round(at.y))).catch(() => {})
     setAiDetached(true)
     pushProjectSync(docId)
-    return
+    return opened
   }
   const url = `${window.location.origin}${window.location.pathname}?win=ai&doc=${encodeURIComponent(docId)}`
   const geo = readAiWinGeometry()
-  const place = geo.x !== undefined && geo.y !== undefined ? { x: geo.x, y: geo.y } : aiWindowPlacement()
+  const place = at ?? (geo.x !== undefined && geo.y !== undefined ? { x: geo.x, y: geo.y } : aiWindowPlacement())
   const doc = docsState.docs.find((item) => item.id === docId)
   const win = new WebviewWindow(label, {
     url,
@@ -6577,6 +6787,7 @@ async function openAiWindowInner(docId: string): Promise<void> {
     // 没拆成：收回内嵌，别让用户两边都摸不到
     setAiDetached(false)
   })
+  return win
 }
 
 /** AI 独立窗口模式初始化：只挂 AI 面板，等主窗口推快照 */
@@ -6639,15 +6850,16 @@ async function focusDocsWindow(): Promise<void> {
 }
 
 /** 开文档栏独立窗口（单实例；默认不拆，只有用户点「拆出」或上次就是拆开状态才走这里） */
-async function openDocsWindow(): Promise<void> {
+async function openDocsWindow(at?: { x: number; y: number }): Promise<TauriWindow | null> {
   try {
     const opened = (await getAllWindows()).find((win) => win.label === DOCS_WINDOW_LABEL)
     if (opened) {
       await opened.show()
       await opened.setFocus()
+      if (at) await opened.setPosition(new LogicalPosition(Math.round(at.x), Math.round(at.y))).catch(() => {})
       setDocsDetached(true)
       pushDocsSync()
-      return
+      return opened
     }
     const url = `${window.location.origin}${window.location.pathname}?win=docs`
     const docsSize = screenClampedSize(300, Math.round(window.outerHeight || window.innerHeight || 780))
@@ -6660,6 +6872,7 @@ async function openDocsWindow(): Promise<void> {
       minHeight: 420,
       // Windows：和主窗一样用页面内自绘标题栏；macOS 保留系统窗框
       decorations: !IS_WINDOWS_DESKTOP,
+      ...(at ? { x: Math.round(at.x), y: Math.round(at.y) } : {}),
     })
     // 文档栏里的操作都是"意向"：真正动工程 / 弹确认的还在主窗口
     void listen(DOCS_INTENT_CHANNEL, (event) => {
@@ -6697,15 +6910,18 @@ async function openDocsWindow(): Promise<void> {
       setStatus(`文档栏窗口打开失败：${describeErr(err)}`, true)
       diagError("docs.window.error", err)
     })
+    return win
   } catch (err) {
     setStatus(`文档栏窗口打开失败：${describeErr(err)}`, true)
     diagError("docs.window.error", err)
+    return null
   }
 }
 
 /** 文档栏独立窗口模式初始化：只挂侧边栏铺满，操作以意向发回主窗口 */
 function initDocsWindowMode(): void {
   document.body.classList.add("docs-window")
+  bindDockBack(getCurrentWindow(), DOCK_HOVER_DOCS, "left", () => emitQuiet(DOCS_REDOCK_CHANNEL, {}))
   document.querySelector<HTMLElement>("#btn-docs-win")?.setAttribute("hidden", "")
   document.querySelector<HTMLElement>("#btn-docs-redock")?.removeAttribute("hidden")
   // Windows 自绘标题栏上的标题
@@ -6752,6 +6968,8 @@ function initAiWindowMode(): void {
   if (winTitle) winTitle.textContent = aiTitle
   if (barTitle) barTitle.textContent = aiTitle
   const win = getCurrentWindow()
+  // 拖回主窗口 → 高亮停靠位；停手还在上面 → 磁吸收回内嵌
+  bindDockBack(win, DOCK_HOVER_AI, "right", () => emitQuiet(AI_REDOCK_CHANNEL, { docId: AI_WINDOW_DOC_ID }))
   // 关窗 = 隐藏：流式生成继续跑，不丢状态
   void win.onCloseRequested(async (event) => {
     event.preventDefault()
@@ -6831,6 +7049,18 @@ function initAiPanel(): void {
       setAiDetached(true)
       void openAiWindow(docsState.activeId)
     })
+    // PS 式：按住 AI 面板头往外拖 = 拆出并跟随鼠标；松手还在主窗口里 = 作废
+    const aiHead = aiPanel.querySelector<HTMLElement>(".ai-head")
+    if (aiHead) {
+      bindPanelDragOut(
+        aiHead,
+        async (x, y) => {
+          setAiDetached(true)
+          return await openAiWindow(docsState.activeId, { x, y })
+        },
+        () => setAiDetached(false),
+      )
+    }
   }
   renderAiChips()
   updateAiSendButton()
@@ -7125,9 +7355,23 @@ if (DOCS_WINDOW_MODE) {
       .querySelector<HTMLButtonElement>("#btn-docs-redock-main")
       ?.addEventListener("click", () => void redockDocsWindow())
     if (localStorage.getItem(DOCS_DETACHED_KEY) === "1") void openDocsWindow()
+    // PS 式：按住侧栏头往外拖 = 拆出并跟随鼠标；松手还在主窗口里 = 作废
+    const sidebarHead = document.querySelector<HTMLElement>(".sidebar-head")
+    if (sidebarHead) {
+      bindPanelDragOut(
+        sidebarHead,
+        async (x, y) => {
+          setDocsDetached(true)
+          return await openDocsWindow({ x, y })
+        },
+        () => setDocsDetached(false),
+      )
+    }
   } else {
     docsWinBtn?.setAttribute("hidden", "")
   }
+  // 独立窗拖回来时，主窗口里高亮它的停靠位
+  bindDockPreviews()
 }
 
 export type { Project }
