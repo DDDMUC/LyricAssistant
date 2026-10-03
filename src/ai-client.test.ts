@@ -25,13 +25,27 @@ beforeEach(() => {
 })
 
 describe("AI 设置", () => {
-  it("默认内置 DeepSeek 和 MiMo", () => {
+  it("默认内置 DeepSeek 和 MiMo + 照 DSH 目录的 48 家（跳过目录里的 deepseek / xiaomi），自定义在最后", () => {
     const settings = defaultAiSettings()
-    expect(settings.providers.map((provider) => provider.id)).toEqual([
-      "deepseek",
-      "mimo",
-      "custom",
-    ])
+    const ids = settings.providers.map((provider) => provider.id)
+    expect(ids.slice(0, 2)).toEqual(["deepseek", "mimo"])
+    expect(ids[ids.length - 1]).toBe("custom")
+    expect(ids).toHaveLength(51)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids).not.toContain("xiaomi")
+    expect(ids.filter((id) => id === "deepseek")).toHaveLength(1)
+    expect(ids).toContain("openai")
+    expect(ids).toContain("anthropic")
+    expect(ids).toContain("opencode-zen")
+
+    const openai = settings.providers.find((provider) => provider.id === "openai")!
+    expect(openai.api).toBe("openai-completions")
+    expect(openai.keyUrl).toContain("platform.openai.com")
+    expect(openai.models.length).toBeGreaterThan(0)
+    const anthropic = settings.providers.find((provider) => provider.id === "anthropic")!
+    expect(anthropic.api).toBe("anthropic-messages")
+    expect(anthropic.baseUrl).toBe("https://api.anthropic.com")
+
     expect(settings.providerId).toBe("deepseek")
     expect(settings.model).toBe("deepseek-flash")
     expect(settings.efforts).toEqual({})
@@ -286,6 +300,155 @@ describe("requestChat", () => {
     await expect(
       requestChat(targetOf("deepseek", "deepseek-flash", "default"), [{ role: "user", content: "hi" }]),
     ).rejects.toThrow(/401/)
+  })
+})
+
+describe("协议适配层（Anthropic Messages / OpenAI Responses）", () => {
+  it("Anthropic 非流式：端点 /v1/messages、双鉴权头、system 拆出、温度夹到 0..1", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          content: [
+            { type: "thinking", thinking: "想一下" },
+            { type: "text", text: "北望去" },
+          ],
+          stop_reason: "end_turn",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    )
+    const reasoning: string[] = []
+    const finishes: string[] = []
+    const target = targetOf("anthropic", "claude-sonnet-5", "default")
+    target.temperature = 2
+    const text = await requestChat(
+      target,
+      [
+        { role: "system", content: "你是作词助手" },
+        { role: "user", content: "hi" },
+      ],
+      { onReasoning: (t) => reasoning.push(t), onFinish: (r) => finishes.push(r), maxTokens: 512 },
+    )
+    expect(text).toBe("北望去")
+    expect(reasoning.join("")).toBe("想一下")
+    expect(finishes).toEqual(["end_turn"])
+
+    const [url, init] = fetchMock.mock.calls[0] as [
+      string,
+      { headers: Record<string, string>; body: string },
+    ]
+    expect(url).toBe("https://api.anthropic.com/v1/messages")
+    expect(init.headers["x-api-key"]).toBe("sk-anthropic")
+    expect(init.headers.Authorization).toBe("Bearer sk-anthropic")
+    expect(init.headers["anthropic-version"]).toBe("2023-06-01")
+    const body = JSON.parse(init.body) as Record<string, unknown>
+    expect(body.model).toBe("claude-sonnet-5")
+    expect(body.system).toBe("你是作词助手")
+    expect(body.max_tokens).toBe(512)
+    expect(body.messages).toEqual([{ role: "user", content: "hi" }])
+    expect(body.stream).toBe(false)
+    expect(body.temperature).toBe(1)
+    expect(body.thinking).toBeUndefined()
+  })
+
+  it("Anthropic 流式：content_block_delta 的 text / thinking 分开收", async () => {
+    fetchMock.mockResolvedValue(
+      sseResponse([
+        'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"先想"}}\n\n',
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"北望"}}\n\n',
+        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"去"}}\n\n',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+      ]),
+    )
+    const deltas: string[] = []
+    const reasoning: string[] = []
+    const finishes: string[] = []
+    const text = await requestChat(
+      targetOf("anthropic", "claude-sonnet-5", "default"),
+      [{ role: "user", content: "hi" }],
+      {
+        onDelta: (t) => deltas.push(t),
+        onReasoning: (t) => reasoning.push(t),
+        onFinish: (r) => finishes.push(r),
+      },
+    )
+    expect(text).toBe("北望去")
+    expect(deltas.join("")).toBe("北望去")
+    expect(reasoning.join("")).toBe("先想")
+    expect(finishes).toEqual(["end_turn"])
+  })
+
+  it("Responses 非流式：/v1/responses、instructions、max_output_tokens、reasoning.effort 用目录真实值", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "completed",
+          output: [
+            { type: "reasoning", content: [] },
+            { type: "message", content: [{ type: "output_text", text: "北望去" }] },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    )
+    const finishes: string[] = []
+    const text = await requestChat(
+      targetOf("opencode-zen", "gpt-5.5", "high"),
+      [
+        { role: "system", content: "你是作词助手" },
+        { role: "user", content: "hi" },
+      ],
+      { onFinish: (r) => finishes.push(r), maxTokens: 321 },
+    )
+    expect(text).toBe("北望去")
+    expect(finishes).toEqual(["completed"])
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, { body: string }]
+    expect(url).toBe("https://opencode.ai/zen/v1/responses")
+    const body = JSON.parse(init.body) as Record<string, unknown>
+    expect(body.instructions).toBe("你是作词助手")
+    expect(body.input).toEqual([{ role: "user", content: "hi" }])
+    expect(body.max_output_tokens).toBe(321)
+    expect(body.reasoning).toEqual({ effort: "high" })
+    expect(body.stream).toBe(false)
+  })
+
+  it("Responses 流式：output_text / reasoning_summary 分开收；default 档位不带 reasoning", async () => {
+    fetchMock.mockResolvedValue(
+      sseResponse([
+        'data: {"type":"response.reasoning_summary_text.delta","delta":"先想"}\n\n',
+        'data: {"type":"response.output_text.delta","delta":"北望"}\n\n',
+        'data: {"type":"response.output_text.delta","delta":"去"}\n\n',
+        'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+      ]),
+    )
+    const reasoning: string[] = []
+    const text = await requestChat(
+      targetOf("opencode-zen", "gpt-5.5", "default"),
+      [{ role: "user", content: "hi" }],
+      { onDelta: () => {}, onReasoning: (t) => reasoning.push(t) },
+    )
+    expect(text).toBe("北望去")
+    expect(reasoning.join("")).toBe("先想")
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0] as [string, { body: string }])[1].body,
+    ) as Record<string, unknown>
+    expect(body.reasoning).toBeUndefined()
+    expect(body.stream).toBe(true)
+  })
+
+  it("这两个协议没有 /models：testAiConnection 直接 ping 一句", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ content: [{ type: "text", text: "pong" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    )
+    await expect(testAiConnection(targetOf("anthropic", "claude-sonnet-5", "default"))).resolves.toContain(
+      "连接成功",
+    )
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toBe("https://api.anthropic.com/v1/messages")
   })
 })
 

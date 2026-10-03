@@ -2897,6 +2897,33 @@ body.pick-mode .cell-input:not(.selected):hover {
   color: var(--text-muted);
 }
 
+.ai-provider-note .dialog-inline-btn {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--field-bg);
+}
+
+.ai-provider-note .dialog-inline-btn:hover {
+  background: var(--field-bg-hover);
+}
+
+.ai-provider-search {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--field-bg);
+}
+
+.ai-provider-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .ai-provider-testrow {
   display: flex;
   align-items: center;
