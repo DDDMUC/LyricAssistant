@@ -1,6 +1,10 @@
 import { fetch } from "@tauri-apps/plugin-http"
+import { PROVIDER_PRESETS, type PresetApi } from "./model/provider-presets"
 
 export type EffortLevel = "default" | "none" | "low" | "medium" | "high" | "max"
+
+/** 走哪种线上协议（照搬 DSH 的分类） */
+export type AiApi = PresetApi
 
 export const EFFORT_LEVELS: { value: EffortLevel; label: string }[] = [
   { value: "default", label: "Default" },
@@ -24,6 +28,11 @@ export interface AiProvider {
   id: string
   name: string
   baseUrl: string
+  /** 线上协议：OpenAI 兼容 / Anthropic Messages / OpenAI Responses */
+  api: AiApi
+  /** 文档 / 获取 Key 的链接（照搬 DSH 目录带的） */
+  docs?: string
+  keyUrl?: string
   models: string[]
   apiKey: string
   auth: "bearer" | "both"
@@ -62,6 +71,7 @@ export function withEffort(settings: AiSettings, effort: EffortLevel): AiSetting
 
 export interface AiTarget {
   baseUrl: string
+  api: AiApi
   apiKey: string
   model: string
   effort: EffortLevel
@@ -88,8 +98,19 @@ export const MODEL_LABELS: Record<string, string> = {
   "mimo-v2.6-pro-ultraspeed": "MiMo V2.6 Pro UltraSpeed",
 }
 
+/** 目录里每个模型的显示名（同一 id 取第一次出现的） */
+const PRESET_MODEL_LABELS: Record<string, string> = {}
+/** 目录里每个模型的推理档位 → 线上真实值（off 已归一成 none） */
+const PRESET_EFFORTS: Record<string, Record<string, string>> = {}
+for (const preset of PROVIDER_PRESETS) {
+  for (const model of preset.models) {
+    if (!(model.id in PRESET_MODEL_LABELS)) PRESET_MODEL_LABELS[model.id] = model.name
+    if (model.efforts && !(model.id in PRESET_EFFORTS)) PRESET_EFFORTS[model.id] = model.efforts
+  }
+}
+
 export function modelLabel(model: string): string {
-  return MODEL_LABELS[model] ?? model
+  return MODEL_LABELS[model] ?? PRESET_MODEL_LABELS[model] ?? model
 }
 
 /**
@@ -118,8 +139,11 @@ const MODEL_EFFORT_VALUES: Record<string, EffortLevel[]> = {
 }
 
 
+const EFFORT_ORDER: EffortLevel[] = ["none", "low", "medium", "high", "max"]
+
 export function supportsEffortFor(model: string, providerSupports: boolean): boolean {
-  return MODEL_EFFORT_VALUES[model] ? true : providerSupports
+  if (MODEL_EFFORT_VALUES[model] || PRESET_EFFORTS[model]) return true
+  return providerSupports
 }
 
 /** 这个模型能选的等级列表（含 default）；空数组 = 不支持强度档 */
@@ -127,7 +151,13 @@ export function effortLevelsFor(
   model: string,
   providerSupports: boolean,
 ): { value: EffortLevel; label: string }[] {
-  const values = MODEL_EFFORT_VALUES[model] ?? (providerSupports ? CUSTOM_EFFORT_VALUES : null)
+  let values: EffortLevel[] | null = MODEL_EFFORT_VALUES[model] ?? null
+  if (!values) {
+    const preset = PRESET_EFFORTS[model]
+    // 目录模型：按目录里真实有的档位（保持从低到高的顺序）
+    values = preset ? EFFORT_ORDER.filter((level) => level in preset) : null
+  }
+  if (!values) values = providerSupports ? CUSTOM_EFFORT_VALUES : null
   if (!values) return []
   return (["default", ...values] as EffortLevel[]).map(
     (value) => EFFORT_LEVELS.find((level) => level.value === value) ?? { value, label: value },
@@ -153,11 +183,13 @@ export function maxTokensFor(
   return Math.max(4096, Math.min(65536, base + budget))
 }
 
-export const BUILTIN_PROVIDERS: AiProvider[] = [
+/** 我们自己维护的两个：思考 / 档位行为是实测调过的（目录里也有它们，这里不用目录那份） */
+const OUR_PROVIDERS: AiProvider[] = [
   {
     id: "deepseek",
     name: "DeepSeek",
     baseUrl: "https://api.deepseek.com",
+    api: "openai-completions",
     models: ["deepseek-flash", "deepseek-v4-pro"],
     apiKey: "",
     auth: "bearer",
@@ -170,6 +202,7 @@ export const BUILTIN_PROVIDERS: AiProvider[] = [
     id: "mimo",
     name: "MiMo（小米）",
     baseUrl: "https://api.xiaomimimo.com/v1",
+    api: "openai-completions",
     models: ["mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed"],
     apiKey: "",
     auth: "both",
@@ -178,10 +211,36 @@ export const BUILTIN_PROVIDERS: AiProvider[] = [
     supportsEffort: false,
     builtin: true,
   },
+]
+
+/** 照搬 DSH 的 provider 目录（生成文件 src/model/provider-presets.ts）。
+ *  跳过 deepseek / xiaomi：用我们自己的那两份（行为实测过）。 */
+const CATALOG_PROVIDERS: AiProvider[] = PROVIDER_PRESETS.filter(
+  (preset) => preset.id !== "deepseek" && preset.id !== "xiaomi",
+).map((preset) => ({
+  id: preset.id,
+  name: preset.name,
+  baseUrl: preset.baseUrl,
+  api: preset.api,
+  docs: preset.docs || undefined,
+  keyUrl: preset.keyUrl || undefined,
+  models: preset.models.map((model) => model.id),
+  apiKey: "",
+  auth: "bearer",
+  tokenParam: "max_tokens",
+  supportsThinking: false,
+  supportsEffort: false,
+  builtin: true,
+}))
+
+export const BUILTIN_PROVIDERS: AiProvider[] = [
+  ...OUR_PROVIDERS,
+  ...CATALOG_PROVIDERS,
   {
     id: "custom",
     name: "自定义",
     baseUrl: "",
+    api: "openai-completions",
     models: [],
     apiKey: "",
     auth: "bearer",
@@ -283,6 +342,7 @@ export function resolveTarget(settings: AiSettings): AiTarget | null {
   const model = settings.model.trim()
   return {
     baseUrl: provider.baseUrl,
+    api: provider.api,
     apiKey: provider.apiKey,
     model,
     effort: effortOf(settings),
@@ -336,7 +396,11 @@ function requestBody(
   if (target.supportsThinking && target.effort !== "default") {
     body.thinking = { type: target.effort === "none" ? "disabled" : "enabled" }
   }
-  if (target.supportsEffort && target.effort !== "none" && target.effort !== "default") {
+  const presetEfforts = PRESET_EFFORTS[target.model]
+  if (presetEfforts && target.effort !== "default") {
+    const wire = presetEfforts[target.effort]
+    if (wire) body.reasoning_effort = wire
+  } else if (target.supportsEffort && target.effort !== "none" && target.effort !== "default") {
     body.reasoning_effort = target.effort
   }
   return body
@@ -353,16 +417,27 @@ function friendlyError(status: number, body: string): string {
   return `${status}：${detail}`
 }
 
-export async function requestChat(
+export interface ChatRequestOptions {
+  onDelta?: (text: string) => void
+  onReasoning?: (text: string) => void
+  onFinish?: (reason: string) => void
+  signal?: AbortSignal
+  maxTokens?: number | null
+}
+
+/** 读错误响应体（读不出来就当空） */
+async function safeText(response: Response): Promise<string> {
+  try {
+    return await response.text()
+  } catch {
+    return ""
+  }
+}
+
+async function requestOpenAiCompletions(
   target: AiTarget,
   messages: ChatMessage[],
-  options: {
-    onDelta?: (text: string) => void
-    onReasoning?: (text: string) => void
-    onFinish?: (reason: string) => void
-    signal?: AbortSignal
-    maxTokens?: number | null
-  } = {},
+  options: ChatRequestOptions = {},
 ): Promise<string> {
   if (!target.baseUrl.trim()) throw new Error("先填接口地址")
   if (!target.model.trim()) throw new Error("先选模型")
@@ -435,8 +510,259 @@ export async function requestChat(
   return full
 }
 
+// ---------- 协议适配层（openai-completions 在上一段）----------
+// 端点约定：Base URL 到 /v1 为止；没带 /v1 的按官方路径补。
+//   anthropic：{base}/v1/messages（base 已带 /v1 就只接 /messages）
+//   responses：{base}/v1/responses（同上）
+
+function anthropicEndpoint(baseUrl: string): string {
+  const base = trimBase(baseUrl)
+  return base.endsWith("/v1") ? `${base}/messages` : `${base}/v1/messages`
+}
+
+function responsesEndpoint(baseUrl: string): string {
+  const base = trimBase(baseUrl)
+  return base.endsWith("/v1") ? `${base}/responses` : `${base}/v1/responses`
+}
+
+function anthropicHeaders(target: AiTarget): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    // Anthropic 要求的协议版本头
+    "anthropic-version": "2023-06-01",
+  }
+  const key = target.apiKey.trim()
+  if (key) {
+    // 官方认 x-api-key；不少兼容网关认 Bearer——两个都带，谁认哪个都行
+    headers["x-api-key"] = key
+    headers.Authorization = `Bearer ${key}`
+  }
+  return headers
+}
+
+function anthropicBody(
+  target: AiTarget,
+  messages: ChatMessage[],
+  maxTokens: number | null,
+  stream: boolean,
+): Record<string, unknown> {
+  const system = messages
+    .filter((message) => message.role === "system")
+    .map((message) => message.content)
+    .join("\n\n")
+  const body: Record<string, unknown> = {
+    model: target.model.trim(),
+    // Anthropic 必填；没给就按一个保守值
+    max_tokens: maxTokens ?? 8192,
+    messages: messages
+      .filter((message) => message.role !== "system")
+      .map((message) => ({ role: message.role, content: message.content })),
+    stream,
+  }
+  if (system) body.system = system
+  // Anthropic 温度范围 0..1
+  body.temperature = Math.max(0, Math.min(1, target.temperature))
+  return body
+}
+
+function responsesBody(
+  target: AiTarget,
+  messages: ChatMessage[],
+  maxTokens: number | null,
+  stream: boolean,
+): Record<string, unknown> {
+  const instructions = messages
+    .filter((message) => message.role === "system")
+    .map((message) => message.content)
+    .join("\n\n")
+  const body: Record<string, unknown> = {
+    model: target.model.trim(),
+    input: messages
+      .filter((message) => message.role !== "system")
+      .map((message) => ({ role: message.role, content: message.content })),
+    stream,
+  }
+  if (instructions) body.instructions = instructions
+  if (maxTokens !== null) body.max_output_tokens = maxTokens
+  const preset = PRESET_EFFORTS[target.model]
+  if (preset && target.effort !== "default") {
+    const wire = preset[target.effort]
+    if (wire) body.reasoning = { effort: wire }
+  } else if (target.supportsEffort && target.effort !== "none" && target.effort !== "default") {
+    body.reasoning = { effort: target.effort }
+  }
+  return body
+}
+
+async function requestAnthropicMessages(
+  target: AiTarget,
+  messages: ChatMessage[],
+  options: ChatRequestOptions = {},
+): Promise<string> {
+  const stream = Boolean(options.onDelta)
+  const response = await fetch(anthropicEndpoint(target.baseUrl), {
+    method: "POST",
+    headers: anthropicHeaders(target),
+    signal: options.signal,
+    body: JSON.stringify(anthropicBody(target, messages, options.maxTokens ?? null, stream)),
+  })
+  if (!response.ok) throw new Error(friendlyError(response.status, await safeText(response)))
+  if (!stream || !response.body) {
+    const data = (await response.json()) as {
+      content?: { type?: string; text?: string; thinking?: string }[]
+      stop_reason?: string
+    }
+    const blocks = data.content ?? []
+    const thinking = blocks
+      .filter((block) => block.type === "thinking" && block.thinking)
+      .map((block) => block.thinking ?? "")
+      .join("")
+    if (thinking) options.onReasoning?.(thinking)
+    const text = blocks
+      .filter((block) => block.type === "text")
+      .map((block) => block.text ?? "")
+      .join("")
+    if (data.stop_reason) options.onFinish?.(data.stop_reason)
+    options.onDelta?.(text)
+    return text
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let full = ""
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const parts = buffer.split("\n")
+    buffer = parts.pop() ?? ""
+    for (const line of parts) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith("data:")) continue
+      const payload = trimmed.slice(5).trim()
+      if (!payload) continue
+      let data: {
+        type?: string
+        delta?: { type?: string; text?: string; thinking?: string; stop_reason?: string }
+        error?: { message?: string }
+      }
+      try {
+        data = JSON.parse(payload) as typeof data
+      } catch {
+        continue
+      }
+      if (data.type === "content_block_delta") {
+        if (data.delta?.type === "text_delta" && data.delta.text) {
+          full += data.delta.text
+          options.onDelta?.(data.delta.text)
+        } else if (data.delta?.type === "thinking_delta" && data.delta.thinking) {
+          options.onReasoning?.(data.delta.thinking)
+        }
+      } else if (data.type === "message_delta" && data.delta?.stop_reason) {
+        options.onFinish?.(data.delta.stop_reason)
+      } else if (data.type === "error") {
+        throw new Error(data.error?.message ?? "Anthropic 流错误")
+      }
+    }
+  }
+  return full
+}
+
+async function requestOpenAiResponses(
+  target: AiTarget,
+  messages: ChatMessage[],
+  options: ChatRequestOptions = {},
+): Promise<string> {
+  const stream = Boolean(options.onDelta)
+  const response = await fetch(responsesEndpoint(target.baseUrl), {
+    method: "POST",
+    headers: headers(target),
+    signal: options.signal,
+    body: JSON.stringify(responsesBody(target, messages, options.maxTokens ?? null, stream)),
+  })
+  if (!response.ok) throw new Error(friendlyError(response.status, await safeText(response)))
+  if (!stream || !response.body) {
+    const data = (await response.json()) as {
+      output?: { type?: string; content?: { type?: string; text?: string }[] }[]
+      status?: string
+      error?: { message?: string }
+    }
+    if (data.error?.message) throw new Error(data.error.message)
+    const text = (data.output ?? [])
+      .filter((item) => item.type === "message")
+      .flatMap((item) => item.content ?? [])
+      .filter((part) => part.type === "output_text")
+      .map((part) => part.text ?? "")
+      .join("")
+    if (data.status) options.onFinish?.(data.status)
+    options.onDelta?.(text)
+    return text
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let full = ""
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const parts = buffer.split("\n")
+    buffer = parts.pop() ?? ""
+    for (const line of parts) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith("data:")) continue
+      const payload = trimmed.slice(5).trim()
+      if (!payload) continue
+      let data: {
+        type?: string
+        delta?: string
+        error?: { message?: string }
+        response?: { status?: string; error?: { message?: string } }
+      }
+      try {
+        data = JSON.parse(payload) as typeof data
+      } catch {
+        continue
+      }
+      if (data.type === "response.output_text.delta" && data.delta) {
+        full += data.delta
+        options.onDelta?.(data.delta)
+      } else if (
+        (data.type === "response.reasoning_text.delta" ||
+          data.type === "response.reasoning_summary_text.delta") &&
+        data.delta
+      ) {
+        options.onReasoning?.(data.delta)
+      } else if (data.type === "response.completed" && data.response?.status) {
+        options.onFinish?.(data.response.status)
+      } else if (data.type === "response.failed" || data.type === "error") {
+        throw new Error(data.response?.error?.message ?? data.error?.message ?? "Responses 流错误")
+      }
+    }
+  }
+  return full
+}
+
+/** 按 provider 的协议分发 */
+export async function requestChat(
+  target: AiTarget,
+  messages: ChatMessage[],
+  options: ChatRequestOptions = {},
+): Promise<string> {
+  if (!target.baseUrl.trim()) throw new Error("先填接口地址")
+  if (!target.model.trim()) throw new Error("先选模型")
+  if (target.api === "anthropic-messages") return requestAnthropicMessages(target, messages, options)
+  if (target.api === "openai-responses") return requestOpenAiResponses(target, messages, options)
+  return requestOpenAiCompletions(target, messages, options)
+}
+
 export async function testAiConnection(target: AiTarget): Promise<string> {
   if (!target.baseUrl.trim()) throw new Error("先填接口地址")
+  if (target.api !== "openai-completions") {
+    // Anthropic / Responses 没有统一的 /models：直接发最小请求验
+    await requestChat(target, [{ role: "user", content: "ping" }], { maxTokens: 16 })
+    return `连接成功（${target.model}）`
+  }
   let response: Response
   try {
     response = await fetch(modelsEndpoint(target.baseUrl), {

@@ -5116,6 +5116,22 @@ function parseList(value: string): string[] {
     .filter(Boolean)
 }
 
+/** 打开外部链接：桌面走系统浏览器，网页开新标签 */
+async function openExternal(url: string): Promise<void> {
+  const value = url.trim()
+  if (!value) return
+  if (isDesktop()) {
+    try {
+      const { openUrl } = await import("@tauri-apps/plugin-opener")
+      await openUrl(value)
+      return
+    } catch {
+      // 插件不可用（权限没给等）就退回网页方式
+    }
+  }
+  window.open(value, "_blank", "noopener")
+}
+
 function openAiSettings(): void {
   closeAiPops()
   const dialog = document.createElement("dialog")
@@ -5127,8 +5143,14 @@ function openAiSettings(): void {
   title.textContent = "AI 接口设置"
   const intro = document.createElement("p")
   intro.textContent =
-    "内置 DeepSeek 和小米 MiMo：填上对应的 API Key 就能用；也能改用自定义接口。Key 只存在这台电脑上。"
-  form.append(title, intro)
+    "内置 DeepSeek、小米 MiMo 和 48 家常见服务商（照 DSH 目录：OpenAI 兼容 / Anthropic / Responses 三种协议）。" +
+    "填上对应的 API Key 就能用；也能改用自定义接口。Key 只存在这台电脑上。"
+  const searchEl = document.createElement("input")
+  searchEl.type = "search"
+  searchEl.placeholder = "搜索服务商（名字 / 地址）"
+  searchEl.className = "ai-provider-search"
+  form.append(title, intro, searchEl)
+  const filterTargets: { text: string; block: HTMLElement }[] = []
 
   const rows: {
     provider: AiProvider
@@ -5155,10 +5177,25 @@ function openAiSettings(): void {
       if (provider.id === "mimo") {
         note.textContent =
           "思考：开关 + 档位（none / low / medium / high）；官方现阶段不做强度区分——None 关思考、其余都只是开启"
-      } else {
+      } else if (provider.id === "deepseek") {
         note.textContent = provider.supportsEffort
           ? "思考：开关 + 强度（none / low / high / max）；不传档位时官方默认 high"
           : "思考：仅开关（thinking.type = enabled / disabled，默认开启）；思考模式下 temperature 由官方固定为 1.0，设置不生效"
+      } else {
+        note.textContent =
+          provider.api === "anthropic-messages"
+            ? "协议：Anthropic Messages（自动接 /messages）"
+            : provider.api === "openai-responses"
+              ? "协议：OpenAI Responses（自动接 /responses）"
+              : "协议：OpenAI 兼容（/chat/completions）"
+        if (provider.keyUrl) {
+          const keyLink = document.createElement("button")
+          keyLink.type = "button"
+          keyLink.className = "dialog-inline-btn"
+          keyLink.textContent = "获取 Key"
+          keyLink.addEventListener("click", () => void openExternal(provider.keyUrl ?? ""))
+          note.append(document.createTextNode(" · "), keyLink)
+        }
       }
       block.appendChild(note)
     } else {
@@ -5244,6 +5281,7 @@ function openAiSettings(): void {
       resultEl.textContent = "连接中…"
       void testAiConnection({
         baseUrl: baseEl.value,
+        api: provider.api,
         apiKey: keyEl.value,
         model: models[0] ?? "",
         effort: "default",
@@ -5263,8 +5301,18 @@ function openAiSettings(): void {
 
     block.append(baseLabel, modelsLabel, keyLabel, testRow)
     form.appendChild(block)
+    filterTargets.push({
+      text: `${provider.id} ${provider.name} ${provider.baseUrl}`.toLowerCase(),
+      block,
+    })
     rows.push({ provider, baseEl, modelsEl, keyEl, resultEl, thinkEl, effortEl })
   }
+  searchEl.addEventListener("input", () => {
+    const query = searchEl.value.trim().toLowerCase()
+    for (const target of filterTargets) {
+      target.block.hidden = query !== "" && !target.text.includes(query)
+    }
+  })
 
   const tempEl = document.createElement("input")
   tempEl.type = "number"
