@@ -5,15 +5,21 @@ import type { Project } from "./model/types"
 // AI 独立窗口（?win=ai&doc=...）：只挂 AI 面板，主工作区不渲染
 // 共享状态必须走 vi.hoisted：vi.mock 的工厂要抓的是同一份实例
 const state = vi.hoisted(() => ({
+  movedHandlers: [] as (() => void)[],
   emitCalls: [] as { channel: string; payload: unknown }[],
   listeners: new Map<string, (payload: unknown) => void>(),
   tauriWindow: {
     show: vi.fn(() => Promise.resolve()),
     hide: vi.fn(() => Promise.resolve()),
+    setPosition: vi.fn(() => Promise.resolve()),
     setFocus: vi.fn(() => Promise.resolve()),
     outerSize: vi.fn(() => Promise.resolve({ width: 520, height: 720 })),
     outerPosition: vi.fn(() => Promise.resolve({ x: 0, y: 0 })),
     onCloseRequested: vi.fn(() => Promise.resolve(() => {})),
+    onMoved: vi.fn((handler: () => void) => {
+      state.movedHandlers.push(handler)
+      return Promise.resolve(() => {})
+    }),
   },
 }))
 
@@ -130,5 +136,35 @@ it("「放回」主窗口：发 ai-redock 并把窗藏起来", async () => {
   const call = state.emitCalls.find((item) => item.channel === "ai-redock")
   expect(call).toBeTruthy()
   expect((call as { payload: { docId: string } }).payload.docId).toBe("doc-1")
+  expect(state.tauriWindow.hide).toHaveBeenCalled()
+})
+
+it("独立窗拖回主窗口：先高亮停靠位，停手还在上面就磁吸收回", async () => {
+  state.emitCalls.length = 0
+  // 独立窗在 (800, 150)，400×700；主窗在 (400, 100)，1100×800 → 重叠够多
+  state.tauriWindow.outerPosition.mockResolvedValue({ x: 800, y: 150 })
+  state.tauriWindow.outerSize.mockResolvedValue({ width: 400, height: 700 })
+  const { getAllWindows } = await import("@tauri-apps/api/window")
+  vi.mocked(getAllWindows).mockResolvedValue([
+    {
+      label: "main",
+      outerPosition: vi.fn(() => Promise.resolve({ x: 400, y: 100 })),
+      outerSize: vi.fn(() => Promise.resolve({ width: 1100, height: 800 })),
+    },
+  ] as never)
+
+  // 触发窗口移动事件
+  expect(state.movedHandlers.length).toBeGreaterThan(0)
+  state.movedHandlers[0]!()
+  await tick(60)
+  const hover = state.emitCalls.find((call) => call.channel === "ai-dock-hover")
+  expect(hover).toBeTruthy()
+  expect((hover as { payload: { over: boolean } }).payload.over).toBe(true)
+
+  // 停手 220ms 后开始磁吸：滑 6 步 + 收回内嵌 + 藏窗
+  await tick(600)
+  const redock = state.emitCalls.find((call) => call.channel === "ai-redock")
+  expect(redock).toBeTruthy()
+  expect(state.tauriWindow.setPosition).toHaveBeenCalled()
   expect(state.tauriWindow.hide).toHaveBeenCalled()
 })

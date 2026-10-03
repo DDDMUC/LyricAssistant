@@ -35,7 +35,6 @@
     <div class="workspace">
       <aside class="sidebar">
         <div class="sidebar-head">
-          <span class="brand-badge">作词助手</span>
           <span class="sidebar-head-actions">
             <button id="btn-docs-win" class="icon-btn" type="button" title="拆出为独立窗口" aria-label="拆出为独立窗口">
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-out" /><use href="#ic-arrow-out-head" /></svg>
@@ -188,5 +187,9 @@
         <span id="status-autosave"></span>
       </span>
     </footer>
+
+    <!-- 独立窗拖回主窗口时的停靠预览（磁吸高亮） -->
+    <div id="docs-dock-preview" class="dock-preview dock-preview-left" hidden></div>
+    <div id="ai-dock-preview" class="dock-preview dock-preview-right" hidden></div>
   </body>
 </html>

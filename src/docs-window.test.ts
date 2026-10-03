@@ -5,6 +5,7 @@ import { createDoc } from "./docs"
 // 文档栏独立窗口（?win=docs）：只挂侧边栏；里面的一切操作都是"意向"，发回主窗口执行
 const listeners = new Map<string, (payload: unknown) => void>()
 const emitCalls: { channel: string; payload: unknown }[] = []
+const movedHandlers: (() => void)[] = []
 
 vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn((channel: string, payload: unknown) => {
@@ -25,6 +26,10 @@ vi.mock("@tauri-apps/api/window", () => ({
     outerSize: vi.fn(() => Promise.resolve({ width: 300, height: 760 })),
     outerPosition: vi.fn(() => Promise.resolve({ x: 0, y: 0 })),
     onCloseRequested: vi.fn(() => Promise.resolve(() => {})),
+    onMoved: vi.fn((handler: () => void) => {
+      movedHandlers.push(handler)
+      return Promise.resolve(() => {})
+    }),
   })),
 }))
 vi.mock("@tauri-apps/api/webviewWindow", () => ({

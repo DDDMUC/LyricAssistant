@@ -30,7 +30,14 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   // 必须是可 new 的：构造时返回带 once 的假窗口（返回值对象会被 new 采用）
   WebviewWindow: vi.fn(function WebviewWindow() {
-    return { once: vi.fn(() => Promise.resolve()) }
+    return {
+      once: vi.fn(() => Promise.resolve()),
+      setPosition: vi.fn(() => Promise.resolve()),
+      destroy: vi.fn(() => Promise.resolve()),
+      show: vi.fn(() => Promise.resolve()),
+      hide: vi.fn(() => Promise.resolve()),
+      setFocus: vi.fn(() => Promise.resolve()),
+    }
   }),
 }))
 
@@ -322,6 +329,60 @@ it("AI 面板默认内嵌：AI 按钮开合面板，不建窗；点「拆出」�
   expect(redock).toBeTruthy()
   redock!({ payload: { docId: "doc-1" } })
   await tick(0)
+  expect(document.documentElement.classList.contains("ai-detached")).toBe(false)
+  expect(panel.hasAttribute("hidden")).toBe(false)
+})
+
+it("按住 AI 面板头往外拖：拆出独立窗跟随鼠标；松手还在主窗口里 = 作废", async () => {
+  const head = document.querySelector<HTMLElement>("#ai-panel .ai-head")!
+  const panel = document.querySelector<HTMLElement>("#ai-panel")!
+  Object.defineProperty(window, "screenX", { value: 100, configurable: true })
+  Object.defineProperty(window, "screenY", { value: 100, configurable: true })
+  Object.defineProperty(window, "outerWidth", { value: 900, configurable: true })
+  Object.defineProperty(window, "outerHeight", { value: 700, configurable: true })
+
+  // 打开内嵌面板（默认就开着合上，再点开）
+  if (panel.hasAttribute("hidden")) document.querySelector<HTMLButtonElement>("#btn-ai")!.click()
+  await tick(0)
+  vi.mocked(getAllWindows).mockResolvedValue([])
+  vi.mocked(WebviewWindow).mockClear()
+
+  const down = new PointerEvent("pointerdown", {
+    bubbles: true, cancelable: true, button: 0,
+    clientX: 10, clientY: 10, screenX: 500, screenY: 300,
+  })
+  head.dispatchEvent(down)
+  const move = new PointerEvent("pointermove", {
+    bubbles: true,
+    clientX: -200, clientY: 20, screenX: 300, screenY: 320,
+  })
+  head.dispatchEvent(move)
+  await tick(0)
+  expect(vi.mocked(WebviewWindow)).toHaveBeenCalledTimes(1)
+  const [label, options] = vi.mocked(WebviewWindow).mock.calls[0] as [string, Record<string, unknown>]
+  expect(label.startsWith("ai-")).toBe(true)
+  // 窗口左上角 = 鼠标位置 − 抓握偏移
+  expect(options.x).toBe(290)
+  expect(options.y).toBe(310)
+  expect(document.documentElement.classList.contains("ai-detached")).toBe(true)
+  expect(panel.hasAttribute("hidden")).toBe(true)
+  const fakeWin = vi.mocked(WebviewWindow).mock.results[0].value as {
+    setPosition: ReturnType<typeof vi.fn>
+  }
+  // 继续拖：窗口跟着鼠标走
+  head.dispatchEvent(
+    new PointerEvent("pointermove", { bubbles: true, clientX: -100, clientY: 40, screenX: 400, screenY: 340 }),
+  )
+  await tick(0)
+  expect(fakeWin.setPosition).toHaveBeenCalled()
+
+  // 松手在屏幕 (200,200)：落在主窗口范围内（100..1000 / 100..800）→ 这次拆出作废
+  head.dispatchEvent(
+    new PointerEvent("pointerup", { bubbles: true, clientX: 0, clientY: 0, screenX: 200, screenY: 200 }),
+  )
+  await tick(0)
+  const destroyed = (vi.mocked(WebviewWindow).mock.results[0].value as { destroy: ReturnType<typeof vi.fn> }).destroy
+  expect(destroyed).toHaveBeenCalled()
   expect(document.documentElement.classList.contains("ai-detached")).toBe(false)
   expect(panel.hasAttribute("hidden")).toBe(false)
 })
