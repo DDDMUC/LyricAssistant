@@ -6450,6 +6450,32 @@ async function focusAiWindow(docId: string): Promise<void> {
   }
 }
 
+/** 主窗口启动时清掉残留的独立 AI 窗（AI 面板不持久，启动一律回到内嵌；否则重载后会两处都有面板） */
+async function hideOrphanAiWindows(): Promise<void> {
+  if (!isDesktop()) return
+  try {
+    const wins = await getAllWindows()
+    for (const win of wins) {
+      if (win.label.startsWith("ai-")) {
+        try {
+          await win.hide()
+        } catch {
+          // 单个窗失败不影响其它
+        }
+      }
+    }
+  } catch (err) {
+    diagError("ai.orphan.cleanup", err)
+  }
+}
+
+/** 主窗口里点「放回」：先藏掉独立 AI 窗，再收回内嵌（否则独立窗还开着＝两处都有面板） */
+async function redockAiFromMain(): Promise<void> {
+  await hideOrphanAiWindows()
+  setAiDetached(false)
+  openAiPanel()
+}
+
 /** 开 / 聚焦某篇歌词的 AI 窗口（每篇一个，label = ai-<docId>；已存在就 show + focus） */
 async function openAiWindow(docId: string): Promise<void> {
   try {
@@ -6760,12 +6786,10 @@ function initAiPanel(): void {
       else toggleAiPanel()
     })
     document.querySelector<HTMLButtonElement>("#btn-ai-redock-main")?.addEventListener("click", () => {
-      setAiDetached(false)
-      openAiPanel()
+      void redockAiFromMain()
     })
     document.querySelector<HTMLButtonElement>("#btn-ai-redock-placeholder")?.addEventListener("click", () => {
-      setAiDetached(false)
-      openAiPanel()
+      void redockAiFromMain()
     })
     document.querySelector<HTMLButtonElement>("#btn-ai-detach")?.addEventListener("click", () => {
       // 点了就让位（不等窗口真正建出来）；建窗失败会自动收回
@@ -7036,6 +7060,8 @@ if (DOCS_WINDOW_MODE) {
   window.addEventListener("resize", updateScrollProgress)
   render()
   focusCellInput()
+  // 清掉残留的独立 AI 窗（默认内嵌；避免重载后主窗口与独立窗两处都有面板）
+  void hideOrphanAiWindows()
   // 文档栏：默认内嵌（左侧边栏）；上次是拆开状态就把窗找回来
   const docsWinBtn = document.querySelector<HTMLButtonElement>("#btn-docs-win")
   if (docsWinBtn && isDesktop()) {
