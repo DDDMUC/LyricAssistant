@@ -3733,6 +3733,9 @@ interface AiVersion {
   error?: string
   /** 思维链展开状态（每个回复版本各记各的） */
   thinkingOpen?: boolean
+  /** 分支后缀：选了这条回复时，后面跟着的那一轮（版本树按"选中回复"往下走）。
+   *  编辑 / 重跑产生的新回复 next 为空 → 从它开始长新后缀；旧回复的 next 保留 → 翻页可回。 */
+  next?: AiTurn
 }
 
 /** 一个输入版本：文本 + 它自己的回复版本链（编辑产生输入版本，重跑产生回复版本） */
@@ -3782,9 +3785,15 @@ function syncTurnsFromConvo(): void {
   aiTurns = activeConvo()?.turns ?? []
 }
 
+/** 会话存储格式版本：2 = 分支树（回复带 next）；老数据（无版本号）= 线性列表，读时迁移 */
+const AI_CONVOS_SCHEMA = 2
+
 function writeConvos(): void {
   try {
-    localStorage.setItem(AI_CONVOS_KEY, JSON.stringify({ activeId: activeConvoId, convos }))
+    localStorage.setItem(
+      AI_CONVOS_KEY,
+      JSON.stringify({ schema: AI_CONVOS_SCHEMA, activeId: activeConvoId, convos }),
+    )
   } catch {
     // 忽略
   }
@@ -3872,11 +3881,64 @@ function ensureConvoForDoc(): void {
   setActiveConvo(created.id)
 }
 
+/** 规范化一轮（递归）：校验结构、清掉流式/编辑态、把 next 链捋好 */
+function normalizeTurn(raw: unknown, depth = 0): AiTurn | null {
+  if (!raw || typeof raw !== "object" || depth > 1500) return null
+  const data = raw as { inputs?: unknown; inputIndex?: unknown }
+  if (!Array.isArray(data.inputs) || data.inputs.length === 0) return null
+  const inputs: AiInputVersion[] = []
+  for (const rawInput of data.inputs) {
+    if (!rawInput || typeof rawInput !== "object") continue
+    const input = rawInput as { text?: unknown; replies?: unknown; replyIndex?: unknown }
+    if (typeof input.text !== "string" || !Array.isArray(input.replies)) continue
+    const replies: AiVersion[] = []
+    for (const rawReply of input.replies) {
+      if (!rawReply || typeof rawReply !== "object") continue
+      const reply = rawReply as AiVersion
+      reply.streaming = false
+      const next = normalizeTurn(reply.next, depth + 1)
+      if (next) reply.next = next
+      else delete reply.next
+      replies.push(reply)
+    }
+    if (replies.length === 0) replies.push({ text: "" })
+    const replyIndex =
+      typeof input.replyIndex === "number" &&
+      input.replyIndex >= 0 &&
+      input.replyIndex < replies.length
+        ? input.replyIndex
+        : replies.length - 1
+    inputs.push({ text: input.text, replies, replyIndex, editing: false })
+  }
+  if (inputs.length === 0) return null
+  const inputIndex =
+    typeof data.inputIndex === "number" && data.inputIndex >= 0 && data.inputIndex < inputs.length
+      ? data.inputIndex
+      : inputs.length - 1
+  return { inputs, inputIndex }
+}
+
+/** 老格式（线性 turns、没有 next）→ 单分支树：后续轮挂到"当时选中的回复"下 */
+function migrateFlatTurns(rawTurns: unknown[]): AiTurn[] {
+  const flat: AiTurn[] = []
+  for (const raw of rawTurns) {
+    const source = (raw ?? {}) as { inputs?: unknown; inputIndex?: unknown }
+    const turn = normalizeTurn({ inputs: source.inputs, inputIndex: source.inputIndex })
+    if (turn) flat.push(turn)
+  }
+  for (let i = flat.length - 2; i >= 0; i--) {
+    const reply = currentReply(flat[i])
+    if (reply) reply.next = flat[i + 1]
+  }
+  return flat.length > 0 ? [flat[0]] : []
+}
+
 function loadConvos(): void {
   try {
     const raw = localStorage.getItem(AI_CONVOS_KEY)
     if (raw) {
-      const data = JSON.parse(raw) as { activeId?: unknown; convos?: unknown }
+      const data = JSON.parse(raw) as { schema?: unknown; activeId?: unknown; convos?: unknown }
+      const isBranchSchema = data.schema === AI_CONVOS_SCHEMA
       if (Array.isArray(data.convos)) {
         convos = data.convos.flatMap((item) => {
           if (!item || typeof item !== "object") return []
@@ -3888,14 +3950,14 @@ function loadConvos(): void {
             title: typeof rawConvo.title === "string" ? rawConvo.title : "",
             createdAt: typeof rawConvo.createdAt === "number" ? rawConvo.createdAt : Date.now(),
             updatedAt: typeof rawConvo.updatedAt === "number" ? rawConvo.updatedAt : Date.now(),
-            turns: rawConvo.turns as AiTurn[],
+            turns: [],
           }
-          // 上次没跑完的流式状态清掉
-          for (const turn of convo.turns) {
-            for (const input of turn.inputs ?? []) {
-              input.editing = false
-              for (const reply of input.replies ?? []) reply.streaming = false
-            }
+          // 新格式：树根一轮，递归清洗；老格式：线性列表迁移成单分支树
+          if (isBranchSchema) {
+            const root = normalizeTurn(rawConvo.turns[0])
+            convo.turns = root ? [root] : []
+          } else {
+            convo.turns = migrateFlatTurns(rawConvo.turns)
           }
           return [convo]
         })
@@ -3927,9 +3989,27 @@ function currentReply(turn: AiTurn): AiVersion {
   return input.replies[input.replyIndex]
 }
 
+/** 当前分支的完整路径：从根这一轮开始，每轮沿"选中的输入 + 选中的回复"的 next 往下走 */
+function branchPath(): AiTurn[] {
+  const path: AiTurn[] = []
+  let turn: AiTurn | undefined = aiTurns[0]
+  let guard = 0
+  while (turn && guard < 2000) {
+    path.push(turn)
+    turn = currentReply(turn)?.next
+    guard += 1
+  }
+  return path
+}
+
+/** 某一轮在当前分支里的显示序号（repaintKeepingScroll 用） */
+function pathIndexOf(turn: AiTurn): number {
+  return branchPath().indexOf(turn)
+}
+
 /** 正在流式的这条回复是否正显示在面板里（用户可能翻到别的版本去了） */
 function isReplyDisplayed(reply: AiVersion): boolean {
-  return aiTurns.some((turn) => currentReply(turn) === reply)
+  return branchPath().some((turn) => currentReply(turn) === reply)
 }
 let aiBusy = false
 let aiAbort: AbortController | null = null
@@ -4477,7 +4557,9 @@ function renderAiMessages(touchConvo = true): void {
   aiStreamThinkLabelEl = null
   aiMessagesEl.replaceChildren()
   persistConvosSoon(touchConvo)
-  aiTurns.forEach((turn, turnIndex) => {
+  const path = branchPath()
+  if (path.length === 0) return
+  path.forEach((turn, turnIndex) => {
     const wrapper = document.createElement("div")
     wrapper.className = "ai-turn"
     wrapper.dataset.turn = String(turnIndex)
@@ -4507,6 +4589,17 @@ function fillAssistantRow(
   input: AiInputVersion,
   reply: AiVersion,
 ): void {
+  // 照 DeepSeek：回复的版本翻页在内容右上（紧贴用户消息下方那一行）
+  if (input.replies.length > 1) {
+    const top = document.createElement("div")
+    top.className = "ai-actions ai-actions-top"
+    top.appendChild(
+      aiVersionNav(input.replyIndex, input.replies.length, (delta) =>
+        switchReply(turn, input, delta),
+      ),
+    )
+    el.appendChild(top)
+  }
   if ((reply.thinkingText ?? "") !== "") {
     const toggle = document.createElement("button")
     toggle.type = "button"
@@ -4581,14 +4674,6 @@ function fillAssistantRow(
   if (!reply.error && (reply.text.trim() !== "" || input.replies.length > 1)) {
     const actions = document.createElement("div")
     actions.className = "ai-actions"
-    // 照 DeepSeek：版本翻页在操作行最左
-    if (input.replies.length > 1) {
-      actions.appendChild(
-        aiVersionNav(input.replyIndex, input.replies.length, (delta) =>
-          switchReply(turn, input, delta),
-        ),
-      )
-    }
     if (reply.ok && reply.ok.length > 0) {
       const apply = document.createElement("button")
       apply.type = "button"
@@ -4624,7 +4709,7 @@ function fillAssistantRow(
 function switchInput(turn: AiTurn, delta: number): void {
   const next = turn.inputIndex + delta
   if (next < 0 || next >= turn.inputs.length) return
-  repaintKeepingScroll(aiTurns.indexOf(turn), () => {
+  repaintKeepingScroll(pathIndexOf(turn), () => {
     turn.inputIndex = next
     turn.inputs[next].editing = false
   })
@@ -4633,7 +4718,7 @@ function switchInput(turn: AiTurn, delta: number): void {
 function switchReply(turn: AiTurn, input: AiInputVersion, delta: number): void {
   const next = input.replyIndex + delta
   if (next < 0 || next >= input.replies.length) return
-  repaintKeepingScroll(aiTurns.indexOf(turn), () => {
+  repaintKeepingScroll(pathIndexOf(turn), () => {
     input.replyIndex = next
   })
 }
@@ -4786,7 +4871,8 @@ function turnMessages(turn: AiTurn): ChatMessage[] {
 }
 
 function aiHistoryMessages(before?: AiTurn): ChatMessage[] {
-  const list = before ? aiTurns.slice(0, aiTurns.indexOf(before)) : aiTurns
+  const path = branchPath()
+  const list = before ? path.slice(0, Math.max(0, path.indexOf(before))) : path
   return list.flatMap(turnMessages).slice(-6)
 }
 
@@ -4858,7 +4944,13 @@ async function sendAi(text: string): Promise<void> {
     inputs: [{ text: trimmed, replies: [{ text: "" }], replyIndex: 0 }],
     inputIndex: 0,
   }
-  aiTurns.push(turn)
+  // 挂到当前分支的末尾：有新轮就从"选中的回复"往下续；空对话才当根
+  const path = branchPath()
+  if (path.length === 0) {
+    aiTurns.push(turn)
+  } else {
+    currentReply(path[path.length - 1]).next = turn
+  }
   renderAiMessages()
   scrollAiToBottom()
   flushConvosWrite()

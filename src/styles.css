@@ -2655,6 +2655,16 @@ body.pick-mode .cell-input:not(.selected):hover {
   margin: 8px 0 0 -6px;
 }
 
+/* 回复顶部右侧：版本翻页（照 DeepSeek，放在内容上方右对齐） */
+.ai-actions-top {
+  justify-content: flex-end;
+  margin: 0 0 4px;
+}
+
+.ai-actions-top .ai-versions {
+  margin: 0;
+}
+
 .ai-actions button {
   font-size: 12.5px;
   padding: 0.25em 0.6em;
@@ -2692,7 +2702,7 @@ body.pick-mode .cell-input:not(.selected):hover {
   gap: 0;
   margin: 0 4px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 8px;
   padding: 1px 4px;
 }
 
