@@ -1,5 +1,6 @@
 import { copyText, readClipboardText } from "./clipboard"
 import { fillMarkdown } from "./markdown"
+import { APP_VERSION } from "./version"
 import { emit, listen } from "@tauri-apps/api/event"
 import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow"
@@ -139,7 +140,7 @@ import {
   statsOf,
   switchAlternative,
 } from "./state"
-import { cycleTheme, initTheme, themeIcon, themeLabel, themeState } from "./theme"
+import { applyTheme, initTheme, themeIcon, themeLabel, themeState, type ThemePref } from "./theme"
 
 const sentencesEl = document.querySelector("#sentences") as HTMLElement
 const scrollProgressEl = document.querySelector("#scroll-progress") as HTMLElement
@@ -150,7 +151,6 @@ const statusPathEl = document.querySelector("#status-path") as HTMLElement
 const statusAutosaveEl = document.querySelector("#status-autosave") as HTMLElement
 const statusRhymeEl = document.querySelector("#status-rhyme") as HTMLElement
 const statusGroupsEl = document.querySelector("#status-groups") as HTMLElement
-const themeBtn = document.querySelector("#btn-theme") as HTMLButtonElement
 const docListEl = document.querySelector("#doc-list") as HTMLElement
 const newDocBtn = document.querySelector("#btn-new-doc") as HTMLButtonElement
 const resizerEl = document.querySelector("#sidebar-resizer") as HTMLElement
@@ -5441,6 +5441,181 @@ const HELP_KEYS: string[] = [
 ]
 
 /** 帮助：使用说明 + 快捷键 + 导出诊断日志 */
+type SettingsSection = "appearance" | "ai" | "data" | "about"
+
+/** 统一设置（标题栏 ⚙）：外观 / AI / 数据 / 关于 */
+function openSettingsDialog(initial: SettingsSection = "appearance"): void {
+  const dialog = document.createElement("dialog")
+  dialog.className = "settings-dialog"
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body settings-body"
+
+  const head = document.createElement("div")
+  head.className = "settings-head"
+  const title = document.createElement("strong")
+  title.textContent = "设置"
+  const done = document.createElement("button")
+  done.type = "submit"
+  done.value = "ok"
+  done.className = "dialog-inline-btn"
+  done.textContent = "完成"
+  head.append(title, done)
+
+  const main = document.createElement("div")
+  main.className = "settings-main"
+  const nav = document.createElement("nav")
+  nav.className = "settings-nav"
+  const pane = document.createElement("div")
+  pane.className = "settings-pane"
+  main.append(nav, pane)
+  form.append(head, main)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  dialog.addEventListener("close", () => dialog.remove())
+
+  const ids: SettingsSection[] = ["appearance", "ai", "data", "about"]
+  const labels: Record<SettingsSection, string> = {
+    appearance: "外观",
+    ai: "AI",
+    data: "数据",
+    about: "关于",
+  }
+  const navButtons = new Map<SettingsSection, HTMLButtonElement>()
+  let current: SettingsSection | null = null
+  const select = (section: SettingsSection): void => {
+    if (current === section) return
+    current = section
+    for (const [key, button] of navButtons) button.classList.toggle("active", key === section)
+    pane.replaceChildren(settingsSectionView(section))
+    pane.scrollTop = 0
+  }
+  for (const id of ids) {
+    const button = document.createElement("button")
+    button.type = "button"
+    button.textContent = labels[id]
+    button.addEventListener("click", () => select(id))
+    navButtons.set(id, button)
+    nav.appendChild(button)
+  }
+  select(initial)
+  dialog.showModal()
+}
+
+function settingsSectionView(section: SettingsSection): HTMLElement {
+  if (section === "appearance") return settingsAppearanceView()
+  if (section === "ai") return settingsAiView()
+  if (section === "data") return settingsDataView()
+  return settingsAboutView()
+}
+
+function settingsSection(title: string, hint?: string): HTMLElement {
+  const wrap = document.createElement("div")
+  wrap.className = "settings-section"
+  const head = document.createElement("div")
+  head.className = "settings-title"
+  head.textContent = title
+  wrap.appendChild(head)
+  if (hint) {
+    const text = document.createElement("p")
+    text.className = "settings-hint"
+    text.textContent = hint
+    wrap.appendChild(text)
+  }
+  return wrap
+}
+
+function settingsAppearanceView(): HTMLElement {
+  const wrap = settingsSection("主题", "选界面的亮暗。")
+  const list = document.createElement("div")
+  list.className = "settings-choices"
+  for (const pref of ["auto", "light", "dark"] as ThemePref[]) {
+    const row = document.createElement("button")
+    row.type = "button"
+    row.className = "settings-choice"
+    row.classList.toggle("active", themeState.pref === pref)
+    const icon = document.createElement("span")
+    icon.className = "settings-choice-icon"
+    icon.textContent = themeIcon(pref)
+    const label = document.createElement("span")
+    label.textContent = themeLabel(pref)
+    const tick = document.createElement("span")
+    tick.className = "tick"
+    tick.textContent = "✓"
+    row.append(icon, label, tick)
+    row.addEventListener("click", () => {
+      applyTheme(pref)
+      for (const other of list.querySelectorAll(".settings-choice")) {
+        other.classList.toggle("active", other === row)
+      }
+      setStatus(`主题：${themeLabel(pref)}`)
+    })
+    list.appendChild(row)
+  }
+  wrap.appendChild(list)
+  return wrap
+}
+
+function settingsAiView(): HTMLElement {
+  const provider = currentProvider()
+  const currentText = provider
+    ? `当前：${provider.name} · ${modelLabel(aiSettings.model)}`
+    : "当前：还没选服务商"
+  const wrap = settingsSection("服务商与模型", `${currentText}。Key 只存在这台电脑上。`)
+  const open = document.createElement("button")
+  open.type = "button"
+  open.className = "dialog-inline-btn"
+  open.textContent = "服务商与模型设置…"
+  open.addEventListener("click", () => openAiSettings())
+  wrap.appendChild(open)
+  return wrap
+}
+
+function settingsDataView(): HTMLElement {
+  const wrap = settingsSection("数据与维护", "都在本机操作，不联网。")
+  const rows: { label: string; hint: string; run: () => void }[] = [
+    {
+      label: "恢复草稿备份",
+      hint: "从本机自动留存的最多 5 份快照里恢复（恢复前会把当前状态也留一份）",
+      run: () => openDraftBackupsDialog(),
+    },
+    {
+      label: "导出诊断日志",
+      hint: "运行信息 + 最近内部事件（不含歌词正文和提示词），出问题时发给开发者",
+      run: () => void exportDiagLog(),
+    },
+    {
+      label: "重置界面状态",
+      hint: "输入框点不动 / 卡住时点这里：收拾残局，不碰数据",
+      run: () => resetUiState(),
+    },
+  ]
+  for (const row of rows) {
+    const button = document.createElement("button")
+    button.type = "button"
+    button.className = "settings-data-row"
+    const name = document.createElement("strong")
+    name.textContent = row.label
+    const hint = document.createElement("span")
+    hint.textContent = row.hint
+    button.append(name, hint)
+    button.addEventListener("click", row.run)
+    wrap.appendChild(button)
+  }
+  return wrap
+}
+
+function settingsAboutView(): HTMLElement {
+  const wrap = settingsSection("作词助手", `版本 ${APP_VERSION}`)
+  const help = document.createElement("button")
+  help.type = "button"
+  help.className = "dialog-inline-btn"
+  help.textContent = "使用说明与快捷键…"
+  help.addEventListener("click", () => openHelpDialog())
+  wrap.appendChild(help)
+  return wrap
+}
+
 function openHelpDialog(): void {
   const dialog = document.createElement("dialog")
   dialog.className = "help-dialog"
@@ -5469,33 +5644,18 @@ function openHelpDialog(): void {
   section("快捷键", HELP_KEYS)
 
   const actions = document.createElement("div")
-  actions.className = "dialog-actions help-actions"
-  const leftGroup = document.createElement("div")
-  leftGroup.className = "help-actions-left"
-  const resetBtn = document.createElement("button")
-  resetBtn.type = "button"
-  resetBtn.className = "dialog-inline-btn"
-  resetBtn.textContent = "重置界面状态"
-  resetBtn.title = "输入框点不动 / 卡住时点这里：收拾残局，不碰数据"
-  resetBtn.addEventListener("click", () => resetUiState())
-  const backupBtn = document.createElement("button")
-  backupBtn.type = "button"
-  backupBtn.className = "dialog-inline-btn"
-  backupBtn.textContent = "恢复草稿备份"
-  backupBtn.title = "从本机自动留存的最多 5 份草稿快照里恢复（恢复前会把当前状态也留一份）"
-  backupBtn.addEventListener("click", () => openDraftBackupsDialog())
-  const diagBtn = document.createElement("button")
-  diagBtn.type = "button"
-  diagBtn.className = "dialog-inline-btn"
-  diagBtn.textContent = "导出诊断日志"
-  diagBtn.title = "运行信息 + 最近内部事件（不含歌词正文和提示词），出问题时发给开发者"
-  diagBtn.addEventListener("click", () => void exportDiagLog())
-  leftGroup.append(resetBtn, backupBtn, diagBtn)
+  actions.className = "dialog-actions"
+  const openSettings = document.createElement("button")
+  openSettings.type = "button"
+  openSettings.className = "dialog-inline-btn"
+  openSettings.textContent = "打开设置"
+  openSettings.title = "外观 / AI / 数据 / 关于"
+  openSettings.addEventListener("click", () => openSettingsDialog())
   const close = document.createElement("button")
   close.type = "submit"
   close.value = "ok"
   close.textContent = "知道了"
-  actions.append(leftGroup, close)
+  actions.append(openSettings, close)
 
   form.appendChild(actions)
   dialog.appendChild(form)
@@ -7266,12 +7426,6 @@ function initAiPanel(): void {
   }
 }
 
-function refreshThemeButton(): void {
-  themeBtn.textContent = themeIcon(themeState.pref)
-  themeBtn.title = `主题：${themeLabel(themeState.pref)}（点击切换）`
-  themeBtn.setAttribute("aria-label", themeBtn.title)
-}
-
 function setupMenu(
   buttonSel: string,
   menuSel: string,
@@ -7353,11 +7507,7 @@ function bindToolbar(): void {
   redoBtn.addEventListener("click", doRedo)
   clearAllBtn.addEventListener("click", clearAllCells)
 
-  themeBtn.addEventListener("click", () => {
-    cycleTheme()
-    refreshThemeButton()
-    setStatus(`主题：${themeLabel(themeState.pref)}`)
-  })
+  document.querySelector("#btn-settings")?.addEventListener("click", () => openSettingsDialog())
 
   window.addEventListener("keydown", (e) => {
     const mod = e.metaKey || e.ctrlKey
@@ -7424,7 +7574,6 @@ function doRedo(): void {
 
 initDiag()
 initTheme()
-refreshThemeButton()
 // Windows 桌面版：系统标题栏已去掉（见 Rust 端 set_decorations(false)），用页面内自绘标题栏，自己实现窗口控制
 if (IS_WINDOWS_DESKTOP) {
   document.documentElement.classList.add("win-desktop")
@@ -7476,17 +7625,9 @@ onAutosaveWrite((s) => {
 if (DOCS_WINDOW_MODE) {
   // 独立文档栏窗口：只挂侧边栏铺满，操作以意向发回主窗口
   initDocsWindowMode()
-  document.querySelector<HTMLButtonElement>("#btn-theme")?.addEventListener("click", () => {
-    cycleTheme()
-    refreshThemeButton()
-  })
 } else if (AI_WINDOW_MODE) {
   // 独立 AI 窗口：只挂 AI 面板 + 状态提示，主工作区那一整套不初始化
   initAiPanel()
-  document.querySelector<HTMLButtonElement>("#btn-theme")?.addEventListener("click", () => {
-    cycleTheme()
-    refreshThemeButton()
-  })
 } else {
   bindToolbar()
   initSidebarResizer()

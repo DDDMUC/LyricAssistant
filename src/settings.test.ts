@@ -1,0 +1,104 @@
+import html from "../index.html?raw"
+import { beforeAll, expect, it, vi } from "vitest"
+import { APP_VERSION } from "./version"
+
+const { fetchMock } = vi.hoisted(() => ({ fetchMock: vi.fn() }))
+vi.mock("@tauri-apps/plugin-http", () => ({ fetch: fetchMock }))
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  writeText: vi.fn(async () => {}),
+  readText: vi.fn(async () => ""),
+}))
+
+beforeAll(async () => {
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+  const body = html.match(/<body[^>]*>([\s\S]*)<\/body>/)?.[1] ?? ""
+  document.body.innerHTML = body
+  await import("./main")
+})
+
+const openSettings = (section?: string): HTMLDialogElement => {
+  document.querySelector<HTMLButtonElement>("#btn-settings")!.click()
+  const dialog = document.querySelector<HTMLDialogElement>(".settings-dialog")!
+  if (section) {
+    Array.from(dialog.querySelectorAll<HTMLButtonElement>(".settings-nav button"))
+      .find((button) => button.textContent === section)!
+      .click()
+  }
+  return dialog
+}
+
+it("标题栏 ⚙ 打开设置：分类是 外观 / AI / 数据 / 关于（主题按钮已收走）", () => {
+  expect(document.querySelector("#btn-theme")).toBeNull()
+  const dialog = openSettings()
+  const navs = Array.from(dialog.querySelectorAll<HTMLButtonElement>(".settings-nav button"))
+  expect(navs.map((button) => button.textContent)).toEqual(["外观", "AI", "数据", "关于"])
+  expect(navs[0]!.classList.contains("active")).toBe(true)
+  expect(dialog.textContent).toContain("主题")
+  dialog.close()
+  expect(document.querySelector(".settings-dialog")).toBeNull()
+})
+
+it("外观：点主题立即生效并记住（跟系统 / 亮色 / 深色）", () => {
+  const dialog = openSettings()
+  const choices = Array.from(dialog.querySelectorAll<HTMLButtonElement>(".settings-choice"))
+  expect(choices).toHaveLength(3)
+  expect(choices[0]!.textContent).toContain("跟随系统")
+  expect(choices[1]!.textContent).toContain("亮色")
+  expect(choices[2]!.textContent).toContain("深色")
+
+  choices[2]!.click()
+  expect(document.documentElement.dataset.theme).toBe("dark")
+  expect(localStorage.getItem("cige-grid-theme")).toBe("dark")
+  expect(choices[2]!.classList.contains("active")).toBe(true)
+
+  choices[1]!.click()
+  expect(document.documentElement.dataset.theme).toBe("light")
+  expect(localStorage.getItem("cige-grid-theme")).toBe("light")
+
+  choices[0]!.click()
+  expect(localStorage.getItem("cige-grid-theme")).toBe("auto")
+  dialog.close()
+})
+
+it("AI：显示当前服务商与模型，能打开服务商设置", () => {
+  const dialog = openSettings("AI")
+  expect(dialog.textContent).toContain("服务商与模型")
+  expect(dialog.textContent).toContain("DeepSeek")
+  expect(dialog.textContent).toContain("Key 只存在这台电脑上")
+
+  Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"))
+    .find((button) => button.textContent === "服务商与模型设置…")!
+    .click()
+  const aiDialog = Array.from(document.querySelectorAll<HTMLDialogElement>("dialog[open]")).find(
+    (element) => element.textContent?.includes("AI 接口设置"),
+  )!
+  expect(aiDialog).toBeTruthy()
+  aiDialog.close()
+  dialog.close()
+})
+
+it("数据：三个维护操作都在；关于：版本 + 帮助入口", () => {
+  const dialog = openSettings("数据")
+  const dataButtons = Array.from(dialog.querySelectorAll<HTMLButtonElement>(".settings-data-row")).map(
+    (button) => button.textContent ?? "",
+  )
+  expect(dataButtons.some((text) => text.startsWith("恢复草稿备份"))).toBe(true)
+  expect(dataButtons.some((text) => text.startsWith("导出诊断日志"))).toBe(true)
+  expect(dataButtons.some((text) => text.startsWith("重置界面状态"))).toBe(true)
+
+  Array.from(dialog.querySelectorAll<HTMLButtonElement>(".settings-nav button"))
+    .find((button) => button.textContent === "关于")!
+    .click()
+  expect(dialog.textContent).toContain("作词助手")
+  expect(dialog.textContent).toContain(APP_VERSION)
+
+  Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"))
+    .find((button) => button.textContent === "使用说明与快捷键…")!
+    .click()
+  const helpDialog = Array.from(document.querySelectorAll<HTMLDialogElement>("dialog[open]")).find(
+    (element) => element.classList.contains("help-dialog"),
+  )
+  expect(helpDialog).toBeTruthy()
+  helpDialog!.close()
+  dialog.close()
+})

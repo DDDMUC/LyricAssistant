@@ -387,7 +387,7 @@ it("按住 AI 面板头往外拖：拆出独立窗跟随鼠标；松手还在主
   expect(panel.hasAttribute("hidden")).toBe(false)
 })
 
-it("工具栏「帮助」：弹窗里有使用说明、快捷键和导出诊断日志", () => {
+it("「帮助」只留说明和快捷键；数据操作收进了「设置 · 数据」", () => {
   document.querySelector<HTMLButtonElement>("#btn-help")!.click()
   const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
   expect(dialog.textContent).toContain("使用说明")
@@ -395,16 +395,31 @@ it("工具栏「帮助」：弹窗里有使用说明、快捷键和导出诊断�
   expect(dialog.textContent).toContain("只收汉字")
   expect(dialog.textContent).toContain("韵脚")
   const buttons = Array.from(dialog.querySelectorAll("button")).map((b) => b.textContent)
-  expect(buttons).toContain("导出诊断日志")
+  expect(buttons).toContain("打开设置")
   expect(buttons).toContain("知道了")
+  expect(buttons).not.toContain("导出诊断日志")
+  expect(buttons).not.toContain("重置界面状态")
+  expect(buttons).not.toContain("恢复草稿备份")
   dialog.close()
   expect(document.querySelector("dialog[open]")).toBeNull()
 
-  // 诊断按钮已经从 AI 设置里挪到帮助里
-  openAiSettingsDialog()
-  const settings = document.querySelector<HTMLDialogElement>("dialog[open]")!
-  expect(
-    Array.from(settings.querySelectorAll("button")).some((b) => b.textContent === "导出诊断日志"),
-  ).toBe(false)
+  // 数据操作在「设置 · 数据」里
+  document.querySelector<HTMLButtonElement>("#btn-settings")!.click()
+  const settings = document.querySelector<HTMLDialogElement>(".settings-dialog")!
+  Array.from(settings.querySelectorAll<HTMLButtonElement>(".settings-nav button"))
+    .find((button) => button.textContent === "数据")!
+    .click()
+  const dataButtons = Array.from(settings.querySelectorAll("button")).map((b) => b.textContent ?? "")
+  expect(dataButtons.some((text) => text.startsWith("导出诊断日志"))).toBe(true)
+  expect(dataButtons.some((text) => text.startsWith("恢复草稿备份"))).toBe(true)
+  expect(dataButtons.some((text) => text.startsWith("重置界面状态"))).toBe(true)
   settings.close()
+
+  // AI 接口设置里也不该塞这些
+  openAiSettingsDialog()
+  const aiSettings = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  expect(
+    Array.from(aiSettings.querySelectorAll("button")).some((b) => b.textContent === "导出诊断日志"),
+  ).toBe(false)
+  aiSettings.close()
 })

@@ -23,18 +23,22 @@ beforeAll(async () => {
 })
 
 const inputIndex = () => document.querySelector<HTMLInputElement>("input.cell-input")?.dataset.index ?? null
-const openHelp = () => {
-  document.querySelector<HTMLButtonElement>("#btn-help")!.click()
-  return document.querySelector<HTMLDialogElement>(".help-dialog")!
+const openSettings = (section: string) => {
+  document.querySelector<HTMLButtonElement>("#btn-settings")!.click()
+  const dialog = document.querySelector<HTMLDialogElement>(".settings-dialog")!
+  Array.from(dialog.querySelectorAll<HTMLButtonElement>(".settings-nav button"))
+    .find((button) => button.textContent === section)!
+    .click()
+  return dialog
 }
-const clickHelpButton = (text: string) => {
-  const dialog = document.querySelector<HTMLDialogElement>(".help-dialog")!
+const clickSettingsButton = (text: string) => {
+  const dialog = document.querySelector<HTMLDialogElement>(".settings-dialog")!
   Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"))
-    .find((button) => button.textContent === text)!
+    .find((button) => (button.textContent ?? "").startsWith(text))!
     .click()
 }
 
-it("组字卡死时，帮助里的「重置界面状态」能救回来（且不动数据）", async () => {
+it("组字卡死时，设置·数据里的「重置界面状态」能救回来（且不动数据）", async () => {
   // 先打一个字（数据）
   const input = document.querySelector<HTMLInputElement>("input.cell-input")!
   input.value = "东"
@@ -45,9 +49,9 @@ it("组字卡死时，帮助里的「重置界面状态」能救回来（且不�
   input2.focus()
   input2.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }))
 
-  // 打开帮助 → 重置界面状态
-  openHelp()
-  clickHelpButton("重置界面状态")
+  // 设置 · 数据 → 重置界面状态
+  openSettings("数据")
+  clickSettingsButton("重置界面状态")
   await tick(30)
 
   // 卡死解除：能换格、能打字
@@ -67,16 +71,16 @@ it("重置会把所有弹窗都关掉（cancel 语义，不误应用）", async 
   document.querySelector<HTMLElement>(".sentence .rhyme-badge")!.click()
   await tick(20)
   expect(document.querySelectorAll("dialog[open]").length).toBeGreaterThanOrEqual(1)
-  const help = openHelp()
-  clickHelpButton("重置界面状态")
+  const settings = openSettings("数据")
+  clickSettingsButton("重置界面状态")
   await tick(30)
   expect(document.querySelectorAll("dialog[open]").length).toBe(0)
-  expect(help.isConnected).toBe(false)
+  expect(settings.isConnected).toBe(false)
   // 锁没被误加/误删（第 1 格徽章还是「＋ 锁」状态）
   expect(document.querySelector(".sentence .rhyme-badge")?.textContent).not.toContain("🔒")
 })
 
-it("帮助里能恢复草稿备份：选一份 → 确认 → 草稿被覆盖", async () => {
+it("设置·数据里能恢复草稿备份：选一份 → 确认 → 草稿被覆盖", async () => {
   let reloaded = false
   try {
     vi.spyOn(window.location, "reload").mockImplementation(() => {
@@ -98,8 +102,8 @@ it("帮助里能恢复草稿备份：选一份 → 确认 → 草稿被覆盖", 
   const marker = createDoc("备份标记999")
   snapshotDocs({ activeId: marker.id, docs: [marker] })
 
-  openHelp()
-  clickHelpButton("恢复草稿备份")
+  openSettings("数据")
+  clickSettingsButton("恢复草稿备份")
   await waitFor(
     () =>
       Array.from(document.querySelectorAll<HTMLDialogElement>("dialog[open]")).some(
