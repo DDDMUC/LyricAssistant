@@ -4,7 +4,12 @@ import { APP_VERSION } from "./version"
 import { emit, listen } from "@tauri-apps/api/event"
 import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow"
-import { getAllWindows, getCurrentWindow, type Window as TauriWindow } from "@tauri-apps/api/window"
+import {
+  cursorPosition,
+  getAllWindows,
+  getCurrentWindow,
+  type Window as TauriWindow,
+} from "@tauri-apps/api/window"
 import {
   canOverwriteInPlace,
   isDesktop,
@@ -216,7 +221,6 @@ const AI_REDOCK_CHANNEL = "ai-redock"
 const DOCK_HOVER_AI = "ai-dock-hover"
 const DOCK_HOVER_DOCS = "docs-dock-hover"
 /** 拖出的独立窗与主窗口重叠到这个比例，就算"拖回来了" */
-const DOCK_BACK_RATIO = 0.3
 let aiDetached = false
 
 /** 事件监听注册：失败（比如没有 IPC 环境）也别变成未处理的 rejection */
@@ -5645,17 +5649,11 @@ function openHelpDialog(): void {
 
   const actions = document.createElement("div")
   actions.className = "dialog-actions"
-  const openSettings = document.createElement("button")
-  openSettings.type = "button"
-  openSettings.className = "dialog-inline-btn"
-  openSettings.textContent = "打开设置"
-  openSettings.title = "外观 / AI / 数据 / 关于"
-  openSettings.addEventListener("click", () => openSettingsDialog())
   const close = document.createElement("button")
   close.type = "submit"
   close.value = "ok"
   close.textContent = "知道了"
-  actions.append(openSettings, close)
+  actions.append(close)
 
   form.appendChild(actions)
   dialog.appendChild(form)
@@ -6835,8 +6833,8 @@ async function redockAiFromMain(): Promise<void> {
   openAiPanel()
 }
 
-/** 面板头按住往外拖：生成 / 唤出独立窗并跟随鼠标；松手还在主窗口里 = 取消，外面 = 留在那。
- *  PS 面板式的「直接拖出」。取消时把独立窗销毁、内嵌面板恢复。 */
+/** 面板头按住往外拖：生成 / 唤出独立窗并跟随鼠标。
+ *  松手留在松手的位置；要收回得把指针拖进停靠区再松手（那个窗自己判定），或用「放回」。 */
 function bindPanelDragOut(
   handle: HTMLElement,
   spawn: (x: number, y: number) => Promise<TauriWindow | null>,
@@ -6892,18 +6890,12 @@ function bindPanelDragOut(
     }
     document.documentElement.classList.remove("panel-dragging")
     if (!current.moved) return
-    const insideMain =
-      e.screenX >= window.screenX &&
-      e.screenX <= window.screenX + window.outerWidth &&
-      e.screenY >= window.screenY &&
-      e.screenY <= window.screenY + window.outerHeight
-    if (insideMain) {
-      // 松手还在主窗口里：这次拆出作废（预览高亮也一起收掉）
-      hideDockPreviews()
-      if (current.win) void current.win.destroy().catch(() => {})
+    // 建窗没成功：把拆出状态收回内嵌
+    if (!current.win) {
       cancel()
+      return
     }
-    // 否则：留在松手的位置，保持拆出
+    // 松手在哪就留在哪；要不要吸回，交给那个窗自己的「指针进停靠区」判定
   }
 
   handle.addEventListener("pointerdown", (e) => {
@@ -6941,15 +6933,36 @@ async function mouseLeftDown(): Promise<boolean> {
   }
 }
 
-/** 收掉两条停靠预览（松手作废时用） */
-function hideDockPreviews(): void {
-  for (const id of ["#ai-dock-preview", "#docs-dock-preview"]) {
-    const preview = document.querySelector<HTMLElement>(id)
-    if (preview) preview.hidden = true
+/** 把独立窗滑到主窗停靠边（磁吸动画）：AI 靠右、文档栏靠左 */
+async function slideToDock(win: TauriWindow, dockSide: "right" | "left"): Promise<void> {
+  try {
+    const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()])
+    const main = (await getAllWindows()).find((item) => item.label === "main")
+    if (main) {
+      const [mainPos, mainSize] = await Promise.all([main.outerPosition(), main.outerSize()])
+      const targetX = dockSide === "right" ? mainPos.x + mainSize.width - size.width : mainPos.x
+      const targetY = mainPos.y
+      const steps = 6
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps
+        await win
+          .setPosition(
+            new LogicalPosition(
+              Math.round(pos.x + (targetX - pos.x) * t),
+              Math.round(pos.y + (targetY - pos.y) * t),
+            ),
+          )
+          .catch(() => {})
+        await new Promise((resolve) => setTimeout(resolve, 18))
+      }
+    }
+  } catch {
+    // 拿不到位置就直接往下走（照旧收回内嵌）
   }
 }
 
-/** 独立窗拖回主窗口：重叠高亮停靠位；松手还在上面 → 滑过去磁吸收回内嵌 */
+/** 独立窗拖回主窗口：指针进停靠区才高亮；松手还在停靠区 → 滑过去磁吸收回内嵌。
+ *  窗口压在主窗上面、但指针不在停靠区时：什么都不吸，爱放哪放哪。 */
 function bindDockBack(
   win: TauriWindow,
   hoverChannel: string,
@@ -6959,27 +6972,30 @@ function bindDockBack(
   let hovering = false
   let stopTimer: number | undefined
 
-  const overlapRatio = async (): Promise<number> => {
+  /** 指针（取不到就用窗口中心）是否落在主窗那侧的停靠区：一条贴着主窗边缘、面板宽、整高的带 */
+  const inDockZone = async (): Promise<boolean> => {
     const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()])
     const main = (await getAllWindows()).find((item) => item.label === "main")
-    if (!main) return 0
+    if (!main) return false
     const [mainPos, mainSize] = await Promise.all([main.outerPosition(), main.outerSize()])
-    const w = Math.max(
-      0,
-      Math.min(pos.x + size.width, mainPos.x + mainSize.width) - Math.max(pos.x, mainPos.x),
-    )
-    const h = Math.max(
-      0,
-      Math.min(pos.y + size.height, mainPos.y + mainSize.height) - Math.max(pos.y, mainPos.y),
-    )
-    if (size.width === 0 || size.height === 0) return 0
-    return (w * h) / (size.width * size.height)
+    let point: { x: number; y: number }
+    try {
+      point = await cursorPosition()
+    } catch {
+      point = { x: pos.x + size.width / 2, y: pos.y + size.height / 2 }
+    }
+    if (point.y < mainPos.y || point.y > mainPos.y + mainSize.height) return false
+    if (dockSide === "right") {
+      return (
+        point.x >= mainPos.x + mainSize.width - size.width && point.x <= mainPos.x + mainSize.width
+      )
+    }
+    return point.x >= mainPos.x && point.x <= mainPos.x + size.width
   }
 
   const onMoved = (): void => {
-    void overlapRatio()
-      .then((ratio) => {
-        const over = ratio >= DOCK_BACK_RATIO
+    void inDockZone()
+      .then((over) => {
         if (over !== hovering) {
           hovering = over
           emitQuiet(hoverChannel, { over })
@@ -6993,7 +7009,7 @@ function bindDockBack(
     }, 220)
   }
 
-  /** 停手后：还按着鼠标就继续等（不吸），真松手了才磁吸收回 */
+  /** 停手后：还按着鼠标就继续等（不吸）；真松手了、指针还在停靠区，才磁吸收回 */
   const settle = async (): Promise<void> => {
     if (!hovering) return
     if (await mouseLeftDown()) {
@@ -7005,6 +7021,7 @@ function bindDockBack(
     }
     hovering = false
     emitQuiet(hoverChannel, { over: false })
+    if (!(await inDockZone())) return
     void snapBackDocked()
   }
   // 没有 onMoved（测试桩 / 老环境）就退化成只有「放回」按钮的旧行为
@@ -7016,30 +7033,7 @@ function bindDockBack(
 
   /** 磁吸动画：滑向主窗停靠边，然后收回内嵌、藏起自己 */
   const snapBackDocked = async (): Promise<void> => {
-    try {
-      const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()])
-      const main = (await getAllWindows()).find((item) => item.label === "main")
-      if (main) {
-        const [mainPos, mainSize] = await Promise.all([main.outerPosition(), main.outerSize()])
-        const targetX = dockSide === "right" ? mainPos.x + mainSize.width - size.width : mainPos.x
-        const targetY = mainPos.y
-        const steps = 6
-        for (let i = 1; i <= steps; i++) {
-          const t = i / steps
-          await win
-            .setPosition(
-              new LogicalPosition(
-                Math.round(pos.x + (targetX - pos.x) * t),
-                Math.round(pos.y + (targetY - pos.y) * t),
-              ),
-            )
-            .catch(() => {})
-          await new Promise((resolve) => setTimeout(resolve, 18))
-        }
-      }
-    } catch {
-      // 拿不到位置就直接收回
-    }
+    await slideToDock(win, dockSide)
     redock()
     void win.hide().catch(() => {})
   }
