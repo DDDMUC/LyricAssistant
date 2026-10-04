@@ -1900,7 +1900,8 @@ html.ai-exporting .ai-msg.picked {
   height: 12px;
 }
 
-.ai-turn.picked .ai-pick {
+/* 选中态：消息块带 .picked 时，圈填上主题色、对勾显形 */
+.ai-msg.picked .ai-pick {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;

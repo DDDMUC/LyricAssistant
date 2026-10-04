@@ -1,5 +1,10 @@
+// 没装 @types/node（项目里只有 vite.config 用 node API），照它那样压掉类型报错
+// @ts-expect-error node:fs
+import { readFileSync } from "node:fs"
 import html from "../index.html?raw"
 import { beforeAll, expect, it, vi } from "vitest"
+
+const css = readFileSync("src/styles.css", "utf8")
 
 const { fetchMock, saveTextMock } = vi.hoisted(() => ({
   fetchMock: vi.fn(),
@@ -149,4 +154,12 @@ it("全选 / 计数按「组」：两轮各挑几条，组数按轮次算；取�
   await tick(40)
   expect(exportBar().hidden).toBe(true)
   expect(document.documentElement.classList.contains("ai-exporting")).toBe(false)
+})
+
+it("勾选圈选中态的样式挂在消息块上（不挂整轮）", () => {
+  expect(css).toContain(".ai-msg.picked .ai-pick")
+  expect(css).not.toContain(".ai-turn.picked .ai-pick")
+  // 选择模式下消息内部不吃点击、勾选圈本身还能点
+  expect(css).toContain("html.ai-exporting .ai-msg > *")
+  expect(css).toContain("html.ai-exporting .ai-msg .ai-pick")
 })
