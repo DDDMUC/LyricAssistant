@@ -183,6 +183,11 @@ const aiModelChip = document.querySelector("#ai-model-chip") as HTMLButtonElemen
 const aiEffortChip = document.querySelector("#ai-effort-chip") as HTMLButtonElement
 const btnAiSend = document.querySelector("#btn-ai-send") as HTMLButtonElement
 const aiHint = document.querySelector("#ai-hint") as HTMLElement
+const aiExportBarEl = document.querySelector("#ai-export-bar") as HTMLElement
+const btnAiExportAll = document.querySelector("#btn-ai-export-all") as HTMLButtonElement
+const aiExportCountEl = document.querySelector("#ai-export-count") as HTMLSpanElement
+const aiExportThinkEl = document.querySelector("#ai-export-think") as HTMLInputElement
+const btnAiExportGo = document.querySelector("#btn-ai-export-go") as HTMLButtonElement
 
 /** AI 独立窗口模式：`?win=ai&doc=<docId>`——同一份页面，只挂 AI 面板，主工作区不渲染。
  *  主窗口那边的 AI 按钮负责开 / 聚焦这个窗（每篇歌词一个窗，关窗=隐藏，生成继续）。 */
@@ -3843,6 +3848,7 @@ document.addEventListener("visibilitychange", () => {
 })
 
 function setActiveConvo(id: string): void {
+  if (aiExporting) exitAiExportMode()
   activeConvoId = id
   syncTurnsFromConvo()
   persistConvos(false)
@@ -3867,6 +3873,7 @@ function syncAiConvoToDoc(): void {
     activeConvoId = ""
     syncTurnsFromConvo()
   }
+  if (aiExporting) exitAiExportMode()
   renderAiMessages(false)
   scrollAiToBottom()
 }
@@ -4566,6 +4573,98 @@ function repaintKeepingScroll(turnIndex: number, mutate: () => void): void {
   if (before !== 0 && after !== 0) aiMessagesEl.scrollTop += after - before
 }
 
+/** 对话导出：选择模式 + 勾选的轮次（值是路径下标） */
+let aiExporting = false
+const aiExportPicked = new Set<number>()
+
+function enterAiExportMode(): void {
+  if (aiExporting) return
+  if (branchPath().length === 0) {
+    setStatus("还没有对话，没什么可导的", true)
+    return
+  }
+  aiExporting = true
+  aiExportPicked.clear()
+  document.documentElement.classList.add("ai-exporting")
+  aiExportBarEl.hidden = false
+  renderAiMessages(false)
+  updateAiExportBar()
+  setStatus("勾选要导出的对话，再点「导出 Markdown」")
+}
+
+function exitAiExportMode(): void {
+  if (!aiExporting) return
+  aiExporting = false
+  aiExportPicked.clear()
+  document.documentElement.classList.remove("ai-exporting")
+  aiExportBarEl.hidden = true
+  renderAiMessages(false)
+}
+
+function toggleAiExportPick(index: number, wrapper?: HTMLElement): void {
+  if (aiExportPicked.has(index)) aiExportPicked.delete(index)
+  else aiExportPicked.add(index)
+  if (wrapper) wrapper.classList.toggle("picked", aiExportPicked.has(index))
+  updateAiExportBar()
+}
+
+function updateAiExportBar(): void {
+  const total = branchPath().length
+  const count = [...aiExportPicked].filter((index) => index < total).length
+  aiExportCountEl.textContent = `已选择 ${count} 组对话`
+  btnAiExportAll.classList.toggle("all", total > 0 && count === total)
+  btnAiExportGo.disabled = count === 0
+}
+
+/** 把勾选的轮次拼成 Markdown：当前分支版本；思考可选（默认带） */
+async function exportAiConversation(): Promise<void> {
+  const path = branchPath()
+  const picked = [...aiExportPicked].filter((index) => index < path.length).sort((a, b) => a - b)
+  if (picked.length === 0) return
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, "0")
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
+  const title = store.project.title || "未命名歌曲"
+  const provider = currentProvider()
+  const model = provider
+    ? `${provider.name} · ${modelLabel(aiSettings.model)}`
+    : modelLabel(aiSettings.model)
+  const lines: string[] = []
+  lines.push(`# 对话导出 · ${title}`, "")
+  lines.push(`- 时间：${stamp}`, `- 模型：${model}`, `- 共 ${picked.length} 组对话（当前版本）`, "")
+  for (const index of picked) {
+    const turn = path[index]
+    const input = currentInput(turn)
+    const reply = currentReply(turn)
+    lines.push("---", "", "**你：**", "", input.text.trim() || "（空）", "", "**助手：**", "")
+    const thinking = (reply.thinkingText ?? "").trim()
+    if (aiExportThinkEl.checked && thinking) {
+      const seconds = Math.max(1, Math.round((reply.thinkingMs ?? 0) / 1000))
+      lines.push(`> **思考**（用时 ${seconds} 秒）：`)
+      for (const line of thinking.split("\n")) lines.push(`> ${line}`)
+      lines.push("")
+    }
+    lines.push(reply.error ? `（出错了：${reply.error}）` : reply.text.trim() || "（空）", "")
+  }
+  const safeTitle = title.replace(/[\\/:*?"<>|]/g, "").slice(0, 40) || "对话"
+  const fileStamp = stamp.replace(/[-: ]/g, "")
+  try {
+    const saved = await saveText({
+      suggestedName: `对话-${safeTitle}-${fileStamp}.md`,
+      description: "对话记录",
+      extensions: ["md"],
+      pickerId: "cige-convo-export",
+      contents: lines.join("\n"),
+      forcePicker: true,
+    })
+    if (!saved) return
+    setStatus(saved.kind === "download" ? `已下载「${saved.name}」` : "对话已导出")
+    exitAiExportMode()
+  } catch (err) {
+    setStatus(`导出失败：${err instanceof Error ? err.message : err}`, true)
+  }
+}
+
 function renderAiMessages(touchConvo = true): void {
   cancelStreamPaint()
   aiStreamEl = null
@@ -4579,6 +4678,24 @@ function renderAiMessages(touchConvo = true): void {
     const wrapper = document.createElement("div")
     wrapper.className = "ai-turn"
     wrapper.dataset.turn = String(turnIndex)
+
+    if (aiExporting) {
+      wrapper.classList.toggle("picked", aiExportPicked.has(turnIndex))
+      const pick = document.createElement("button")
+      pick.type = "button"
+      pick.className = "ai-pick"
+      pick.title = "勾选这一组对话"
+      pick.setAttribute("aria-pressed", aiExportPicked.has(turnIndex) ? "true" : "false")
+      pick.innerHTML =
+        '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-check" /></svg>'
+      pick.addEventListener("click", () => toggleAiExportPick(turnIndex, wrapper))
+      wrapper.appendChild(pick)
+      wrapper.addEventListener("click", (event) => {
+        const target = event.target instanceof Element ? event.target : null
+        if (target?.closest("button, a, input, textarea, select")) return
+        toggleAiExportPick(turnIndex, wrapper)
+      })
+    }
 
     const input = currentInput(turn)
     const reply = currentReply(turn)
@@ -7584,6 +7701,19 @@ function initAiPanel(): void {
   })
   document.querySelector("#btn-new-convo")?.addEventListener("click", newConvo)
   document.querySelector("#btn-ai-prompt")?.addEventListener("click", openAiPromptView)
+  document.querySelector("#btn-ai-export")?.addEventListener("click", () => {
+    if (aiExporting) exitAiExportMode()
+    else enterAiExportMode()
+  })
+  btnAiExportAll.addEventListener("click", () => {
+    const total = branchPath().length
+    if (total > 0 && aiExportPicked.size >= total) aiExportPicked.clear()
+    else for (let i = 0; i < total; i++) aiExportPicked.add(i)
+    renderAiMessages(false)
+    updateAiExportBar()
+  })
+  document.querySelector("#btn-ai-export-cancel")?.addEventListener("click", exitAiExportMode)
+  btnAiExportGo.addEventListener("click", () => void exportAiConversation())
   aiModelChip.addEventListener("click", openModelPop)
   aiEffortChip.addEventListener("click", openEffortPop)
   aiScopeChip.addEventListener("click", openScopePop)
