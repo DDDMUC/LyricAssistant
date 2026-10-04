@@ -29,6 +29,10 @@ const openSettings = (section?: string): HTMLDialogElement => {
 
 it("标题栏 ⚙ 打开设置：分类是 外观 / AI / 数据 / 关于（主题按钮已收走）", () => {
   expect(document.querySelector("#btn-theme")).toBeNull()
+  // 图标是内联 SVG（六瓣花形齿轮），不再用 emoji
+  expect(document.querySelector("#btn-settings svg")).toBeTruthy()
+  expect(document.querySelector("#ic-flower-gear")).toBeTruthy()
+  expect(document.querySelector("#ic-flower-gear-dot")).toBeTruthy()
   const dialog = openSettings()
   const navs = Array.from(dialog.querySelectorAll<HTMLButtonElement>(".settings-nav button"))
   expect(navs.map((button) => button.textContent)).toEqual(["外观", "AI", "数据", "关于"])
