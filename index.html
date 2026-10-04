@@ -19,13 +19,16 @@
         <path id="ic-arrow-out-head" d="M15 3h6v6" />
         <path id="ic-arrow-in" d="M21 3 12 12" />
         <path id="ic-arrow-in-head" d="M12 7v5h5" />
+        <!-- 设置：六瓣花形齿轮（描边跟随 currentColor / 线宽走 .btn-icon） -->
+        <path id="ic-flower-gear" d="M16.69 12.00C16.69 12.37 17.96 12.71 18.30 13.11C18.63 13.51 18.67 14.00 18.67 14.43C18.68 14.85 18.55 15.31 18.34 15.66C18.14 16.02 17.81 16.36 17.44 16.57C17.07 16.77 16.63 16.98 16.11 16.90C15.59 16.81 14.66 15.87 14.34 16.06C14.02 16.24 14.37 17.52 14.19 18.01C14.00 18.50 13.60 18.77 13.23 18.99C12.87 19.21 12.41 19.32 12.00 19.32C11.59 19.32 11.13 19.21 10.77 18.99C10.40 18.77 10.00 18.50 9.81 18.01C9.63 17.52 9.98 16.24 9.66 16.06C9.34 15.87 8.41 16.81 7.89 16.90C7.37 16.98 6.93 16.77 6.56 16.57C6.19 16.36 5.86 16.02 5.66 15.66C5.45 15.31 5.32 14.85 5.33 14.43C5.33 14.00 5.37 13.51 5.70 13.11C6.04 12.71 7.31 12.37 7.31 12.00C7.31 11.63 6.04 11.29 5.70 10.89C5.37 10.49 5.33 10.00 5.33 9.57C5.32 9.15 5.45 8.69 5.66 8.34C5.86 7.98 6.19 7.64 6.56 7.43C6.93 7.23 7.37 7.02 7.89 7.10C8.41 7.19 9.34 8.13 9.66 7.94C9.98 7.76 9.63 6.48 9.81 5.99C10.00 5.50 10.40 5.23 10.77 5.01C11.13 4.79 11.59 4.68 12.00 4.68C12.41 4.68 12.87 4.79 13.23 5.01C13.60 5.23 14.00 5.50 14.19 5.99C14.37 6.48 14.02 7.76 14.34 7.94C14.66 8.13 15.59 7.19 16.11 7.10C16.63 7.02 17.07 7.23 17.44 7.43C17.81 7.64 18.14 7.98 18.34 8.34C18.55 8.69 18.68 9.15 18.67 9.57C18.67 10.00 18.63 10.49 18.30 10.89C17.96 11.29 16.69 11.63 16.69 12.00Z" />
+        <circle id="ic-flower-gear-dot" cx="12" cy="12" r="1.6" />
       </defs>
     </svg>
 
     <div class="titlebar" data-tauri-drag-region>
       <span class="titlebar-title" data-tauri-drag-region>作词助手</span>
       <div class="titlebar-controls">
-        <button id="btn-settings" type="button" title="设置：外观 / AI / 数据 / 关于" aria-label="设置">⚙️</button>
+        <button id="btn-settings" type="button" title="设置：外观 / AI / 数据 / 关于" aria-label="设置"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-flower-gear" /><use href="#ic-flower-gear-dot" /></svg></button>
         <button id="win-min" class="win-ctrl" type="button" title="最小化" aria-label="最小化">─</button>
         <button id="win-max" class="win-ctrl" type="button" title="最大化" aria-label="最大化">▢</button>
         <button id="win-close" class="win-ctrl close" type="button" title="关闭" aria-label="关闭">✕</button>
