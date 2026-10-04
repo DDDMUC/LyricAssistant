@@ -64,62 +64,89 @@ async function setupKey(): Promise<void> {
   await tick(30)
 }
 
-it("对话导出：勾选整轮 → 导出 Markdown（带思考）；全选 / 取消都能用", async () => {
-  await setupKey()
+/** 发一句话，等这一轮回复完 */
+async function sendAndWait(text: string, reply: string, thinking = ""): Promise<void> {
   fetchMock.mockReset()
   fetchMock.mockImplementation(() =>
     Promise.resolve(
-      sseResponse([sseReasoning("先想一下"), sse("回复数字1"), "data: [DONE]\n\n"]),
+      sseResponse([sseReasoning(thinking), sse(reply), "data: [DONE]\n\n"].filter(Boolean)),
     ),
   )
   const input = document.querySelector<HTMLTextAreaElement>("#ai-input")!
   const send = document.querySelector<HTMLButtonElement>("#btn-ai-send")!
-  input.value = "回复数字1"
+  input.value = text
   send.click()
   await waitFor(() => send.textContent === "■")
   await waitFor(() => send.textContent === "↑")
-  await waitFor(() => !!document.querySelector(".ai-turn"))
+}
 
-  // 进入导出选择模式
+const exportBar = () => document.querySelector<HTMLElement>("#ai-export-bar")!
+const exportCount = () => document.querySelector("#ai-export-count")!.textContent
+const exportGo = () => document.querySelector<HTMLButtonElement>("#btn-ai-export-go")!
+const userMsg = () => document.querySelectorAll<HTMLElement>(".ai-msg.user")
+const assistantMsg = () => document.querySelectorAll<HTMLElement>(".ai-msg.assistant")
+
+it("导出的最小单位是每条消息：勾助手那条，就只导助手（带思考）", async () => {
+  await setupKey()
+  await sendAndWait("回复数字1", "回复数字1", "先想一下")
+
   document.querySelector<HTMLButtonElement>("#btn-ai-export")!.click()
-  const bar = document.querySelector<HTMLElement>("#ai-export-bar")!
-  expect(bar.hidden).toBe(false)
+  await tick(40)
+  expect(exportBar().hidden).toBe(false)
   expect(document.documentElement.classList.contains("ai-exporting")).toBe(true)
-  expect(document.querySelectorAll(".ai-pick").length).toBe(1)
-  expect(document.querySelector("#ai-export-count")!.textContent).toBe("已选择 0 组对话")
-  expect(document.querySelector<HTMLButtonElement>("#btn-ai-export-go")!.disabled).toBe(true)
+  // 一轮两条消息 = 两个勾选圈（不是整轮一个）
+  expect(document.querySelectorAll(".ai-pick")).toHaveLength(2)
+  expect(exportCount()).toBe("已选择 0 组对话")
+  expect(exportGo().disabled).toBe(true)
 
-  // 点整轮 = 勾选
-  document.querySelector<HTMLElement>(".ai-turn")!.click()
-  expect(document.querySelector<HTMLElement>(".ai-turn")!.classList.contains("picked")).toBe(true)
-  expect(document.querySelector("#ai-export-count")!.textContent).toBe("已选择 1 组对话")
-  expect(document.querySelector<HTMLButtonElement>("#btn-ai-export-go")!.disabled).toBe(false)
+  // 只勾助手那条
+  assistantMsg()[0]!.click()
+  expect(assistantMsg()[0]!.classList.contains("picked")).toBe(true)
+  expect(userMsg()[0]!.classList.contains("picked")).toBe(false)
+  expect(exportCount()).toBe("已选择 1 组对话")
+  expect(exportGo().disabled).toBe(false)
 
-  // 全选：已全选时再点是取消全选
-  document.querySelector<HTMLButtonElement>("#btn-ai-export-all")!.click()
-  expect(document.querySelector("#ai-export-count")!.textContent).toBe("已选择 0 组对话")
-  document.querySelector<HTMLButtonElement>("#btn-ai-export-all")!.click()
-  expect(document.querySelector("#ai-export-count")!.textContent).toBe("已选择 1 组对话")
-
-  // 取消：退出模式、操作条收起
-  document.querySelector<HTMLButtonElement>("#btn-ai-export-cancel")!.click()
-  expect(bar.hidden).toBe(true)
-  expect(document.documentElement.classList.contains("ai-exporting")).toBe(false)
-
-  // 再来一次：勾选并导出
-  document.querySelector<HTMLButtonElement>("#btn-ai-export")!.click()
-  document.querySelector<HTMLElement>(".ai-turn")!.click()
   saveTextMock.mockClear()
-  document.querySelector<HTMLButtonElement>("#btn-ai-export-go")!.click()
+  exportGo().click()
   await waitFor(() => saveTextMock.mock.calls.length > 0)
   const options = saveTextMock.mock.calls[0]![0] as { suggestedName: string; contents: string }
   expect(options.suggestedName).toMatch(/^对话-.*\.md$/)
-  expect(options.contents).toContain("**你：**")
-  expect(options.contents).toContain("回复数字1")
+  expect(options.contents).toContain("**助手：**")
   expect(options.contents).toContain("**思考**")
   expect(options.contents).toContain("先想一下")
-  expect(options.contents).toContain("共 1 组对话（当前版本）")
-  // 导出完自动退出选择模式
-  await waitFor(() => Boolean(document.querySelector<HTMLElement>("#ai-export-bar")!.hidden))
+  expect(options.contents).toContain("共 1 条消息")
+  // 只勾了助手：不该有「你：」那段
+  expect(options.contents).not.toContain("**你：**")
+  // 导出完自动退出
+  await waitFor(() => Boolean(exportBar().hidden))
+})
+
+it("全选 / 计数按「组」：两轮各挑几条，组数按轮次算；取消退出", async () => {
+  await sendAndWait("回复数字2", "回复数字2")
+
+  document.querySelector<HTMLButtonElement>("#btn-ai-export")!.click()
+  await tick(40)
+  // 两轮 = 4 条消息 = 4 个圈
+  expect(document.querySelectorAll(".ai-pick")).toHaveLength(4)
+  expect(exportCount()).toBe("已选择 0 组对话")
+
+  // 第 1 轮的助手 + 第 2 轮的用户 → 碰了两个轮次 = 2 组
+  assistantMsg()[0]!.click()
+  userMsg()[1]!.click()
+  expect(exportCount()).toBe("已选择 2 组对话")
+
+  // 全选 → 取消全选
+  document.querySelector<HTMLButtonElement>("#btn-ai-export-all")!.click()
+  expect(exportCount()).toBe("已选择 2 组对话")
+  expect(document.querySelectorAll<HTMLElement>(".ai-msg.picked")).toHaveLength(4)
+  expect(document.querySelector<HTMLButtonElement>("#btn-ai-export-all")!.classList.contains("all")).toBe(true)
+  document.querySelector<HTMLButtonElement>("#btn-ai-export-all")!.click()
+  expect(exportCount()).toBe("已选择 0 组对话")
+  expect(exportGo().disabled).toBe(true)
+
+  // 取消：退出模式、操作条收起
+  document.querySelector<HTMLButtonElement>("#btn-ai-export-cancel")!.click()
+  await tick(40)
+  expect(exportBar().hidden).toBe(true)
   expect(document.documentElement.classList.contains("ai-exporting")).toBe(false)
 })

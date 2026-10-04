@@ -1857,26 +1857,32 @@ html.ai-exporting .ai-hint {
   display: none;
 }
 
-/* 消息内容不接收点击，点整轮 = 勾选/取消 */
-html.ai-exporting .ai-turn .ai-msg {
-  pointer-events: none;
-}
-
-html.ai-exporting .ai-turn {
+/* 每条消息一个勾选圈（你发的 / 助手回的各自一个）；点消息正文 = 勾选 / 取消 */
+html.ai-exporting .ai-msg {
   position: relative;
-  padding: 6px 8px 6px 34px;
-  border-radius: 10px;
+  padding-left: 26px;
   cursor: pointer;
 }
 
-html.ai-exporting .ai-turn.picked {
+/* 消息内部的一切都不吃点击（免得误触复制 / 编辑 / 翻页 / 思考） */
+html.ai-exporting .ai-msg > * {
+  pointer-events: none;
+}
+
+/* 勾选圈本身还能点 */
+html.ai-exporting .ai-msg .ai-pick {
+  pointer-events: auto;
+}
+
+html.ai-exporting .ai-msg.picked {
   background: var(--bg-soft);
+  border-radius: 10px;
 }
 
 .ai-pick {
   position: absolute;
-  left: 6px;
-  top: 6px;
+  left: 0;
+  top: 2px;
   width: 20px;
   height: 20px;
   padding: 0;
