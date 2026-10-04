@@ -17,20 +17,23 @@ vi.mock("@tauri-apps/api/event", () => ({
     return Promise.resolve(() => {})
   }),
 }))
+const windowMock = {
+  show: vi.fn(() => Promise.resolve()),
+  hide: vi.fn(() => Promise.resolve()),
+  setFocus: vi.fn(() => Promise.resolve()),
+  setPosition: vi.fn(() => Promise.resolve()),
+  outerSize: vi.fn(() => Promise.resolve({ width: 300, height: 760 })),
+  outerPosition: vi.fn(() => Promise.resolve({ x: 0, y: 0 })),
+  onCloseRequested: vi.fn(() => Promise.resolve(() => {})),
+  onMoved: vi.fn((handler: () => void) => {
+    movedHandlers.push(handler)
+    return Promise.resolve(() => {})
+  }),
+}
 vi.mock("@tauri-apps/api/window", () => ({
   getAllWindows: vi.fn(() => Promise.resolve([])),
-  getCurrentWindow: vi.fn(() => ({
-    show: vi.fn(() => Promise.resolve()),
-    hide: vi.fn(() => Promise.resolve()),
-    setFocus: vi.fn(() => Promise.resolve()),
-    outerSize: vi.fn(() => Promise.resolve({ width: 300, height: 760 })),
-    outerPosition: vi.fn(() => Promise.resolve({ x: 0, y: 0 })),
-    onCloseRequested: vi.fn(() => Promise.resolve(() => {})),
-    onMoved: vi.fn((handler: () => void) => {
-      movedHandlers.push(handler)
-      return Promise.resolve(() => {})
-    }),
-  })),
+  cursorPosition: vi.fn(() => Promise.resolve({ x: 0, y: 0 })),
+  getCurrentWindow: vi.fn(() => windowMock),
 }))
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   WebviewWindow: vi.fn(function WebviewWindow() {
@@ -38,6 +41,8 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
   }),
 }))
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }))
+
+const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 function seedDocs(count: number): void {
   const docs = Array.from({ length: count }, (_, i) => createDoc(`歌 ${i + 1}`))
@@ -90,6 +95,49 @@ it("点文档 / 新建 / 删除 / 改名 / 新会话：只发意向，本地不�
   // 本地列表没被改动（还停在主窗口推来的那份）
   expect(document.querySelectorAll<HTMLElement>(".doc-item").length).toBe(3)
   expect(document.querySelector<HTMLElement>(".doc-item.active")?.textContent ?? "").toBe(before)
+})
+
+it("按住侧栏头拖窗：窗口跟着指针走（手型光标不再骗人）", async () => {
+  const head = document.querySelector<HTMLElement>(".sidebar-head")!
+  windowMock.setPosition.mockClear()
+  Object.defineProperty(head, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 300,
+      bottom: 40,
+      width: 300,
+      height: 40,
+      toJSON: () => ({}),
+    }),
+  })
+  head.dispatchEvent(
+    new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      pointerId: 1,
+      clientX: 10,
+      clientY: 10,
+      screenX: 500,
+      screenY: 300,
+    }),
+  )
+  head.dispatchEvent(
+    new PointerEvent("pointermove", {
+      bubbles: true,
+      pointerId: 1,
+      clientX: 0,
+      clientY: 0,
+      screenX: 300,
+      screenY: 320,
+    }),
+  )
+  await tick(0)
+  expect(windowMock.setPosition).toHaveBeenCalledWith(expect.objectContaining({ x: 290, y: 310 }))
 })
 
 it("主窗口推来新列表：本地副本跟着换", () => {

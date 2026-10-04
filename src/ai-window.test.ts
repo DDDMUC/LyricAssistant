@@ -135,6 +135,51 @@ it("收到主窗口的快照：标题跟着换，范围提示按快照算", () =
   expect(document.querySelector<HTMLElement>("#ai-hint")!.textContent).toContain("选中 1 句")
 })
 
+it("按住面板头拖 AI 窗：窗口跟着指针走", async () => {
+  const head = document.querySelector<HTMLElement>("#ai-panel .ai-head")!
+  state.tauriWindow.setPosition.mockClear()
+  Object.defineProperty(head, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 520,
+      bottom: 40,
+      width: 520,
+      height: 40,
+      toJSON: () => ({}),
+    }),
+  })
+  head.dispatchEvent(
+    new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      pointerId: 1,
+      clientX: 8,
+      clientY: 8,
+      screenX: 400,
+      screenY: 200,
+    }),
+  )
+  head.dispatchEvent(
+    new PointerEvent("pointermove", {
+      bubbles: true,
+      pointerId: 1,
+      clientX: 0,
+      clientY: 0,
+      screenX: 250,
+      screenY: 240,
+    }),
+  )
+  await tick(0)
+  expect(state.tauriWindow.setPosition).toHaveBeenCalledWith(
+    expect.objectContaining({ x: 242, y: 232 }),
+  )
+})
+
 it("「放回」主窗口：发 ai-redock 并把窗藏起来", async () => {
   state.emitCalls.length = 0
   const redock = document.querySelector<HTMLButtonElement>("#btn-ai-redock")!
