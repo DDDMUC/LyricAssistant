@@ -1850,6 +1850,142 @@ body.ai-window #btn-ai-detach {
   gap: 16px;
 }
 
+/* ===== 对话导出（选择模式） ===== */
+/* 选择模式：输入区让位给操作条 */
+html.ai-exporting .ai-composer,
+html.ai-exporting .ai-hint {
+  display: none;
+}
+
+/* 消息内容不接收点击，点整轮 = 勾选/取消 */
+html.ai-exporting .ai-turn .ai-msg {
+  pointer-events: none;
+}
+
+html.ai-exporting .ai-turn {
+  position: relative;
+  padding: 6px 8px 6px 34px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+html.ai-exporting .ai-turn.picked {
+  background: var(--bg-soft);
+}
+
+.ai-pick {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1.5px solid var(--border);
+  background: var(--bg);
+  color: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ai-pick svg {
+  width: 12px;
+  height: 12px;
+}
+
+.ai-turn.picked .ai-pick {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.ai-export-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.ai-export-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.ai-export-box {
+  width: 15px;
+  height: 15px;
+  border: 1.5px solid var(--border);
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+}
+
+.ai-export-box svg {
+  width: 11px;
+  height: 11px;
+}
+
+.ai-export-all.all .ai-export-box {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.ai-export-count {
+  color: var(--text-muted);
+}
+
+.ai-export-think {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.ai-export-spacer {
+  flex: 1;
+}
+
+.ai-export-cancel {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  background: var(--field-bg);
+  color: var(--text);
+}
+
+.ai-export-cancel:hover {
+  background: var(--field-bg-hover);
+}
+
+.ai-export-go {
+  border: none;
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12px;
+  background: var(--accent);
+  color: #fff;
+}
+
+.ai-export-go:disabled {
+  opacity: 0.5;
+}
+
 /* 工作区：歌词做组、每组一张卡片 */
 .work-head {
   display: flex;
