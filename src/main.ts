@@ -735,14 +735,9 @@ function performDeleteDoc(id: string, name: string): void {
   if (index < 0) return
   docsState.docs.splice(index, 1)
   if (collapsedDocs.delete(id)) saveCollapsedDocs()
-  // 这个文件的 AI 对话一起删掉
-  const removedConvos = convos.filter((convo) => convo.docId === id)
-  if (removedConvos.length > 0) {
+  // 这个文件的 AI 对话一起删掉（面板怎么收在结尾统一处理）
+  if (convos.some((convo) => convo.docId === id)) {
     convos = convos.filter((convo) => convo.docId !== id)
-    if (removedConvos.some((convo) => convo.id === activeConvoId)) {
-      activeConvoId = ""
-      syncTurnsFromConvo()
-    }
     persistConvos(false)
   }
   if (docsState.activeId === id) {
@@ -759,6 +754,14 @@ function performDeleteDoc(id: string, name: string): void {
     renderDocList()
   }
   persistDocs()
+  // AI 面板跟着收拾：当前会话可能刚被删掉；一篇歌词都不剩了，也不留会话
+  if (docsState.docs.length === 0 || (activeConvoId && !convos.some((convo) => convo.id === activeConvoId))) {
+    activeConvoId = ""
+    syncTurnsFromConvo()
+  } else if (docsState.activeId) {
+    syncAiConvoToDoc()
+  }
+  renderAiMessages(false)
   setStatus(`已删除「${name}」`)
 }
 
