@@ -27,4 +27,4 @@
 - 不要在本文件或任何提交里放 token / 密钥。
 - 用户说中文；问句先直接答（是/不是、能/不能），再解释。
 - 动手前先拿到明确许可，一次授权只管它指的那一处。
-- 宣称完成前跑：`npm run build` 和 `npx vitest run --maxWorkers=2`（当前 30 文件、291 条应全过）。
+- 宣称完成前跑：`npm run build` 和 `npx vitest run --maxWorkers=2`（当前 36 文件、326 条应全过）。
