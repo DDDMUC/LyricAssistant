@@ -5,6 +5,7 @@ import type { Project } from "./model/types"
 // AI 独立窗口（?win=ai&doc=...）：只挂 AI 面板，主工作区不渲染
 // 共享状态必须走 vi.hoisted：vi.mock 的工厂要抓的是同一份实例
 const state = vi.hoisted(() => ({
+  cursor: { x: 0, y: 0 },
   movedHandlers: [] as (() => void)[],
   emitCalls: [] as { channel: string; payload: unknown }[],
   listeners: new Map<string, (payload: unknown) => void>(),
@@ -40,6 +41,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }))
 vi.mock("@tauri-apps/api/window", () => ({
+  cursorPosition: vi.fn(async () => state.cursor),
   getAllWindows: vi.fn(() => Promise.resolve([])),
   getCurrentWindow: vi.fn(() => state.tauriWindow),
 }))
@@ -145,9 +147,11 @@ it("「放回」主窗口：发 ai-redock 并把窗藏起来", async () => {
   expect(state.tauriWindow.hide).toHaveBeenCalled()
 })
 
-it("独立窗拖回主窗口：先高亮停靠位，停手还在上面就磁吸收回", async () => {
+it("独立窗拖回主窗口：指针进停靠区先高亮，停手还在区里就磁吸收回", async () => {
   state.emitCalls.length = 0
-  // 独立窗在 (800, 150)，400×700；主窗在 (400, 100)，1100×800 → 重叠够多
+  // 独立窗在 (800, 150)，400×700；主窗在 (400, 100)，1100×800
+  // 右停靠区 = x∈[1100,1500]：指针放到 1300 才该亮
+  state.cursor = { x: 1300, y: 500 }
   state.tauriWindow.outerPosition.mockResolvedValue({ x: 800, y: 150 })
   state.tauriWindow.outerSize.mockResolvedValue({ width: 400, height: 700 })
   const { getAllWindows } = await import("@tauri-apps/api/window")
@@ -175,10 +179,39 @@ it("独立窗拖回主窗口：先高亮停靠位，停手还在上面就磁吸�
   expect(state.tauriWindow.hide).toHaveBeenCalled()
 })
 
+it("窗口压在主窗上面、指针不在停靠区：不亮不吸，能随便放", async () => {
+  state.emitCalls.length = 0
+  state.tauriWindow.hide.mockClear()
+  state.tauriWindow.setPosition.mockClear()
+  // 窗口整个盖在主窗中间（重叠很多），但指针在主窗左半边、离右停靠区远
+  state.cursor = { x: 700, y: 500 }
+  state.tauriWindow.outerPosition.mockResolvedValue({ x: 550, y: 150 })
+  state.tauriWindow.outerSize.mockResolvedValue({ width: 400, height: 700 })
+  const { getAllWindows } = await import("@tauri-apps/api/window")
+  vi.mocked(getAllWindows).mockResolvedValue([
+    {
+      label: "main",
+      outerPosition: vi.fn(() => Promise.resolve({ x: 400, y: 100 })),
+      outerSize: vi.fn(() => Promise.resolve({ width: 1100, height: 800 })),
+    },
+  ] as never)
+
+  coreMock.mouseDown = true
+  state.movedHandlers[0]!()
+  await tick(400)
+  expect(state.emitCalls.some((call) => call.channel === "ai-dock-hover")).toBe(false)
+
+  coreMock.mouseDown = false
+  await tick(500)
+  expect(state.emitCalls.some((call) => call.channel === "ai-redock")).toBe(false)
+  expect(state.tauriWindow.hide).not.toHaveBeenCalled()
+})
+
 it("磁吸：鼠标还按着不吸，松手才吸回", async () => {
   state.emitCalls.length = 0
   state.tauriWindow.hide.mockClear()
   state.tauriWindow.setPosition.mockClear()
+  state.cursor = { x: 1300, y: 500 }
   state.tauriWindow.outerPosition.mockResolvedValue({ x: 800, y: 150 })
   state.tauriWindow.outerSize.mockResolvedValue({ width: 400, height: 700 })
   const { getAllWindows } = await import("@tauri-apps/api/window")

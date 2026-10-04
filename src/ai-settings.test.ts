@@ -376,15 +376,15 @@ it("按住 AI 面板头往外拖：拆出独立窗跟随鼠标；松手还在主
   await tick(0)
   expect(fakeWin.setPosition).toHaveBeenCalled()
 
-  // 松手在屏幕 (200,200)：落在主窗口范围内（100..1000 / 100..800）→ 这次拆出作废
+  // 松手在主窗口里、但指针不在右侧停靠区 → 不吸：保持拆出、窗口留在松手的位置
   head.dispatchEvent(
     new PointerEvent("pointerup", { bubbles: true, clientX: 0, clientY: 0, screenX: 200, screenY: 200 }),
   )
   await tick(0)
   const destroyed = (vi.mocked(WebviewWindow).mock.results[0].value as { destroy: ReturnType<typeof vi.fn> }).destroy
-  expect(destroyed).toHaveBeenCalled()
-  expect(document.documentElement.classList.contains("ai-detached")).toBe(false)
-  expect(panel.hasAttribute("hidden")).toBe(false)
+  expect(destroyed).not.toHaveBeenCalled()
+  expect(document.documentElement.classList.contains("ai-detached")).toBe(true)
+  expect(panel.hasAttribute("hidden")).toBe(true)
 })
 
 it("「帮助」只留说明和快捷键；数据操作收进了「设置 · 数据」", () => {
@@ -395,8 +395,8 @@ it("「帮助」只留说明和快捷键；数据操作收进了「设置 · 数
   expect(dialog.textContent).toContain("只收汉字")
   expect(dialog.textContent).toContain("韵脚")
   const buttons = Array.from(dialog.querySelectorAll("button")).map((b) => b.textContent)
-  expect(buttons).toContain("打开设置")
   expect(buttons).toContain("知道了")
+  expect(buttons).not.toContain("打开设置")
   expect(buttons).not.toContain("导出诊断日志")
   expect(buttons).not.toContain("重置界面状态")
   expect(buttons).not.toContain("恢复草稿备份")
