@@ -7039,6 +7039,51 @@ function bindDockBack(
   }
 }
 
+/** 跨窗事件（只在主窗口启动时挂一次）：别的窗口发来的「放回 / 要快照 / 文档栏意向」。
+ *  必须挂在启动这里——挂在「开窗」分支里的话，主窗口一刷新（dev 热更）就丢了，
+ *  而窗还在（走「已存在」分支不再注册），磁吸/放回就没人接。 */
+function bindCrossWindowEvents(): void {
+  // AI 窗口「放回」或磁吸回来 → 收回内嵌（setAiDetached 里会打开内嵌面板）
+  listenQuiet(AI_REDOCK_CHANNEL, (event) => {
+    diag("ai.redock", { docId: (event.payload as { docId?: string } | null)?.docId ?? "" })
+    setAiDetached(false)
+  })
+  // AI 窗口要一次当前状态（刚打开、或隐藏后重新显示）
+  listenQuiet(AI_READY_CHANNEL, (event) => {
+    const id = (event.payload as { docId?: string } | null)?.docId
+    diag("ai.ready", { docId: id ?? "" })
+    if (id) pushProjectSync(id)
+  })
+  // 文档栏窗「放回」或磁吸回来 → 收回主窗口
+  listenQuiet(DOCS_REDOCK_CHANNEL, () => setDocsDetached(false))
+  listenQuiet(DOCS_READY_CHANNEL, () => pushDocsSync())
+  // 文档栏里的操作都是「意向」：真正动工程 / 弹确认的还在主窗口
+  listenQuiet(DOCS_INTENT_CHANNEL, (event) => {
+    const intent = event.payload as {
+      type?: string
+      id?: string
+      name?: string
+    } | null
+    switch (intent?.type) {
+      case "activate":
+        if (intent.id) switchDoc(intent.id)
+        break
+      case "new-doc":
+        addDoc()
+        break
+      case "delete":
+        if (intent.id) deleteDoc(intent.id)
+        break
+      case "rename":
+        if (intent.id) renameDoc(intent.id, intent.name ?? "")
+        break
+      case "new-convo":
+        newConvo()
+        break
+    }
+  })
+}
+
 /** 主窗口监听停靠高亮：显示 / 隐藏对应那条预览 */
 function bindDockPreviews(): void {
   listenQuiet(DOCK_HOVER_AI, (event) => {
@@ -7062,7 +7107,37 @@ async function openAiWindow(docId: string, at?: { x: number; y: number }): Promi
   }
 }
 
+const aiDocChannelsBound = new Set<string>()
+
+/** 按篇绑的 AI 通道（「填入词格」回来 / 生成范围同步）：同一篇只绑一次，拖出时走「窗已存在」分支也不会漏 */
+function bindAiDocChannels(docId: string): void {
+  if (aiDocChannelsBound.has(docId)) return
+  aiDocChannelsBound.add(docId)
+  // 「填入词格」从 AI 窗口回来：主窗口 mutate + 撤销栈 + 保存
+  listenQuiet(applyChannel(docId), (event) => {
+    const ok = (event.payload as { ok?: AiSentenceResult[] } | null)?.ok
+    if (!ok || ok.length === 0) return
+    let filled = 0
+    let alternatives = 0
+    mutate(() => {
+      const summary = applyAiResults(store.project, ok)
+      filled = summary.filled
+      alternatives = summary.alternatives
+    })
+    focusCellInput()
+    setStatus(
+      `AI 已填 ${filled} 句${alternatives > 0 ? `，其中 ${alternatives} 句进了「AI」备选` : ""}（可撤销）`,
+    )
+    pushProjectSync(docId)
+  })
+  // AI 窗口里改了生成范围：主窗口这边的 scope 跟着变（下一次快照的目标才对）
+  listenQuiet(scopeChannel(docId), (event) => {
+    setAiScope(event.payload as AiScope)
+  })
+}
+
 async function openAiWindowInner(docId: string, at?: { x: number; y: number }): Promise<TauriWindow | null> {
+  bindAiDocChannels(docId)
   const label = aiWindowLabel(docId)
   const opened = (await getAllWindows()).find((win) => win.label === label)
   if (opened) {
@@ -7088,39 +7163,6 @@ async function openAiWindowInner(docId: string, at?: { x: number; y: number }): 
     // Windows：和主窗一样用页面内自绘标题栏；macOS 保留系统窗框
     decorations: !IS_WINDOWS_DESKTOP,
     ...place,
-  })
-  // 「填入词格」从 AI 窗口回来：主窗口 mutate + 撤销栈 + 保存
-  void listen(applyChannel(docId), (event) => {
-    const ok = (event.payload as { ok?: AiSentenceResult[] } | null)?.ok
-    if (!ok || ok.length === 0) return
-    let filled = 0
-    let alternatives = 0
-    mutate(() => {
-      const summary = applyAiResults(store.project, ok)
-      filled = summary.filled
-      alternatives = summary.alternatives
-    })
-    focusCellInput()
-    setStatus(
-      `AI 已填 ${filled} 句${alternatives > 0 ? `，其中 ${alternatives} 句进了「AI」备选` : ""}（可撤销）`,
-    )
-    pushProjectSync(docId)
-  })
-  // AI 窗口问主窗口要一次当前状态（刚打开、或隐藏后重新显示）
-  void listen(AI_READY_CHANNEL, (event) => {
-    const id = (event.payload as { docId?: string } | null)?.docId
-    diag("ai.ready", { docId: id ?? "" })
-    if (id) pushProjectSync(id)
-  })
-  // AI 窗口点「放回」= 收回内嵌
-  void listen(AI_REDOCK_CHANNEL, (event) => {
-    diag("ai.redock", { docId: (event.payload as { docId?: string } | null)?.docId ?? "" })
-    setAiDetached(false)
-    openAiPanel()
-  })
-  // AI 窗口里改了生成范围：主窗口这边的 scope 跟着变（下一次快照的目标才对）
-  void listen(scopeChannel(docId), (event) => {
-    setAiScope(event.payload as AiScope)
   })
   await win.once("tauri://created", () => pushProjectSync(docId))
   await win.once("tauri://error", (err: unknown) => {
@@ -7216,34 +7258,6 @@ async function openDocsWindow(at?: { x: number; y: number }): Promise<TauriWindo
       decorations: !IS_WINDOWS_DESKTOP,
       ...(at ? { x: Math.round(at.x), y: Math.round(at.y) } : {}),
     })
-    // 文档栏里的操作都是"意向"：真正动工程 / 弹确认的还在主窗口
-    void listen(DOCS_INTENT_CHANNEL, (event) => {
-      const intent = event.payload as {
-        type?: string
-        id?: string
-        name?: string
-      } | null
-      switch (intent?.type) {
-        case "activate":
-          if (intent.id) switchDoc(intent.id)
-          break
-        case "new-doc":
-          addDoc()
-          break
-        case "delete":
-          if (intent.id) deleteDoc(intent.id)
-          break
-        case "rename":
-          if (intent.id) renameDoc(intent.id, intent.name ?? "")
-          break
-        case "new-convo":
-          newConvo()
-          break
-      }
-    })
-    // 文档栏窗关掉 / 点「放回」= 收回主窗口
-    void listen(DOCS_REDOCK_CHANNEL, () => setDocsDetached(false))
-    void listen(DOCS_READY_CHANNEL, () => pushDocsSync())
     await win.once("tauri://created", () => {
       setDocsDetached(true)
       pushDocsSync()
@@ -7670,6 +7684,8 @@ if (DOCS_WINDOW_MODE) {
   focusCellInput()
   // 清掉残留的独立 AI 窗（默认内嵌；避免重载后主窗口与独立窗两处都有面板）
   void hideOrphanAiWindows()
+  // 跨窗事件（放回 / 磁吸回来 / 文档栏意向）在主窗口启动时挂一次
+  bindCrossWindowEvents()
   // 文档栏：默认内嵌（左侧边栏）；上次是拆开状态就把窗找回来
   const docsWinBtn = document.querySelector<HTMLButtonElement>("#btn-docs-win")
   if (docsWinBtn && isDesktop()) {
