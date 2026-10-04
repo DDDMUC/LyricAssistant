@@ -4575,9 +4575,14 @@ function repaintKeepingScroll(turnIndex: number, mutate: () => void): void {
   if (before !== 0 && after !== 0) aiMessagesEl.scrollTop += after - before
 }
 
-/** 对话导出：选择模式 + 勾选的轮次（值是路径下标） */
+/** 对话导出：选择模式。最小单位是**每条消息**（你发的 / 助手回的），不是整轮 */
 let aiExporting = false
-const aiExportPicked = new Set<number>()
+const aiExportPicked = new Set<string>()
+
+/** 勾选键：第几轮 + 这条是输入还是回复 */
+function exportKey(turnIndex: number, kind: "input" | "reply"): string {
+  return `${turnIndex}:${kind}`
+}
 
 function enterAiExportMode(): void {
   if (aiExporting) return
@@ -4603,25 +4608,60 @@ function exitAiExportMode(): void {
   renderAiMessages(false)
 }
 
-function toggleAiExportPick(index: number, wrapper?: HTMLElement): void {
-  if (aiExportPicked.has(index)) aiExportPicked.delete(index)
-  else aiExportPicked.add(index)
-  if (wrapper) wrapper.classList.toggle("picked", aiExportPicked.has(index))
+function toggleAiExportPick(key: string, el?: HTMLElement): void {
+  if (aiExportPicked.has(key)) aiExportPicked.delete(key)
+  else aiExportPicked.add(key)
+  if (el) el.classList.toggle("picked", aiExportPicked.has(key))
   updateAiExportBar()
 }
 
+/** 给一条消息挂勾选圈：点消息正文 / 点圈都切换这一条 */
+function applyExportPick(el: HTMLElement, key: string): void {
+  el.classList.toggle("picked", aiExportPicked.has(key))
+  const pick = document.createElement("button")
+  pick.type = "button"
+  pick.className = "ai-pick"
+  pick.title = "勾选这一条"
+  pick.setAttribute("aria-pressed", aiExportPicked.has(key) ? "true" : "false")
+  pick.innerHTML =
+    '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-check" /></svg>'
+  pick.addEventListener("click", (event) => {
+    event.stopPropagation()
+    toggleAiExportPick(key, el)
+  })
+  el.appendChild(pick)
+  el.addEventListener("click", () => toggleAiExportPick(key, el))
+}
+
 function updateAiExportBar(): void {
-  const total = branchPath().length
-  const count = [...aiExportPicked].filter((index) => index < total).length
-  aiExportCountEl.textContent = `已选择 ${count} 组对话`
-  btnAiExportAll.classList.toggle("all", total > 0 && count === total)
-  btnAiExportGo.disabled = count === 0
+  const total = branchPath().length * 2
+  // 「组对话」按碰到的轮次数（照 DeepSeek：4 条全勾 = 2 组）
+  const turnsTouched = new Set(
+    [...aiExportPicked]
+      .map((key) => Number(key.split(":")[0]))
+      .filter((index) => Number.isInteger(index) && index >= 0 && index < branchPath().length),
+  )
+  aiExportCountEl.textContent = `已选择 ${turnsTouched.size} 组对话`
+  btnAiExportAll.classList.toggle("all", total > 0 && aiExportPicked.size >= total)
+  btnAiExportGo.disabled = aiExportPicked.size === 0
 }
 
 /** 把勾选的轮次拼成 Markdown：当前分支版本；思考可选（默认带） */
 async function exportAiConversation(): Promise<void> {
   const path = branchPath()
-  const picked = [...aiExportPicked].filter((index) => index < path.length).sort((a, b) => a - b)
+  const picked = [...aiExportPicked]
+    .map((key) => {
+      const [turnIndex, kind] = key.split(":") as [string, "input" | "reply"]
+      return { turn: Number(turnIndex), kind }
+    })
+    .filter(
+      (item) =>
+        Number.isInteger(item.turn) &&
+        item.turn >= 0 &&
+        item.turn < path.length &&
+        (item.kind === "input" || item.kind === "reply"),
+    )
+    .sort((a, b) => a.turn - b.turn || (a.kind === b.kind ? 0 : a.kind === "input" ? -1 : 1))
   if (picked.length === 0) return
   const now = new Date()
   const pad = (n: number) => String(n).padStart(2, "0")
@@ -4633,12 +4673,16 @@ async function exportAiConversation(): Promise<void> {
     : modelLabel(aiSettings.model)
   const lines: string[] = []
   lines.push(`# 对话导出 · ${title}`, "")
-  lines.push(`- 时间：${stamp}`, `- 模型：${model}`, `- 共 ${picked.length} 组对话（当前版本）`, "")
-  for (const index of picked) {
-    const turn = path[index]
-    const input = currentInput(turn)
+  lines.push(`- 时间：${stamp}`, `- 模型：${model}`, `- 共 ${picked.length} 条消息（当前版本）`, "")
+  for (const item of picked) {
+    const turn = path[item.turn]
+    if (item.kind === "input") {
+      const input = currentInput(turn)
+      lines.push("---", "", "**你：**", "", input.text.trim() || "（空）", "")
+      continue
+    }
     const reply = currentReply(turn)
-    lines.push("---", "", "**你：**", "", input.text.trim() || "（空）", "", "**助手：**", "")
+    lines.push("---", "", "**助手：**", "")
     const thinking = (reply.thinkingText ?? "").trim()
     if (aiExportThinkEl.checked && thinking) {
       const seconds = Math.max(1, Math.round((reply.thinkingMs ?? 0) / 1000))
@@ -4681,24 +4725,6 @@ function renderAiMessages(touchConvo = true): void {
     wrapper.className = "ai-turn"
     wrapper.dataset.turn = String(turnIndex)
 
-    if (aiExporting) {
-      wrapper.classList.toggle("picked", aiExportPicked.has(turnIndex))
-      const pick = document.createElement("button")
-      pick.type = "button"
-      pick.className = "ai-pick"
-      pick.title = "勾选这一组对话"
-      pick.setAttribute("aria-pressed", aiExportPicked.has(turnIndex) ? "true" : "false")
-      pick.innerHTML =
-        '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-check" /></svg>'
-      pick.addEventListener("click", () => toggleAiExportPick(turnIndex, wrapper))
-      wrapper.appendChild(pick)
-      wrapper.addEventListener("click", (event) => {
-        const target = event.target instanceof Element ? event.target : null
-        if (target?.closest("button, a, input, textarea, select")) return
-        toggleAiExportPick(turnIndex, wrapper)
-      })
-    }
-
     const input = currentInput(turn)
     const reply = currentReply(turn)
 
@@ -4712,6 +4738,10 @@ function renderAiMessages(touchConvo = true): void {
     fillAssistantRow(assistantEl, turn, input, reply)
     wrapper.appendChild(assistantEl)
 
+    if (aiExporting) {
+      applyExportPick(userEl, exportKey(turnIndex, "input"))
+      applyExportPick(assistantEl, exportKey(turnIndex, "reply"))
+    }
     aiMessagesEl.appendChild(wrapper)
   })
   followAiScroll()
@@ -7784,9 +7814,15 @@ function initAiPanel(): void {
     else enterAiExportMode()
   })
   btnAiExportAll.addEventListener("click", () => {
-    const total = branchPath().length
-    if (total > 0 && aiExportPicked.size >= total) aiExportPicked.clear()
-    else for (let i = 0; i < total; i++) aiExportPicked.add(i)
+    const total = branchPath().length * 2
+    if (total > 0 && aiExportPicked.size >= total) {
+      aiExportPicked.clear()
+    } else {
+      for (let i = 0; i < branchPath().length; i++) {
+        aiExportPicked.add(exportKey(i, "input"))
+        aiExportPicked.add(exportKey(i, "reply"))
+      }
+    }
     renderAiMessages(false)
     updateAiExportBar()
   })
