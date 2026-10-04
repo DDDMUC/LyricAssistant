@@ -4,18 +4,20 @@
 
 本仓库有**两台电脑**的 AI 助手在改（Windows 端 / macOS 端）。跨机的开发记录放在一个**私有库**里，两边都看得到：
 
-- 私有库：`DDDMUC/LyricAssistant-devlog`（private，需 `DDDMUC` 账号权限）
+- 私有库：`DDDMUC/repo-devlogs`（private，需 `DDDMUC` 账号权限）
+- **它是所有仓库共用的**：一个项目一个文件夹，文件夹名 = 公开库仓库名。本仓库的记录在 `LyricAssistant/` 里
 - 首次拉取：
-  - `gh repo clone DDDMUC/LyricAssistant-devlog`
-  - 或 `git clone https://github.com/DDDMUC/LyricAssistant-devlog.git`
-- 已经拉过的：在该目录 `git pull`
+  - `git clone https://github.com/DDDMUC/repo-devlogs.git`
+  - 已经拉过的：在该目录 `git pull`
 
-在那里写自己那份（别写进别人的文件）：
+进去后只写自己那份（别写进别人的文件）：
 
 | 机器 | 文件 | 条目前缀 |
 | --- | --- | --- |
-| Windows | `WORKLOG-windows.md` | `[Windows]` |
-| macOS | `WORKLOG-macos.md` | `[macOS]` |
+| Windows | `LyricAssistant/WORKLOG-windows.md` | `[Windows]` |
+| macOS | `LyricAssistant/WORKLOG-macos.md` | `[macOS]` |
+
+开工前先读 `LyricAssistant/HANDOFF.md`（交接说明，最新一轮在最上面）。
 
 每条写清楚：**做了什么、动了哪些文件、怎么验证的、有没有遗留问题**。
 
