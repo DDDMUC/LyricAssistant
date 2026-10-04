@@ -6898,7 +6898,8 @@ function bindPanelDragOut(
       e.screenY >= window.screenY &&
       e.screenY <= window.screenY + window.outerHeight
     if (insideMain) {
-      // 松手还在主窗口里：这次拆出作废
+      // 松手还在主窗口里：这次拆出作废（预览高亮也一起收掉）
+      hideDockPreviews()
       if (current.win) void current.win.destroy().catch(() => {})
       cancel()
     }
@@ -6929,7 +6930,26 @@ function bindPanelDragOut(
   })
 }
 
-/** 独立窗拖回主窗口：重叠即高亮停靠位；停手还在上面 → 滑过去磁吸收回内嵌 */
+/** 左键是否还按着（原生窗口拖动只有 onMoved，读不到松手；失败就当已松开） */
+async function mouseLeftDown(): Promise<boolean> {
+  if (!isDesktop()) return false
+  try {
+    const { invoke } = await import("@tauri-apps/api/core")
+    return Boolean(await invoke("mouse_left_down"))
+  } catch {
+    return false
+  }
+}
+
+/** 收掉两条停靠预览（松手作废时用） */
+function hideDockPreviews(): void {
+  for (const id of ["#ai-dock-preview", "#docs-dock-preview"]) {
+    const preview = document.querySelector<HTMLElement>(id)
+    if (preview) preview.hidden = true
+  }
+}
+
+/** 独立窗拖回主窗口：重叠高亮停靠位；松手还在上面 → 滑过去磁吸收回内嵌 */
 function bindDockBack(
   win: TauriWindow,
   hoverChannel: string,
@@ -6969,11 +6989,23 @@ function bindDockBack(
     if (stopTimer !== undefined) window.clearTimeout(stopTimer)
     stopTimer = window.setTimeout(() => {
       stopTimer = undefined
-      if (!hovering) return
-      hovering = false
-      emitQuiet(hoverChannel, { over: false })
-      void snapBackDocked()
+      void settle()
     }, 220)
+  }
+
+  /** 停手后：还按着鼠标就继续等（不吸），真松手了才磁吸收回 */
+  const settle = async (): Promise<void> => {
+    if (!hovering) return
+    if (await mouseLeftDown()) {
+      stopTimer = window.setTimeout(() => {
+        stopTimer = undefined
+        void settle()
+      }, 120)
+      return
+    }
+    hovering = false
+    emitQuiet(hoverChannel, { over: false })
+    void snapBackDocked()
   }
   // 没有 onMoved（测试桩 / 老环境）就退化成只有「放回」按钮的旧行为
   try {

@@ -23,6 +23,12 @@ const state = vi.hoisted(() => ({
   },
 }))
 
+const coreMock = vi.hoisted(() => {
+  const core = { mouseDown: false, invoke: vi.fn(async () => core.mouseDown) }
+  return core
+})
+vi.mock("@tauri-apps/api/core", () => ({ invoke: coreMock.invoke }))
+
 vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn((channel: string, payload: unknown) => {
     state.emitCalls.push({ channel, payload })
@@ -166,5 +172,34 @@ it("独立窗拖回主窗口：先高亮停靠位，停手还在上面就磁吸�
   const redock = state.emitCalls.find((call) => call.channel === "ai-redock")
   expect(redock).toBeTruthy()
   expect(state.tauriWindow.setPosition).toHaveBeenCalled()
+  expect(state.tauriWindow.hide).toHaveBeenCalled()
+})
+
+it("磁吸：鼠标还按着不吸，松手才吸回", async () => {
+  state.emitCalls.length = 0
+  state.tauriWindow.hide.mockClear()
+  state.tauriWindow.setPosition.mockClear()
+  state.tauriWindow.outerPosition.mockResolvedValue({ x: 800, y: 150 })
+  state.tauriWindow.outerSize.mockResolvedValue({ width: 400, height: 700 })
+  const { getAllWindows } = await import("@tauri-apps/api/window")
+  vi.mocked(getAllWindows).mockResolvedValue([
+    {
+      label: "main",
+      outerPosition: vi.fn(() => Promise.resolve({ x: 400, y: 100 })),
+      outerSize: vi.fn(() => Promise.resolve({ width: 1100, height: 800 })),
+    },
+  ] as never)
+
+  // 按着不放：停手 220ms 也不吸，一直等
+  coreMock.mouseDown = true
+  state.movedHandlers[0]!()
+  await tick(700)
+  expect(state.emitCalls.some((call) => call.channel === "ai-redock")).toBe(false)
+  expect(state.tauriWindow.hide).not.toHaveBeenCalled()
+
+  // 松手：这才滑回去、收回内嵌
+  coreMock.mouseDown = false
+  await tick(400)
+  expect(state.emitCalls.some((call) => call.channel === "ai-redock")).toBe(true)
   expect(state.tauriWindow.hide).toHaveBeenCalled()
 })
