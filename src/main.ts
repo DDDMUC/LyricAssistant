@@ -6848,6 +6848,40 @@ async function redockAiFromMain(): Promise<void> {
 
 /** 面板头按住往外拖：生成 / 唤出独立窗并跟随鼠标。
  *  松手留在松手的位置；要收回得把指针拖进停靠区再松手（那个窗自己判定），或用「放回」。 */
+/** 让一个窗跟着指针走：同一时刻最多一个 setPosition 在飞、只追最新坐标。
+ *  窗口可能是异步建出来的（拆出时）、也可能就是自己（独立窗里拖头），所以取窗用回调。 */
+function createPointerFollower(getWin: () => TauriWindow | null): {
+  move: (x: number, y: number) => void
+  clear: () => void
+} {
+  let latest: { x: number; y: number } | null = null
+  let sending = false
+  const flush = (): void => {
+    if (sending || !latest) return
+    const win = getWin()
+    if (!win) return
+    const pos = latest
+    latest = null
+    sending = true
+    void win
+      .setPosition(new LogicalPosition(pos.x, pos.y))
+      .catch(() => {})
+      .finally(() => {
+        sending = false
+        flush()
+      })
+  }
+  return {
+    move: (x, y) => {
+      latest = { x, y }
+      flush()
+    },
+    clear: () => {
+      latest = null
+    },
+  }
+}
+
 function bindPanelDragOut(
   handle: HTMLElement,
   spawn: (x: number, y: number) => Promise<TauriWindow | null>,
@@ -6863,24 +6897,8 @@ function bindPanelDragOut(
     moved: boolean
   } | null = null
 
-  // 当前位置「只追最新」：同一时刻最多一个 setPosition 在飞，中间只留最后一个坐标。
-  // 之前每次 pointermove 都直接发 IPC，调用会排队、窗口回跳，拖起来很卡。
-  let latest: { x: number; y: number } | null = null
-  let sending = false
-  const flushPosition = (): void => {
-    if (sending || !latest || !drag?.win) return
-    const win = drag.win
-    const pos = latest
-    latest = null
-    sending = true
-    void win
-      .setPosition(new LogicalPosition(pos.x, pos.y))
-      .catch(() => {})
-      .finally(() => {
-        sending = false
-        flushPosition()
-      })
-  }
+  // 位置更新走 follower：同一时刻最多一个 setPosition 在飞，只追最新坐标
+  const follower = createPointerFollower(() => drag?.win ?? null)
 
   const move = (e: PointerEvent): void => {
     if (!drag) return
@@ -6905,15 +6923,14 @@ function bindPanelDragOut(
         })
       return
     }
-    latest = { x, y }
-    flushPosition()
+    follower.move(x, y)
   }
 
   const up = (e: PointerEvent): void => {
     if (!drag) return
     const current = drag
     drag = null
-    latest = null
+    follower.clear()
     handle.removeEventListener("pointermove", move)
     handle.removeEventListener("pointerup", up)
     handle.removeEventListener("pointercancel", up)
@@ -6993,6 +7010,54 @@ async function slideToDock(win: TauriWindow, dockSide: "right" | "left"): Promis
   } catch {
     // 拿不到位置就直接往下走（照旧收回内嵌）
   }
+}
+
+/** 独立窗里按住面板头 = 拖这个窗（跟手规则和拆出时一致）；松手后吸不吸交给停靠区判定 */
+function bindDetachedWindowDrag(handle: HTMLElement): void {
+  const follower = createPointerFollower(() => getCurrentWindow())
+  let drag: { startX: number; startY: number; offsetX: number; offsetY: number } | null = null
+
+  const move = (e: PointerEvent): void => {
+    if (!drag) return
+    if (Math.abs(e.screenX - drag.startX) + Math.abs(e.screenY - drag.startY) < 8) return
+    document.documentElement.classList.add("panel-dragging")
+    follower.move(Math.round(e.screenX - drag.offsetX), Math.round(e.screenY - drag.offsetY))
+  }
+
+  const up = (e: PointerEvent): void => {
+    if (!drag) return
+    drag = null
+    follower.clear()
+    handle.removeEventListener("pointermove", move)
+    handle.removeEventListener("pointerup", up)
+    handle.removeEventListener("pointercancel", up)
+    try {
+      handle.releasePointerCapture(e.pointerId)
+    } catch {
+      // 没捕获过就算了
+    }
+    document.documentElement.classList.remove("panel-dragging")
+  }
+
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return
+    if ((e.target as Element).closest("button, input, textarea, select, a")) return
+    const rect = handle.getBoundingClientRect()
+    drag = {
+      startX: e.screenX,
+      startY: e.screenY,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+    }
+    try {
+      handle.setPointerCapture(e.pointerId)
+    } catch {
+      // 不支持捕获也能用：move/up 仍然按元素派发
+    }
+    handle.addEventListener("pointermove", move)
+    handle.addEventListener("pointerup", up)
+    handle.addEventListener("pointercancel", up)
+  })
 }
 
 /** 独立窗拖回主窗口：指针进停靠区才高亮；松手还在停靠区 → 滑过去磁吸收回内嵌。
@@ -7347,6 +7412,9 @@ async function openDocsWindow(at?: { x: number; y: number }): Promise<TauriWindo
 /** 文档栏独立窗口模式初始化：只挂侧边栏铺满，操作以意向发回主窗口 */
 function initDocsWindowMode(): void {
   document.body.classList.add("docs-window")
+  // 按住文档栏的头 = 拖这个窗（原来手型光标拖不动）
+  const docsHead = document.querySelector<HTMLElement>(".sidebar-head")
+  if (docsHead) bindDetachedWindowDrag(docsHead)
   bindDockBack(getCurrentWindow(), DOCK_HOVER_DOCS, "left", () => emitQuiet(DOCS_REDOCK_CHANNEL, {}))
   document.querySelector<HTMLElement>("#btn-docs-win")?.setAttribute("hidden", "")
   document.querySelector<HTMLElement>("#btn-docs-redock")?.removeAttribute("hidden")
@@ -7383,6 +7451,9 @@ function initDocsWindowMode(): void {
 
 function initAiWindowMode(): void {
   document.body.classList.add("ai-window")
+  // 按住 AI 面板的头 = 拖这个窗（原来手型光标拖不动）
+  const aiHeadEl = document.querySelector<HTMLElement>("#ai-panel .ai-head")
+  if (aiHeadEl) bindDetachedWindowDrag(aiHeadEl)
   btnAi.hidden = true
   if (AI_WINDOW_DOC_ID && docsState.docs.some((doc) => doc.id === AI_WINDOW_DOC_ID)) {
     docsState.activeId = AI_WINDOW_DOC_ID
