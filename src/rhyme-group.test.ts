@@ -781,3 +781,79 @@ it("点总览里的约束 → 编辑韵组：改约束、成员不动、新约�
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))
   await tick(10)
 })
+
+const cellOf = (sentenceIdx: number, index: number) =>
+  document
+    .querySelectorAll<HTMLElement>(".sentence")[sentenceIdx]
+    .querySelector<HTMLElement>(
+      `.cell[data-index="${index}"], .cell-input[data-index="${index}"]`,
+    )!
+
+/** 点某个格子再打字 */
+const typeCell = async (sentenceIdx: number, index: number, char: string) => {
+  cellOf(sentenceIdx, index).click()
+  await tick(10)
+  const input = document.querySelector<HTMLInputElement>("input.cell-input")!
+  input.value = char
+  input.dispatchEvent(new Event("input", { bubbles: true }))
+  await tick(10)
+}
+
+it("工具条「成组」：一键按辙把全曲的字归组锁起来", async () => {
+  await typeCell(0, 0, "东")
+  await typeCell(0, 2, "风")
+  await typeCell(1, 0, "花")
+  await typeCell(1, 2, "家")
+
+  document.querySelector<HTMLButtonElement>("#btn-auto-group")!.click()
+  await tick(40)
+  const dialog = document.querySelector<HTMLDialogElement>(".auto-group-dialog")!
+  expect(dialog).toBeTruthy()
+  expect(dialog.textContent).toContain("辙")
+  expect(dialog.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').length).toBe(4)
+  // 默认只勾「辙」
+  const checked = dialog.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked')
+  expect(checked).toHaveLength(1)
+
+  Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"))
+    .find((button) => button.textContent === "自动成组")!
+    .click()
+  await tick(60)
+  expect(statusText()).toContain("2 组 / 4 格")
+
+  // 东/风 同组、花/家 同组（四格都进了组）
+  expect(cellOf(0, 0).classList.contains("group-member")).toBe(true)
+  expect(cellOf(0, 2).classList.contains("group-member")).toBe(true)
+  expect(cellOf(1, 0).classList.contains("group-member")).toBe(true)
+  expect(cellOf(1, 2).classList.contains("group-member")).toBe(true)
+  // 光标回到组里 → 本组两格亮起
+  cellOf(0, 0).click()
+  await tick(20)
+  expect(cellOf(0, 0).classList.contains("group-lit")).toBe(true)
+  expect(cellOf(0, 2).classList.contains("group-lit")).toBe(true)
+})
+
+it("一键成组：一个维度都没勾会提示；点取消不干活", async () => {
+  document.querySelector<HTMLButtonElement>("#btn-auto-group")!.click()
+  await tick(40)
+  const dialog = document.querySelector<HTMLDialogElement>(".auto-group-dialog")!
+  const checks = Array.from(dialog.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+  checks[0]!.checked = false
+  Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"))
+    .find((button) => button.textContent === "自动成组")!
+    .click()
+  await tick(60)
+  expect(statusText()).toContain("先勾一个维度")
+  expect(document.querySelector("dialog[open]")).toBeNull()
+
+  // 取消：啥也不干
+  document.querySelector<HTMLButtonElement>("#btn-auto-group")!.click()
+  await tick(40)
+  Array.from(
+    document.querySelectorAll<HTMLDialogElement>("dialog[open]")[0]!.querySelectorAll<HTMLButtonElement>("button"),
+  )
+    .find((button) => button.textContent === "取消")!
+    .click()
+  await tick(40)
+  expect(document.querySelector("dialog[open]")).toBeNull()
+})

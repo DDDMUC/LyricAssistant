@@ -1,3 +1,4 @@
+import { pronunciationsOf, rhymeKeyOfFinal } from "./rhyme"
 import type { Project, RhymeConstraint, Sentence } from "./types"
 
 export function createRhymeGroupId(): string {
@@ -44,6 +45,63 @@ export function addRhymeGroup(
     ]
   }
   return id
+}
+
+/** 一键成组的维度 */
+export type RhymeAspect = "rhy" | "final" | "initial" | "tone"
+
+/** 一键成组：按勾选的维度把全曲有字的格子归组。
+ *  - 只处理**不在任何韵组里**的格子；每个桶用自己的值建一条约束（发花辙一组、中东辙一组…）
+ *  - 只出现一次的桶不建组（互相押才有意义）
+ *  返回建了几组、覆盖几格。 */
+export function autoGroupByRhyme(
+  project: Project,
+  aspects: RhymeAspect[],
+): { groups: number; cells: number } {
+  if (aspects.length === 0) return { groups: 0, cells: 0 }
+  const buckets = new Map<string, { sentenceId: string; index: number }[]>()
+  const bucketPron = new Map<string, { final: string; initial: string; tone: number }>()
+  for (const section of project.sections) {
+    for (const sentence of section.sentences) {
+      const cells = sentence.alternatives[sentence.activeAlt]?.cells ?? []
+      for (let index = 0; index < cells.length; index++) {
+        const char = cells[index]
+        if (!char || !char.trim()) continue
+        if (sentence.rhymeGroups?.some((ref) => ref.indexes.includes(index))) continue
+        const pron = pronunciationsOf(char)[0]
+        if (!pron) continue
+        const rhyKey = rhymeKeyOfFinal(pron.final)
+        if (aspects.includes("rhy") && !rhyKey) continue
+        const key = aspects
+          .map((aspect) => {
+            if (aspect === "rhy") return rhyKey ?? ""
+            if (aspect === "final") return pron.final
+            if (aspect === "initial") return pron.initial
+            return String(pron.tone)
+          })
+          .join("\u0001")
+        const list = buckets.get(key) ?? []
+        list.push({ sentenceId: sentence.id, index })
+        buckets.set(key, list)
+        if (!bucketPron.has(key)) bucketPron.set(key, pron)
+      }
+    }
+  }
+  let groups = 0
+  let cells = 0
+  for (const [key, list] of buckets) {
+    if (list.length < 2) continue
+    const pron = bucketPron.get(key)!
+    const constraint: RhymeConstraint = {}
+    if (aspects.includes("rhy")) constraint.rhy = rhymeKeyOfFinal(pron.final)
+    if (aspects.includes("final")) constraint.final = pron.final
+    if (aspects.includes("initial")) constraint.initial = pron.initial
+    if (aspects.includes("tone")) constraint.tones = [pron.tone]
+    addRhymeGroup(project, list, constraint)
+    groups += 1
+    cells += list.length
+  }
+  return { groups, cells }
 }
 
 /** 改一个已有韵组的约束（成员一个不动） */
