@@ -60,6 +60,30 @@ it("外观：点主题立即生效并记住（跟系统 / 亮色 / 深色）", (
   dialog.close()
 })
 
+it("点设置面板外面的区域自动关（面板里面 / 留白都不关）", () => {
+  const dialog = openSettings()
+  Object.defineProperty(dialog, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({
+      x: 100,
+      y: 100,
+      left: 100,
+      top: 100,
+      right: 600,
+      bottom: 500,
+      width: 500,
+      height: 400,
+      toJSON: () => ({}),
+    }),
+  })
+  // 面板里面：不关
+  dialog.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 300, clientY: 300 }))
+  expect(document.querySelector(".settings-dialog")).not.toBeNull()
+  // 背景（矩形之外）：关
+  dialog.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 10, clientY: 10 }))
+  expect(document.querySelector(".settings-dialog")).toBeNull()
+})
+
 it("AI：显示当前服务商与模型，能打开服务商设置", () => {
   const dialog = openSettings("AI")
   expect(dialog.textContent).toContain("服务商与模型")

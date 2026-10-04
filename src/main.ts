@@ -5502,6 +5502,19 @@ function openSettingsDialog(initial: SettingsSection = "appearance"): void {
     navButtons.set(id, button)
     nav.appendChild(button)
   }
+  // 点面板外面的区域（背景）自动关：和 DSH 一样。
+  // 只有点在 dialog 本体（背景层 / 面板留白）上才判坐标，且必须落在面板矩形之外——
+  // 面板留白不关、里面任何按钮都不关；合成点击（0,0）也不会误判。
+  dialog.addEventListener("click", (event) => {
+    if (event.target !== dialog) return
+    const rect = dialog.getBoundingClientRect()
+    const outside =
+      event.clientX < rect.left ||
+      event.clientX > rect.right ||
+      event.clientY < rect.top ||
+      event.clientY > rect.bottom
+    if (outside) dialog.close("cancel")
+  })
   select(initial)
   dialog.showModal()
 }
@@ -6850,6 +6863,25 @@ function bindPanelDragOut(
     moved: boolean
   } | null = null
 
+  // 当前位置「只追最新」：同一时刻最多一个 setPosition 在飞，中间只留最后一个坐标。
+  // 之前每次 pointermove 都直接发 IPC，调用会排队、窗口回跳，拖起来很卡。
+  let latest: { x: number; y: number } | null = null
+  let sending = false
+  const flushPosition = (): void => {
+    if (sending || !latest || !drag?.win) return
+    const win = drag.win
+    const pos = latest
+    latest = null
+    sending = true
+    void win
+      .setPosition(new LogicalPosition(pos.x, pos.y))
+      .catch(() => {})
+      .finally(() => {
+        sending = false
+        flushPosition()
+      })
+  }
+
   const move = (e: PointerEvent): void => {
     if (!drag) return
     if (!drag.moved) {
@@ -6873,13 +6905,15 @@ function bindPanelDragOut(
         })
       return
     }
-    void drag.win.setPosition(new LogicalPosition(x, y)).catch(() => {})
+    latest = { x, y }
+    flushPosition()
   }
 
   const up = (e: PointerEvent): void => {
     if (!drag) return
     const current = drag
     drag = null
+    latest = null
     handle.removeEventListener("pointermove", move)
     handle.removeEventListener("pointerup", up)
     handle.removeEventListener("pointercancel", up)
@@ -6972,36 +7006,72 @@ function bindDockBack(
   let hovering = false
   let stopTimer: number | undefined
 
+  // 拖拽期间主窗与自己的几何基本不变：缓存 500ms，省掉每次 onMoved 的 4 个 IPC 查询
+  let zoneCache: {
+    x: number
+    y: number
+    width: number
+    height: number
+    winW: number
+    winH: number
+  } | null = null
+  let zoneCacheAt = 0
+  let lastZoneCheck = 0
+
+  const zoneGeometry = async (): Promise<typeof zoneCache> => {
+    const now = Date.now()
+    if (zoneCache && now - zoneCacheAt <= 500) return zoneCache
+    const main = (await getAllWindows()).find((item) => item.label === "main")
+    if (!main) return null
+    const [mainPos, mainSize, winSize] = await Promise.all([
+      main.outerPosition(),
+      main.outerSize(),
+      win.outerSize(),
+    ])
+    zoneCache = {
+      x: mainPos.x,
+      y: mainPos.y,
+      width: mainSize.width,
+      height: mainSize.height,
+      winW: winSize.width,
+      winH: winSize.height,
+    }
+    zoneCacheAt = now
+    return zoneCache
+  }
+
   /** 指针（取不到就用窗口中心）是否落在主窗那侧的停靠区：一条贴着主窗边缘、面板宽、整高的带 */
   const inDockZone = async (): Promise<boolean> => {
-    const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()])
-    const main = (await getAllWindows()).find((item) => item.label === "main")
-    if (!main) return false
-    const [mainPos, mainSize] = await Promise.all([main.outerPosition(), main.outerSize()])
+    const geo = await zoneGeometry()
+    if (!geo) return false
     let point: { x: number; y: number }
     try {
       point = await cursorPosition()
     } catch {
+      const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()])
       point = { x: pos.x + size.width / 2, y: pos.y + size.height / 2 }
     }
-    if (point.y < mainPos.y || point.y > mainPos.y + mainSize.height) return false
+    if (point.y < geo.y || point.y > geo.y + geo.height) return false
     if (dockSide === "right") {
-      return (
-        point.x >= mainPos.x + mainSize.width - size.width && point.x <= mainPos.x + mainSize.width
-      )
+      return point.x >= geo.x + geo.width - geo.winW && point.x <= geo.x + geo.width
     }
-    return point.x >= mainPos.x && point.x <= mainPos.x + size.width
+    return point.x >= geo.x && point.x <= geo.x + geo.winW
   }
 
   const onMoved = (): void => {
-    void inDockZone()
-      .then((over) => {
-        if (over !== hovering) {
-          hovering = over
-          emitQuiet(hoverChannel, { over })
-        }
-      })
-      .catch(() => {})
+    // 高亮不用跟满帧：60ms 查一次就够，拖的时候少打点 IPC
+    const now = Date.now()
+    if (now - lastZoneCheck >= 60) {
+      lastZoneCheck = now
+      void inDockZone()
+        .then((over) => {
+          if (over !== hovering) {
+            hovering = over
+            emitQuiet(hoverChannel, { over })
+          }
+        })
+        .catch(() => {})
+    }
     if (stopTimer !== undefined) window.clearTimeout(stopTimer)
     stopTimer = window.setTimeout(() => {
       stopTimer = undefined
