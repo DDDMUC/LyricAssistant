@@ -159,6 +159,9 @@ it("全选 / 计数按「组」：两轮各挑几条，组数按轮次算；取�
 it("勾选圈选中态的样式挂在消息块上（不挂整轮）", () => {
   expect(css).toContain(".ai-msg.picked .ai-pick")
   expect(css).not.toContain(".ai-turn.picked .ai-pick")
+  // 未选中态要看得见：实心底 + 中灰描边（别用亮主题下等于隐形的 --border）
+  expect(css).toContain("border: 1.5px solid var(--text-muted)")
+  expect(css).not.toContain("border: 1.5px solid var(--border);\n  background: var(--bg)")
   // 选择模式下消息内部不吃点击、勾选圈本身还能点
   expect(css).toContain("html.ai-exporting .ai-msg > *")
   expect(css).toContain("html.ai-exporting .ai-msg .ai-pick")

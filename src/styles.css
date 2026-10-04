@@ -1883,16 +1883,22 @@ html.ai-exporting .ai-msg.picked {
   position: absolute;
   left: 0;
   top: 2px;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border-radius: 999px;
-  border: 1.5px solid var(--border);
-  background: var(--bg);
+  /* 未选中也要看得见：实心底 + 中灰描边（--border 在米色主题上等于隐形） */
+  border: 1.5px solid var(--text-muted);
+  background: var(--bg-elevated);
   color: transparent;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+/* 悬停：描边转主题色，提示这一条能点 */
+html.ai-exporting .ai-msg:hover .ai-pick {
+  border-color: var(--accent);
 }
 
 .ai-pick svg {
