@@ -285,19 +285,27 @@ export function pronunciationsOf(char: string): Pronunciation[] {
   return list
 }
 
+/** 一条读音是否符合约束（charFitsConstraint 与「一键成组」共用） */
+export function pronunciationFits(pron: Pronunciation, constraint: RhymeConstraint): boolean {
+  if (constraint.rhy !== undefined && FINAL_TO_GROUP.get(pron.final)?.key !== constraint.rhy) return false
+  if (constraint.final !== undefined && pron.final !== constraint.final) return false
+  if (constraint.initial !== undefined && pron.initial !== constraint.initial) return false
+  if ((constraint.tones?.length ?? 0) > 0 && !constraint.tones!.includes(pron.tone)) return false
+  return true
+}
+
+/** 韵母对应的辙 key（不在十三辙里返回 undefined） */
+export function rhymeKeyOfFinal(final: string): string | undefined {
+  return FINAL_TO_GROUP.get(final)?.key
+}
+
 /** 一个字是否符合押韵组约束：**同一条读音**要同时满足所有勾选项 */
 export function charFitsConstraint(char: string, constraint: RhymeConstraint): boolean {
   const list = pronunciationsOf(char)
   if (list.length === 0) return true // 不认识的字符放行（跟 charFitsRhyme 一个策略）
   const hasAny = constraint.rhy !== undefined || constraint.final !== undefined || constraint.initial !== undefined || (constraint.tones?.length ?? 0) > 0
   if (!hasAny) return true
-  return list.some((pron) => {
-    if (constraint.rhy !== undefined && FINAL_TO_GROUP.get(pron.final)?.key !== constraint.rhy) return false
-    if (constraint.final !== undefined && pron.final !== constraint.final) return false
-    if (constraint.initial !== undefined && pron.initial !== constraint.initial) return false
-    if ((constraint.tones?.length ?? 0) > 0 && !constraint.tones!.includes(pron.tone)) return false
-    return true
-  })
+  return list.some((pron) => pronunciationFits(pron, constraint))
 }
 
 /** 约束的中文描述（徽章/tooltip/状态栏用） */

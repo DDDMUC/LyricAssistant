@@ -107,12 +107,14 @@ import {
 } from "./model/rhyme"
 import {
   addRhymeGroup,
+  autoGroupByRhyme,
   dissolveRhymeGroup,
   groupAt,
   shiftCellRefs,
   dropCellRefs,
   replaceCellRefs,
   updateRhymeGroupConstraint,
+  type RhymeAspect,
 } from "./model/rhyme-groups"
 import type { Project, RhymeConstraint, Section, Sentence } from "./model/types"
 import type { ExportOptions } from "./state"
@@ -5540,6 +5542,7 @@ const HELP_GUIDE: string[] = [
   "<b>词格</b>：句子左边的小框改这句的词格（如 <code>4/4</code> 表示 4+4）；「＋ 新增一句」沿用本句 / 本段最后一句的词格",
   "<b>韵辙</b>：右侧徽章显示<b>光标所在那一格</b>的辙，点它给<b>这一格</b>加锁（任意一格都能锁）；锁住的格子只收押该辙的字；正在打拼音时徽章会实时显示这段拼音的辙",
   "<b>韵组</b>：<b>拖拽框选</b>一段格子，或按 <kbd>Ctrl/⌘+G</kbd> 进「挑格模式」后点格子加/减（跨句跳着挑；按 <kbd>G</kbd> 或 <kbd>Esc</kbd> 退）→ 选中后格子上方会出现小浮动条（复制 / 清空 / 成组 / 解散 / ✕）→ 点「成组」勾要锁的项（<b>辙 / 韵母 / 声母 / 声调</b>，默认只锁辙）→ 这几格互相押：**光标在哪一格 → 同组所有格子（跨句也算）整格亮起**，光标不在组里时不显示任何标记、**建组时不合约束的字直接清空**、打字不合会被拦；对话框里还有「<b>推荐同韵字</b>」（常用字排前，点字直接填入）；想解散：点成员格子弹出的「解散这个韵组」小条 / 状态栏「韵组 N」总览里逐组解散 / 点那格的徽章 →「解散这个韵组」",
+  "<b>一键成组</b>：工具条「<b>成组</b>」——勾维度（<b>辙 / 韵母 / 声母 / 声调</b>，默认只按辙）就把<b>全曲</b>有字的格子按这个维度自动归组并锁起来（同辙的字一组、同韵母的一组）；<b>已经在韵组里的格子不动</b>、只出现一次的不建组；一步可撤销",
   "<b>状态栏 · 韵脚</b>：底部那串「韵脚 江阳×12 …」是**整首每句最后一个有字的格**的辙统计（按出现次数排序）——句尾还空着时，看的就是它前面最近的有字格；用来一眼看清押韵分布",
   "<b>和声</b>：句子上「和声」按钮标记 / 取消；段落头「＋ 和声」在段尾加一句",
   "<b>备选</b>：句首「备选 N ◇」可以开新备选，写不同版本",
@@ -6375,6 +6378,81 @@ function openRhymeGroupEditDialog(groupId: string): void {
       openRhymeGroupsOverview()
     },
   })
+}
+
+/** 一键成组：勾维度 → 全曲有字的格子自动归组锁起来 */
+function openAutoGroupDialog(): void {
+  const dialog = document.createElement("dialog")
+  dialog.className = "rhyme-group-dialog auto-group-dialog"
+  const form = document.createElement("form")
+  form.method = "dialog"
+  form.className = "dialog-body"
+  const title = document.createElement("strong")
+  title.className = "dialog-drag-handle"
+  title.tabIndex = -1
+  title.textContent = "一键成组"
+  const hint = document.createElement("p")
+  hint.textContent =
+    "按勾选的维度把全曲有字的格子自动归组（同辙的字一组、同韵母的一组……）；已经在韵组里的格子不动，只出现一次的不会建组。可撤销。"
+  form.append(title, hint)
+
+  const aspects: { id: RhymeAspect; label: string; hint: string }[] = [
+    { id: "rhy", label: "辙", hint: "同辙一组（默认）" },
+    { id: "final", label: "韵母", hint: "同韵母一组" },
+    { id: "initial", label: "声母", hint: "同声母一组（双声）" },
+    { id: "tone", label: "声调", hint: "同声调一组" },
+  ]
+  const checks: { id: RhymeAspect; input: HTMLInputElement }[] = []
+  for (const aspect of aspects) {
+    const label = document.createElement("label")
+    label.className = "dialog-check"
+    const input = document.createElement("input")
+    input.type = "checkbox"
+    input.checked = aspect.id === "rhy"
+    checks.push({ id: aspect.id, input })
+    label.append(input, document.createTextNode(`${aspect.label}（${aspect.hint}）`))
+    form.appendChild(label)
+  }
+
+  const actions = document.createElement("div")
+  actions.className = "dialog-actions"
+  const cancel = document.createElement("button")
+  cancel.type = "button"
+  cancel.textContent = "取消"
+  cancel.addEventListener("click", () => dialog.close("cancel"))
+  const ok = document.createElement("button")
+  ok.type = "button"
+  ok.className = "primary"
+  ok.textContent = "自动成组"
+  ok.addEventListener("click", () => dialog.close("ok"))
+  actions.append(cancel, ok)
+  form.appendChild(actions)
+  dialog.appendChild(form)
+  document.body.appendChild(dialog)
+  dialog.addEventListener("close", () => {
+    const picked = checks.filter((item) => item.input.checked).map((item) => item.id)
+    dialog.remove()
+    if (dialog.returnValue !== "ok") return
+    if (picked.length === 0) {
+      setStatus("先勾一个维度再成组", true)
+      return
+    }
+    const labelText = picked
+      .map((id) => aspects.find((aspect) => aspect.id === id)!.label)
+      .join(" · ")
+    // 先在克隆上跑一遍：没活干就别多压一步撤销
+    const plan = autoGroupByRhyme(structuredClone(store.project), picked)
+    if (plan.groups === 0) {
+      setStatus("没有可成组的格子（没字、都已在韵组里、或同类只有一个）", true)
+      return
+    }
+    mutate(() => {
+      autoGroupByRhyme(store.project, picked)
+    })
+    focusCellInput()
+    setStatus(`已按〈${labelText}〉成组：${plan.groups} 组 / ${plan.cells} 格（可撤销）`)
+  })
+  dialog.showModal()
 }
 
 /** 建组 / 编辑组共用的约束对话框 */
@@ -7819,6 +7897,7 @@ function bindToolbar(): void {
   clearAllBtn.addEventListener("click", clearAllCells)
 
   document.querySelector("#btn-settings")?.addEventListener("click", () => openSettingsDialog())
+  document.querySelector("#btn-auto-group")?.addEventListener("click", openAutoGroupDialog)
 
   window.addEventListener("keydown", (e) => {
     const mod = e.metaKey || e.ctrlKey
