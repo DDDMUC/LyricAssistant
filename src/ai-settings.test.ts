@@ -333,6 +333,15 @@ it("AI 面板默认内嵌：AI 按钮开合面板，不建窗；点「拆出」�
   expect(panel.hasAttribute("hidden")).toBe(false)
 })
 
+it("跨窗「放回」监听在主窗口启动时就挂好（不依赖开窗分支，刷新后也还在）", () => {
+  for (const channel of ["ai-redock", "ai-ready", "docs-redock", "docs-ready", "docs-intent"]) {
+    expect(aiListeners.has(channel)).toBe(true)
+  }
+  // 直接触发「放回」：不用先拆一次也能收回内嵌
+  aiListeners.get("ai-redock")!({ payload: { docId: "doc-1" } })
+  expect(document.documentElement.classList.contains("ai-detached")).toBe(false)
+})
+
 it("按住 AI 面板头往外拖：拆出独立窗跟随鼠标；松手还在主窗口里 = 作废", async () => {
   const head = document.querySelector<HTMLElement>("#ai-panel .ai-head")!
   const panel = document.querySelector<HTMLElement>("#ai-panel")!
