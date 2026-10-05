@@ -43,11 +43,33 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 
 const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-const openAiSettingsDialog = () => {
+/** 打开设置面板的「模型」页（原「AI 接口设置」对话框已并进这里） */
+const openAiSettingsDialog = async () => {
   document.querySelector<HTMLButtonElement>("#ai-model-chip")!.click()
   Array.from(document.querySelectorAll<HTMLButtonElement>(".ai-pop button"))
     .find((button) => button.textContent === "管理模型")!
     .click()
+  await tick(30)
+}
+
+/** 给第一张服务商卡（DeepSeek）填一把测试 Key 并保存（发送前必须） */
+const fillKey = async (): Promise<void> => {
+  await openAiSettingsDialog()
+  const settings = document.querySelector<HTMLDialogElement>(".settings-dialog")!
+  settings
+    .querySelectorAll<HTMLElement>(".settings-card")[0]!
+    .querySelector<HTMLButtonElement>(".settings-card-actions button")!
+    .click()
+  await tick(20)
+  settings.querySelector<HTMLInputElement>('.settings-editor input[type="password"]')!.value = "sk-test"
+  Array.from(settings.querySelectorAll<HTMLButtonElement>(".settings-editor-actions button"))
+    .find((button) => button.textContent === "保存")!
+    .click()
+  await tick(20)
+  Array.from(settings.querySelectorAll<HTMLButtonElement>(".settings-head button"))
+    .find((button) => button.textContent === "完成")!
+    .click()
+  await tick(20)
 }
 
 
@@ -70,26 +92,44 @@ beforeAll(async () => {
   await import("./main")
 })
 
-it("每个 Key 行都有复制按钮，点击有反馈", async () => {
+it("模型页：服务商卡片列表（状态点 / 当前 / 编辑），编辑器能填 Key 并保存", async () => {
   document.querySelector<HTMLButtonElement>("#btn-ai")!.click()
-  openAiSettingsDialog()
-  const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")
+  await openAiSettingsDialog()
+  const dialog = document.querySelector<HTMLDialogElement>(".settings-dialog")
   expect(dialog).toBeTruthy()
-
-  const keyRows = Array.from(dialog!.querySelectorAll<HTMLElement>(".dialog-field")).filter(
-    (row) => row.textContent?.startsWith("Key"),
+  // 左侧分类：外观 / 模型 / 数据 / 关于
+  expect(
+    Array.from(dialog!.querySelectorAll<HTMLButtonElement>(".settings-nav button")).map((b) =>
+      b.textContent,
+    ),
+  ).toEqual(["外观", "模型", "数据", "关于"])
+  // 卡片列表：DeepSeek 在最前，且是当前服务商
+  const cards = dialog!.querySelectorAll<HTMLElement>(".settings-card")
+  expect(cards.length).toBeGreaterThan(10)
+  expect(cards[0]!.querySelector(".settings-card-name")?.textContent).toContain("DeepSeek")
+  expect(cards[0]!.classList.contains("current")).toBe(true)
+  // 模型下拉是「模型能力」
+  expect(cards[0]!.querySelector<HTMLSelectElement>(".settings-card-model select")?.value).toBe(
+    "deepseek-flash",
   )
-  expect(keyRows.length).toBeGreaterThanOrEqual(3)
-  for (const row of keyRows) {
-    expect(row.querySelector(".dialog-inline-btn")?.textContent).toBe("复制")
-  }
 
-  const keyInput = keyRows[0].querySelector("input")!
-  keyInput.value = "sk-test-123"
-  const copyBtn = keyRows[0].querySelector<HTMLButtonElement>(".dialog-inline-btn")!
-  copyBtn.click()
-  await new Promise((resolve) => setTimeout(resolve, 30))
-  expect(["已复制 ✓", "复制失败"]).toContain(copyBtn.textContent)
+  // 编辑第一张卡：有「提供商 / API 密钥 / 自定义设置 / 测试 / 取消 / 保存」
+  cards[0]!
+    .querySelector<HTMLButtonElement>(".settings-card-actions button")!
+    .click()
+  await tick(20)
+  const editor = dialog!.querySelector<HTMLElement>(".settings-editor")!
+  expect(editor.textContent).toContain("第三方模型提供商")
+  expect(editor.textContent).toContain("API 密钥")
+  expect(editor.textContent).toContain("自定义设置")
+  editor.querySelector<HTMLInputElement>('input[type="password"]')!.value = "sk-card-1"
+  Array.from(editor.querySelectorAll<HTMLButtonElement>(".settings-editor-actions button"))
+    .find((button) => button.textContent === "保存")!
+    .click()
+  await tick(20)
+  expect(document.querySelector("#status-hint")?.textContent ?? "").toContain("已保存")
+  // 保存后回到卡片列表，状态点亮起
+  expect(dialog!.querySelectorAll(".settings-card")[0]!.querySelector(".settings-dot")?.classList.contains("on")).toBe(true)
 
   dialog!.close()
 })
@@ -131,15 +171,7 @@ it("等级芯片跟随模型能力：MiMo 是 low/medium/high（最高 high）�
 it("输入版本 / 回复版本两条链：编辑追加输入版本，重跑追加回复版本", async () => {
   expect(document.querySelector("#btn-ai-expand")).toBeTruthy()
   // 先把 Key 填上并保存，否则发送会被拦下
-  openAiSettingsDialog()
-  const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
-  dialog.querySelectorAll<HTMLInputElement>('input[type="password"]').forEach((input) => {
-    input.value = "sk-test"
-  })
-  Array.from(dialog.querySelectorAll("button"))
-    .find((button) => button.textContent === "保存")!
-    .click()
-  await tick(30)
+  await fillKey()
 
   const setReplyMock = () => {
     fetchMock.mockReset()
@@ -196,15 +228,7 @@ it("输入版本 / 回复版本两条链：编辑追加输入版本，重跑追�
 
 it("对话记录：标题自动、分组、新建/切换/删除、持久化", async () => {
   // Key（前面测试已存过；保险起见再存一次）
-  openAiSettingsDialog()
-  const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
-  dialog.querySelectorAll<HTMLInputElement>('input[type="password"]').forEach((input) => {
-    input.value = "sk-test"
-  })
-  Array.from(dialog.querySelectorAll("button"))
-    .find((button) => button.textContent === "保存")!
-    .click()
-  await tick(30)
+  await fillKey()
 
   const setReplyMock = () => {
     fetchMock.mockReset()
@@ -396,7 +420,7 @@ it("按住 AI 面板头往外拖：拆出独立窗跟随鼠标；松手还在主
   expect(panel.hasAttribute("hidden")).toBe(true)
 })
 
-it("「帮助」只留说明和快捷键；数据操作收进了「设置 · 数据」", () => {
+it("「帮助」只留说明和快捷键；数据操作收进了「设置 · 数据」", async () => {
   document.querySelector<HTMLButtonElement>("#btn-help")!.click()
   const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
   expect(dialog.textContent).toContain("使用说明")
@@ -424,9 +448,9 @@ it("「帮助」只留说明和快捷键；数据操作收进了「设置 · 数
   expect(dataButtons.some((text) => text.startsWith("重置界面状态"))).toBe(true)
   settings.close()
 
-  // AI 接口设置里也不该塞这些
-  openAiSettingsDialog()
-  const aiSettings = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  // 设置 · 模型里也不该塞这些
+  await openAiSettingsDialog()
+  const aiSettings = document.querySelector<HTMLDialogElement>(".settings-dialog")!
   expect(
     Array.from(aiSettings.querySelectorAll("button")).some((b) => b.textContent === "导出诊断日志"),
   ).toBe(false)

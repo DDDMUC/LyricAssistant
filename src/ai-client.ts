@@ -298,6 +298,26 @@ export function loadAiSettings(): AiSettings {
           typeof item.supportsEffort === "boolean" ? item.supportsEffort : base.supportsEffort,
       }
     })
+    // 用户自己加的服务商（defaults 里没有的 id）也留着：追加到末尾
+    const known = new Set(defaults.providers.map((item) => item.id))
+    for (const item of stored) {
+      if (!item || typeof item.id !== "string" || known.has(item.id)) continue
+      known.add(item.id)
+      const models = cleanModels(item.models)
+      providers.push({
+        id: item.id,
+        name: typeof item.name === "string" ? item.name : item.id,
+        baseUrl: typeof item.baseUrl === "string" ? item.baseUrl : "",
+        api: item.api ?? "openai-completions",
+        models: models.length > 0 ? models : [],
+        apiKey: typeof item.apiKey === "string" ? item.apiKey : "",
+        auth: "bearer",
+        tokenParam: "max_tokens",
+        supportsThinking: typeof item.supportsThinking === "boolean" ? item.supportsThinking : false,
+        supportsEffort: typeof item.supportsEffort === "boolean" ? item.supportsEffort : false,
+        builtin: false,
+      })
+    }
     const providerId =
       typeof data.providerId === "string" && providers.some((p) => p.id === data.providerId)
         ? data.providerId

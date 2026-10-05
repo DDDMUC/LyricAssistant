@@ -54,14 +54,22 @@ async function openPanelAndKey(): Promise<void> {
   Array.from(document.querySelectorAll<HTMLButtonElement>(".ai-pop button"))
     .find((button) => button.textContent === "管理模型")!
     .click()
-  const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
-  dialog.querySelectorAll<HTMLInputElement>('input[type="password"]').forEach((input) => {
-    input.value = "sk-test"
-  })
-  Array.from(dialog.querySelectorAll("button"))
+  await tick(30)
+  const settings = document.querySelector<HTMLDialogElement>(".settings-dialog")!
+  settings
+    .querySelectorAll<HTMLElement>(".settings-card")[0]!
+    .querySelector<HTMLButtonElement>(".settings-card-actions button")!
+    .click()
+  await tick(20)
+  settings.querySelector<HTMLInputElement>('.settings-editor input[type="password"]')!.value = "sk-test"
+  Array.from(settings.querySelectorAll<HTMLButtonElement>(".settings-editor-actions button"))
     .find((button) => button.textContent === "保存")!
     .click()
-  await tick(30)
+  await tick(20)
+  Array.from(settings.querySelectorAll<HTMLButtonElement>(".settings-head button"))
+    .find((button) => button.textContent === "完成")!
+    .click()
+  await tick(20)
 }
 
 const userTexts = (): string[] =>

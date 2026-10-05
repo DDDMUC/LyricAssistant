@@ -19,15 +19,17 @@ beforeAll(async () => {
 const openSettings = (section?: string): HTMLDialogElement => {
   document.querySelector<HTMLButtonElement>("#btn-settings")!.click()
   const dialog = document.querySelector<HTMLDialogElement>(".settings-dialog")!
-  if (section) {
+  // 导航文字：外观 / 模型 / 数据 / 关于（"ai" 是内部 id）
+  const label = section === "ai" ? "模型" : section
+  if (label) {
     Array.from(dialog.querySelectorAll<HTMLButtonElement>(".settings-nav button"))
-      .find((button) => button.textContent === section)!
+      .find((button) => button.textContent === label)!
       .click()
   }
   return dialog
 }
 
-it("标题栏 ⚙ 打开设置：分类是 外观 / AI / 数据 / 关于（主题按钮已收走）", () => {
+it("标题栏 ⚙ 打开设置：分类是 外观 / 模型 / 数据 / 关于（主题按钮已收走）", () => {
   expect(document.querySelector("#btn-theme")).toBeNull()
   // 图标是内联 SVG（六瓣花形齿轮），不再用 emoji
   expect(document.querySelector("#btn-settings svg")).toBeTruthy()
@@ -35,7 +37,9 @@ it("标题栏 ⚙ 打开设置：分类是 外观 / AI / 数据 / 关于（主�
   expect(document.querySelector("#ic-flower-gear-dot")).toBeTruthy()
   const dialog = openSettings()
   const navs = Array.from(dialog.querySelectorAll<HTMLButtonElement>(".settings-nav button"))
-  expect(navs.map((button) => button.textContent)).toEqual(["外观", "AI", "数据", "关于"])
+  expect(navs.map((button) => button.textContent)).toEqual(["外观", "模型", "数据", "关于"])
+  // 每个分类都带小图标
+  expect(navs.every((button) => button.querySelector("svg use"))).toBe(true)
   expect(navs[0]!.classList.contains("active")).toBe(true)
   expect(dialog.textContent).toContain("主题")
   dialog.close()
@@ -88,20 +92,21 @@ it("点设置面板外面的区域自动关（面板里面 / 留白都不关）"
   expect(document.querySelector(".settings-dialog")).toBeNull()
 })
 
-it("AI：显示当前服务商与模型，能打开服务商设置", () => {
-  const dialog = openSettings("AI")
-  expect(dialog.textContent).toContain("服务商与模型")
-  expect(dialog.textContent).toContain("DeepSeek")
+it("模型：服务商卡片列表（状态点 / 当前 / 编辑）+ 添加按钮", () => {
+  const dialog = openSettings("ai")
+  expect(dialog.textContent).toContain("填入各提供商的 API 密钥即可使用其模型")
   expect(dialog.textContent).toContain("Key 只存在这台电脑上")
-
-  Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"))
-    .find((button) => button.textContent === "服务商与模型设置…")!
-    .click()
-  const aiDialog = Array.from(document.querySelectorAll<HTMLDialogElement>("dialog[open]")).find(
-    (element) => element.textContent?.includes("AI 接口设置"),
-  )!
-  expect(aiDialog).toBeTruthy()
-  aiDialog.close()
+  const cards = dialog.querySelectorAll<HTMLElement>(".settings-card")
+  expect(cards.length).toBeGreaterThan(10)
+  // 第一张是 DeepSeek 且是当前服务商；未填 Key 时状态点不亮
+  expect(cards[0]!.querySelector(".settings-card-name")?.textContent).toContain("DeepSeek")
+  expect(cards[0]!.classList.contains("current")).toBe(true)
+  expect(cards[0]!.querySelector(".settings-dot")?.classList.contains("on")).toBe(false)
+  // 「＋ 添加模型提供商」＋「服务商预设 · 刷新」
+  expect(
+    Array.from(dialog.querySelectorAll("button")).some((b) => b.textContent === "＋ 添加模型提供商"),
+  ).toBe(true)
+  expect(dialog.textContent).toContain("服务商预设")
   dialog.close()
 })
 

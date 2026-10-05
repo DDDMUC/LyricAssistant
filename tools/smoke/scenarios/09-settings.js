@@ -21,16 +21,22 @@ const darkApplied = document.documentElement.dataset.theme === "dark";
 choices.find((c) => c.textContent.includes("跟随系统")).click();
 nav("关于").click();
 const hasAbout = dialog.textContent.includes("版本") && dialog.textContent.includes("使用说明与快捷键");
+// 模型页：服务商卡片列表 + 「＋ 添加模型提供商」+「服务商预设」
+nav("模型").click();
+await new Promise((r) => setTimeout(r, 150));
+const cards = dialog.querySelectorAll(".settings-card").length;
+const hasAdd = Array.from(dialog.querySelectorAll("button")).some((b) => b.textContent === "＋ 添加模型提供商");
+const hasPresets = dialog.textContent.includes("服务商预设");
 dialog.close();
 await new Promise((r) => setTimeout(r, 40));
 const closed = !document.querySelector("dialog[open].settings-dialog");
 return {
-  ok:
-    navs.join("/") === "外观/AI/数据/关于" &&
+  ok: cards > 10 && hasAdd && hasPresets &&
+    navs.join("/") === "外观/模型/数据/关于" &&
     hasData &&
     darkApplied &&
     hasAbout &&
     closed &&
     (window.__errors ?? []).length === 0,
-  detail: `分类=${navs.join("/")}、数据=${hasData}、深色生效=${darkApplied}、关于=${hasAbout}、关闭=${closed}`,
+  detail: `分类=${navs.join("/")}、数据=${hasData}、深色生效=${darkApplied}、关于=${hasAbout}、模型卡片=${cards}、添加=${hasAdd}、预设=${hasPresets}、关闭=${closed}`,
 };
