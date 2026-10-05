@@ -4194,7 +4194,7 @@ function openModelPop(): void {
     manage.textContent = "管理模型"
     manage.addEventListener("click", () => {
       closeAiPops()
-      openAiSettings()
+      openSettingsDialog("ai")
     })
     foot.appendChild(manage)
     pop.appendChild(foot)
@@ -5084,13 +5084,13 @@ function requireAiTarget(): boolean {
   const target = resolveTarget(aiSettings)
   if (!target) {
     setStatus("先在 ⚙ 里填接口地址 / 模型", true)
-    openAiSettings()
+    openSettingsDialog("ai")
     return false
   }
   const provider = currentProvider()
   if (provider?.builtin && !target.apiKey.trim()) {
     setStatus(`还没填 ${provider.name} 的 API Key（点 ⚙ 设置）`, true)
-    openAiSettings()
+    openSettingsDialog("ai")
     return false
   }
   return true
@@ -5304,271 +5304,6 @@ async function openExternal(url: string): Promise<void> {
   window.open(value, "_blank", "noopener")
 }
 
-function openAiSettings(): void {
-  closeAiPops()
-  const dialog = document.createElement("dialog")
-  const form = document.createElement("form")
-  form.method = "dialog"
-  form.className = "dialog-body"
-
-  const title = document.createElement("strong")
-  title.textContent = "AI 接口设置"
-  const intro = document.createElement("p")
-  intro.textContent =
-    "内置 DeepSeek、小米 MiMo 和 48 家常见服务商（照 DSH 目录：OpenAI 兼容 / Anthropic / Responses 三种协议）。" +
-    "填上对应的 API Key 就能用；也能改用自定义接口。Key 只存在这台电脑上。"
-  const searchEl = document.createElement("input")
-  searchEl.type = "search"
-  searchEl.placeholder = "搜索服务商（名字 / 地址）"
-  searchEl.className = "ai-provider-search"
-  form.append(title, intro, searchEl)
-  const filterTargets: { text: string; block: HTMLElement }[] = []
-
-  const rows: {
-    provider: AiProvider
-    baseEl: HTMLInputElement
-    modelsEl: HTMLInputElement
-    keyEl: HTMLInputElement
-    resultEl: HTMLElement
-    thinkEl?: HTMLInputElement
-    effortEl?: HTMLInputElement
-  }[] = []
-
-  for (const provider of aiSettings.providers) {
-    const block = document.createElement("div")
-    block.className = "ai-provider"
-    const name = document.createElement("strong")
-    name.textContent = provider.name
-    block.appendChild(name)
-
-    let thinkEl: HTMLInputElement | undefined
-    let effortEl: HTMLInputElement | undefined
-    if (provider.builtin) {
-      const note = document.createElement("div")
-      note.className = "ai-provider-note"
-      if (provider.id === "mimo") {
-        note.textContent =
-          "思考：开关 + 档位（none / low / medium / high）；官方现阶段不做强度区分——None 关思考、其余都只是开启"
-      } else if (provider.id === "deepseek") {
-        note.textContent = provider.supportsEffort
-          ? "思考：开关 + 强度（none / low / high / max）；不传档位时官方默认 high"
-          : "思考：仅开关（thinking.type = enabled / disabled，默认开启）；思考模式下 temperature 由官方固定为 1.0，设置不生效"
-      } else {
-        note.textContent =
-          provider.api === "anthropic-messages"
-            ? "协议：Anthropic Messages（自动接 /messages）"
-            : provider.api === "openai-responses"
-              ? "协议：OpenAI Responses（自动接 /responses）"
-              : "协议：OpenAI 兼容（/chat/completions）"
-        if (provider.keyUrl) {
-          const keyLink = document.createElement("button")
-          keyLink.type = "button"
-          keyLink.className = "dialog-inline-btn"
-          keyLink.textContent = "获取 Key"
-          keyLink.addEventListener("click", () => void openExternal(provider.keyUrl ?? ""))
-          note.append(document.createTextNode(" · "), keyLink)
-        }
-      }
-      block.appendChild(note)
-    } else {
-      const thinkLabel = document.createElement("label")
-      thinkLabel.className = "dialog-check"
-      thinkEl = document.createElement("input")
-      thinkEl.type = "checkbox"
-      thinkEl.checked = provider.supportsThinking
-      thinkLabel.append(
-        thinkEl,
-        document.createTextNode("支持 thinking 开关（thinking: enabled / disabled）"),
-      )
-      const effortLabel = document.createElement("label")
-      effortLabel.className = "dialog-check"
-      effortEl = document.createElement("input")
-      effortEl.type = "checkbox"
-      effortEl.checked = provider.supportsEffort
-      effortLabel.append(
-        effortEl,
-        document.createTextNode("支持 reasoning_effort（low / high / max）"),
-      )
-      block.append(thinkLabel, effortLabel)
-    }
-
-    const baseEl = document.createElement("input")
-    baseEl.type = "text"
-    baseEl.placeholder = "接口地址"
-    baseEl.value = provider.baseUrl
-    const baseLabel = document.createElement("label")
-    baseLabel.className = "dialog-field"
-    baseLabel.append(document.createTextNode("地址"), baseEl)
-
-    const modelsEl = document.createElement("input")
-    modelsEl.type = "text"
-    modelsEl.placeholder = "模型，逗号分隔"
-    modelsEl.value = provider.models.join(", ")
-    const modelsLabel = document.createElement("label")
-    modelsLabel.className = "dialog-field"
-    modelsLabel.append(document.createTextNode("模型"), modelsEl)
-
-    const keyEl = document.createElement("input")
-    keyEl.type = "password"
-    keyEl.placeholder = provider.builtin ? "API Key（sk-…）" : "API Key（可留空）"
-    keyEl.value = provider.apiKey
-    const keyCopyBtn = document.createElement("button")
-    keyCopyBtn.type = "button"
-    keyCopyBtn.className = "dialog-inline-btn"
-    keyCopyBtn.textContent = "复制"
-    keyCopyBtn.title = "把当前 Key 复制到剪贴板"
-    let keyCopyTimer: ReturnType<typeof setTimeout> | null = null
-    keyCopyBtn.addEventListener("click", () => {
-      const flash = (text: string) => {
-        if (keyCopyTimer) clearTimeout(keyCopyTimer)
-        keyCopyBtn.textContent = text
-        keyCopyTimer = setTimeout(() => {
-          keyCopyBtn.textContent = "复制"
-          keyCopyTimer = null
-        }, 1500)
-      }
-      const value = keyEl.value.trim()
-      if (!value) {
-        flash("没有 Key")
-        return
-      }
-      void copyText(value).then((ok) => flash(ok ? "已复制 ✓" : "复制失败"))
-    })
-    const keyLabel = document.createElement("div")
-    keyLabel.className = "dialog-field"
-    keyLabel.append(document.createTextNode("Key"), keyEl, keyCopyBtn)
-
-    const resultEl = document.createElement("p")
-    const testBtn = document.createElement("button")
-    testBtn.type = "button"
-    testBtn.className = "ai-provider-test"
-    testBtn.textContent = "测试"
-    const testRow = document.createElement("div")
-    testRow.className = "ai-provider-testrow"
-    testRow.append(testBtn, resultEl)
-
-    const temperature = aiSettings.temperature
-    testBtn.addEventListener("click", () => {
-      const models = parseList(modelsEl.value)
-      resultEl.textContent = "连接中…"
-      void testAiConnection({
-        baseUrl: baseEl.value,
-        api: provider.api,
-        apiKey: keyEl.value,
-        model: models[0] ?? "",
-        effort: "default",
-        auth: provider.auth,
-        tokenParam: provider.tokenParam,
-        supportsThinking: thinkEl ? thinkEl.checked : provider.supportsThinking,
-        supportsEffort: effortEl ? effortEl.checked : provider.supportsEffort,
-        temperature,
-      })
-        .then((message) => {
-          resultEl.textContent = message
-        })
-        .catch((err) => {
-          resultEl.textContent = err instanceof Error ? err.message : String(err)
-        })
-    })
-
-    block.append(baseLabel, modelsLabel, keyLabel, testRow)
-    form.appendChild(block)
-    filterTargets.push({
-      text: `${provider.id} ${provider.name} ${provider.baseUrl}`.toLowerCase(),
-      block,
-    })
-    rows.push({ provider, baseEl, modelsEl, keyEl, resultEl, thinkEl, effortEl })
-  }
-  searchEl.addEventListener("input", () => {
-    const query = searchEl.value.trim().toLowerCase()
-    for (const target of filterTargets) {
-      target.block.hidden = query !== "" && !target.text.includes(query)
-    }
-  })
-
-  const tempEl = document.createElement("input")
-  tempEl.type = "number"
-  tempEl.min = "0"
-  tempEl.max = "2"
-  tempEl.step = "0.1"
-  tempEl.value = String(aiSettings.temperature)
-  const tempLabel = document.createElement("label")
-  tempLabel.className = "dialog-field"
-  tempLabel.append(document.createTextNode("温度"), tempEl)
-
-  const limitEl = document.createElement("select")
-  const limitOptions: [string, string][] = [
-    ["none", "不限制（交给接口默认）"],
-    ["auto", "自动（按词格估一个保险丝）"],
-  ]
-  for (const [value, label] of limitOptions) {
-    const option = document.createElement("option")
-    option.value = value
-    option.textContent = label
-    limitEl.appendChild(option)
-  }
-  limitEl.value = aiSettings.maxOutput
-  const limitLabel = document.createElement("label")
-  limitLabel.className = "dialog-field"
-  limitLabel.append(document.createTextNode("输出上限"), limitEl)
-
-  const actions = document.createElement("div")
-  actions.className = "dialog-actions"
-  const cancel = document.createElement("button")
-  cancel.type = "submit"
-  cancel.value = "cancel"
-  cancel.textContent = "取消"
-  const ok = document.createElement("button")
-  ok.type = "submit"
-  ok.value = "ok"
-  ok.textContent = "保存"
-  actions.append(cancel, ok)
-
-  form.append(tempLabel, limitLabel, actions)
-  dialog.appendChild(form)
-  document.body.appendChild(dialog)
-  dialog.addEventListener("close", () => {
-    dialog.remove()
-    if (dialog.returnValue !== "ok") return
-    const providers = rows.map(
-      ({ provider, baseEl, modelsEl, keyEl, thinkEl, effortEl }) => ({
-        ...provider,
-        baseUrl: baseEl.value.trim(),
-        models: parseList(modelsEl.value),
-        apiKey: keyEl.value.trim(),
-        supportsThinking: thinkEl ? thinkEl.checked : provider.supportsThinking,
-        supportsEffort: effortEl ? effortEl.checked : provider.supportsEffort,
-      }),
-    )
-    let providerId = aiSettings.providerId
-    let model = aiSettings.model
-    const currentProvider = providers.find((item) => item.id === providerId)
-    if (currentProvider && !currentProvider.models.includes(model)) {
-      model = currentProvider.models[0] ?? ""
-    }
-    if (!currentProvider || !model) {
-      const fallback = providers.find(
-        (item) => item.models.length > 0 && item.baseUrl.trim() !== "",
-      )
-      if (fallback) {
-        providerId = fallback.id
-        model = fallback.models[0]
-      }
-    }
-    aiSettings = {
-      providers,
-      providerId,
-      model,
-      efforts: aiSettings.efforts,
-      temperature: Number(tempEl.value) || 0.8,
-      maxOutput: limitEl.value === "auto" ? "auto" : "none",
-    }
-    saveAiSettings(aiSettings)
-    renderAiChips()
-    setStatus("AI 设置已保存")
-  })
-  dialog.showModal()
-}
 
 const HELP_GUIDE: string[] = [
   "<b>格子</b>：点格子直接打字，一格一字——<b>只收汉字</b>（英文、拼音、数字、标点自动跳过）",
@@ -5634,23 +5369,43 @@ function openSettingsDialog(initial: SettingsSection = "appearance"): void {
   const ids: SettingsSection[] = ["appearance", "ai", "data", "about"]
   const labels: Record<SettingsSection, string> = {
     appearance: "外观",
-    ai: "AI",
+    ai: "模型",
     data: "数据",
     about: "关于",
   }
+  const icons: Record<SettingsSection, string> = {
+    appearance: "ic-set-appearance",
+    ai: "ic-set-model",
+    data: "ic-set-data",
+    about: "ic-set-about",
+  }
   const navButtons = new Map<SettingsSection, HTMLButtonElement>()
   let current: SettingsSection | null = null
+  /** 强制重画当前这一节（模型页保存/取消后要回到列表，用得到） */
+  const reRender = (): void => {
+    if (!current) return
+    for (const [key, button] of navButtons) button.classList.toggle("active", key === current)
+    pane.replaceChildren(settingsSectionView(current, reRender))
+  }
   const select = (section: SettingsSection): void => {
     if (current === section) return
     current = section
-    for (const [key, button] of navButtons) button.classList.toggle("active", key === section)
-    pane.replaceChildren(settingsSectionView(section))
+    reRender()
     pane.scrollTop = 0
   }
   for (const id of ids) {
     const button = document.createElement("button")
     button.type = "button"
-    button.textContent = labels[id]
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg")
+    icon.setAttribute("class", "btn-icon")
+    icon.setAttribute("viewBox", "0 0 24 24")
+    icon.setAttribute("aria-hidden", "true")
+    const use = document.createElementNS("http://www.w3.org/2000/svg", "use")
+    use.setAttribute("href", `#${icons[id]}`)
+    icon.appendChild(use)
+    const label = document.createElement("span")
+    label.textContent = labels[id]
+    button.append(icon, label)
     button.addEventListener("click", () => select(id))
     navButtons.set(id, button)
     nav.appendChild(button)
@@ -5672,9 +5427,9 @@ function openSettingsDialog(initial: SettingsSection = "appearance"): void {
   dialog.showModal()
 }
 
-function settingsSectionView(section: SettingsSection): HTMLElement {
+function settingsSectionView(section: SettingsSection, reRender?: () => void): HTMLElement {
   if (section === "appearance") return settingsAppearanceView()
-  if (section === "ai") return settingsAiView()
+  if (section === "ai") return settingsAiView(reRender ?? (() => {}))
   if (section === "data") return settingsDataView()
   return settingsAboutView()
 }
@@ -5726,18 +5481,482 @@ function settingsAppearanceView(): HTMLElement {
   return wrap
 }
 
-function settingsAiView(): HTMLElement {
-  const provider = currentProvider()
-  const currentText = provider
-    ? `当前：${provider.name} · ${modelLabel(aiSettings.model)}`
-    : "当前：还没选服务商"
-  const wrap = settingsSection("服务商与模型", `${currentText}。Key 只存在这台电脑上。`)
-  const open = document.createElement("button")
-  open.type = "button"
-  open.className = "dialog-inline-btn"
-  open.textContent = "服务商与模型设置…"
-  open.addEventListener("click", () => openAiSettings())
-  wrap.appendChild(open)
+/** 下一个自定义服务商的编号（custom-1 / custom-2 …，内置那个 custom 占位不占号） */
+function nextCustomProviderId(): string {
+  const used = new Set(aiSettings.providers.map((item) => item.id))
+  let n = 1
+  while (used.has(`custom-${n}`)) n += 1
+  return `custom-${n}`
+}
+
+/** 删掉一个自定义服务商；如果删的是当前用的，回退到第一个有 Key 的 */
+function removeCustomProvider(provider: AiProvider): void {
+  const rest = aiSettings.providers.filter((item) => item.id !== provider.id)
+  let providerId = aiSettings.providerId
+  let model = aiSettings.model
+  if (providerId === provider.id) {
+    const fallback =
+      rest.find((item) => item.apiKey.trim() && item.models.length > 0) ?? rest[0] ?? null
+    providerId = fallback?.id ?? ""
+    model = fallback?.models[0] ?? ""
+  }
+  aiSettings = { ...aiSettings, providers: rest, providerId, model }
+  saveAiSettings(aiSettings)
+  renderAiChips()
+  setStatus(`已删除「${provider.name}」`)
+}
+
+/** 把编辑器里填的写回设置；返回是否成功 */
+function applyModelEditor(
+  editing: AiProvider | null,
+  form: {
+    providerId: string
+    key: string
+    baseUrl: string
+    models: string[]
+    name: string
+    supportsThinking: boolean
+    supportsEffort: boolean
+  },
+): boolean {
+  const providers = aiSettings.providers.map((item) =>
+    item.id === form.providerId
+      ? {
+          ...item,
+          apiKey: form.key,
+          baseUrl: form.baseUrl,
+          models: form.models.length > 0 ? form.models : item.models,
+        }
+      : item,
+  )
+  const saved = providers.find((item) => item.id === form.providerId)!
+  // 还没有可用的当前服务商（或当前那个没 Key）→ 切到这个刚配好的
+  const current = providers.find((item) => item.id === aiSettings.providerId)
+  const needSwitch =
+    !current || !current.apiKey.trim() || current.models.length === 0 || !!editing === false
+  const providerId = needSwitch ? saved.id : aiSettings.providerId
+  const activeProvider = providers.find((item) => item.id === providerId)!
+  const model = activeProvider.models.includes(aiSettings.model)
+    ? aiSettings.model
+    : (activeProvider.models[0] ?? "")
+  aiSettings = { ...aiSettings, providers, providerId, model }
+  saveAiSettings(aiSettings)
+  renderAiChips()
+  return true
+}
+
+interface SettingsModelEditorConfig {
+  /** null = 新建；非 null = 编辑这个服务商 */
+  provider: AiProvider | null
+  tab: "builtin" | "custom"
+  onCancel: () => void
+  onSaved: (message: string) => void
+}
+
+/** 模型设置的内嵌编辑器（照参考图：两个分页 + 表单 + 取消/保存） */
+function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
+  const editing = config.provider
+  let tab: "builtin" | "custom" = config.tab
+  const wrap = document.createElement("div")
+  wrap.className = "settings-editor"
+
+  const tabBuiltin = document.createElement("button")
+  tabBuiltin.type = "button"
+  tabBuiltin.className = "settings-tab"
+  tabBuiltin.textContent = "第三方模型提供商"
+  tabBuiltin.addEventListener("click", () => {
+    tab = "builtin"
+    render()
+  })
+  const tabCustom = document.createElement("button")
+  tabCustom.type = "button"
+  tabCustom.className = "settings-tab"
+  tabCustom.textContent = "自定义模型 API"
+  tabCustom.addEventListener("click", () => {
+    tab = "custom"
+    render()
+  })
+  const tabs = document.createElement("div")
+  tabs.className = "settings-tabs"
+  tabs.append(tabBuiltin, tabCustom)
+
+  const field = (label: string, control: HTMLElement, hint?: string): HTMLElement => {
+    const box = document.createElement("label")
+    box.className = "settings-field"
+    box.append(document.createTextNode(label), control)
+    if (hint) {
+      const note = document.createElement("span")
+      note.className = "hint"
+      note.textContent = hint
+      box.appendChild(note)
+    }
+    return box
+  }
+
+  const render = (): void => {
+    wrap.replaceChildren(tabs)
+    tabBuiltin.classList.toggle("active", tab === "builtin")
+    tabCustom.classList.toggle("active", tab === "custom")
+
+    const keyEl = document.createElement("input")
+    keyEl.type = "password"
+    keyEl.placeholder = "输入 API 密钥"
+    keyEl.value = editing?.apiKey ?? ""
+    const keyRow = document.createElement("div")
+    keyRow.className = "row"
+    keyRow.append(keyEl)
+    if (editing?.keyUrl) {
+      const get = document.createElement("button")
+      get.type = "button"
+      get.className = "settings-inline-btn"
+      get.textContent = "获取 Key"
+      get.addEventListener("click", () => void openExternal(editing.keyUrl ?? ""))
+      keyRow.append(get)
+    }
+
+    const cancel = document.createElement("button")
+    cancel.type = "button"
+    cancel.className = "settings-inline-btn"
+    cancel.textContent = "取消"
+    cancel.addEventListener("click", config.onCancel)
+    const save = document.createElement("button")
+    save.type = "button"
+    save.className = "primary"
+    save.textContent = "保存"
+    const actions = document.createElement("div")
+    actions.className = "settings-editor-actions"
+    actions.append(cancel, save)
+
+    if (tab === "custom") {
+      const nameEl = document.createElement("input")
+      nameEl.type = "text"
+      nameEl.placeholder = "比如：我的小网关"
+      nameEl.value = editing?.name ?? ""
+      const baseEl = document.createElement("input")
+      baseEl.type = "text"
+      baseEl.placeholder = "https://…（到 /v1 为止）"
+      baseEl.value = editing?.baseUrl ?? ""
+      const modelsEl = document.createElement("input")
+      modelsEl.type = "text"
+      modelsEl.placeholder = "模型 id，逗号分隔"
+      modelsEl.value = (editing?.models ?? []).join(", ")
+      const thinkEl = document.createElement("input")
+      thinkEl.type = "checkbox"
+      thinkEl.checked = editing?.supportsThinking ?? false
+      const thinkRow = document.createElement("label")
+      thinkRow.className = "settings-field"
+      thinkRow.append(
+        thinkEl,
+        document.createTextNode("支持 thinking 开关（thinking: enabled / disabled）"),
+      )
+      const effortEl = document.createElement("input")
+      effortEl.type = "checkbox"
+      effortEl.checked = editing?.supportsEffort ?? false
+      const effortRow = document.createElement("label")
+      effortRow.className = "settings-field"
+      effortRow.append(effortEl, document.createTextNode("支持 reasoning_effort（low / high / max）"))
+      save.addEventListener("click", () => {
+        const id = editing?.id ?? nextCustomProviderId()
+        const models = parseList(modelsEl.value)
+        const providers = editing
+          ? aiSettings.providers.map((item) =>
+              item.id === id
+                ? {
+                    ...item,
+                    name: nameEl.value.trim() || item.name,
+                    baseUrl: baseEl.value.trim(),
+                    models: models.length > 0 ? models : item.models,
+                    apiKey: keyEl.value.trim(),
+                    supportsThinking: thinkEl.checked,
+                    supportsEffort: effortEl.checked,
+                  }
+                : item,
+            )
+          : [
+              ...aiSettings.providers,
+              {
+                id,
+                name: nameEl.value.trim() || "自定义",
+                baseUrl: baseEl.value.trim(),
+                api: "openai-completions" as const,
+                models,
+                apiKey: keyEl.value.trim(),
+                auth: "bearer" as const,
+                tokenParam: "max_tokens" as const,
+                supportsThinking: thinkEl.checked,
+                supportsEffort: effortEl.checked,
+                builtin: false,
+              },
+            ]
+        const justAdded = !editing
+        const providerId = justAdded || aiSettings.providerId === id || aiSettings.providerId === ""
+          ? id
+          : aiSettings.providerId
+        const activeProvider = providers.find((item) => item.id === providerId)!
+        const model = activeProvider.models.includes(aiSettings.model)
+          ? aiSettings.model
+          : (activeProvider.models[0] ?? "")
+        aiSettings = { ...aiSettings, providers, providerId, model }
+        saveAiSettings(aiSettings)
+        renderAiChips()
+        config.onSaved(editing ? `已保存「${nameEl.value.trim() || editing.name}」` : "已添加自定义服务商")
+      })
+      wrap.append(
+        field("名称", nameEl),
+        field("接口地址", baseEl, "到 /v1 为止；不填 /v1 会按官方路径补"),
+        field("API 密钥", keyRow),
+        field("模型", modelsEl, "逗号分隔；第一个是默认模型"),
+        thinkRow,
+        effortRow,
+        actions,
+      )
+      return
+    }
+
+    // 第三方：从内置目录里挑一家填 Key
+    const options = aiSettings.providers.filter(
+      (item) => item.builtin && item.id !== (editing?.builtin ? null : "custom"),
+    )
+    const select = document.createElement("select")
+    for (const item of options) {
+      const option = document.createElement("option")
+      option.value = item.id
+      option.textContent = item.name
+      select.appendChild(option)
+    }
+    const selectedId = editing?.builtin ? editing.id : options[0]?.id ?? ""
+    select.value = selectedId
+    let provider = options.find((item) => item.id === select.value) ?? options[0]
+    keyEl.value = provider?.apiKey ?? ""
+    if (provider?.keyUrl) {
+      // 换服务商时「获取 Key」链接跟着换
+      const get = keyRow.querySelector("button")
+      if (get) get.onclick = () => void openExternal(provider?.keyUrl ?? "")
+    }
+
+    const baseEl = document.createElement("input")
+    baseEl.type = "text"
+    baseEl.value = provider?.baseUrl ?? ""
+    const modelsEl = document.createElement("input")
+    modelsEl.type = "text"
+    modelsEl.value = (provider?.models ?? []).join(", ")
+    const syncSelected = (): void => {
+      provider = options.find((item) => item.id === select.value) ?? options[0]
+      keyEl.value = provider?.apiKey ?? ""
+      baseEl.value = provider?.baseUrl ?? ""
+      modelsEl.value = (provider?.models ?? []).join(", ")
+    }
+    select.addEventListener("change", syncSelected)
+
+    const resultEl = document.createElement("span")
+    resultEl.className = "hint"
+    const testBtn = document.createElement("button")
+    testBtn.type = "button"
+    testBtn.className = "settings-inline-btn"
+    testBtn.textContent = "测试"
+    testBtn.addEventListener("click", () => {
+      if (!provider) return
+      const models = parseList(modelsEl.value)
+      resultEl.textContent = "连接中…"
+      void testAiConnection({
+        baseUrl: baseEl.value,
+        api: provider.api,
+        apiKey: keyEl.value,
+        model: models[0] ?? "",
+        effort: "default",
+        auth: provider.auth,
+        tokenParam: provider.tokenParam,
+        supportsThinking: provider.supportsThinking,
+        supportsEffort: provider.supportsEffort,
+        temperature: aiSettings.temperature,
+      })
+        .then((message) => {
+          resultEl.textContent = message
+        })
+        .catch((err) => {
+          resultEl.textContent = err instanceof Error ? err.message : String(err)
+        })
+    })
+
+    const collapse = document.createElement("details")
+    collapse.className = "settings-collapse"
+    const summary = document.createElement("summary")
+    summary.textContent = "自定义设置"
+    const body = document.createElement("div")
+    body.className = "body"
+    body.append(
+      field("接口地址", baseEl, "一般不用改"),
+      field("模型", modelsEl, "逗号分隔"),
+    )
+    collapse.append(summary, body)
+
+    save.addEventListener("click", () => {
+      if (!provider) return
+      const models = parseList(modelsEl.value)
+      applyModelEditor(editing, {
+        providerId: provider.id,
+        key: keyEl.value.trim(),
+        baseUrl: baseEl.value.trim(),
+        models,
+        name: provider.name,
+        supportsThinking: provider.supportsThinking,
+        supportsEffort: provider.supportsEffort,
+      })
+      config.onSaved(`已保存「${provider.name}」`)
+    })
+
+    wrap.append(
+      field("提供商", select, "从内置目录里选 OpenAI、Anthropic、Kimi 等，填入 API 密钥即可使用"),
+      field("API 密钥", keyRow),
+      collapse,
+      field("连接", testBtn, "发一句最小请求试通"),
+      resultEl,
+      actions,
+    )
+  }
+
+  render()
+  return wrap
+}
+
+/** 设置 · 模型页：服务商卡片列表（照参考图）+ 添加 / 预设 */
+function settingsAiView(reRender: () => void): HTMLElement {
+  const wrap = settingsSection("模型")
+  const intro = document.createElement("p")
+  intro.className = "settings-intro"
+  intro.textContent = "填入各提供商的 API 密钥即可使用其模型；每张卡片下面选它当前用哪个模型。Key 只存在这台电脑上。"
+  wrap.appendChild(intro)
+
+  const cards = document.createElement("div")
+  cards.className = "settings-cards"
+  wrap.appendChild(cards)
+
+  const buildList = (): void => {
+    cards.replaceChildren()
+    for (const provider of aiSettings.providers) {
+      // 内置的 custom 占位（没配过）不占卡片
+      if (provider.id === "custom" && !provider.apiKey.trim() && !provider.baseUrl.trim()) continue
+      const card = document.createElement("div")
+      card.className = `settings-card${provider.id === aiSettings.providerId ? " current" : ""}`
+
+      const head = document.createElement("div")
+      head.className = "settings-card-head"
+      const dot = document.createElement("span")
+      dot.className = `settings-dot${provider.apiKey.trim() ? " on" : ""}`
+      dot.title = provider.apiKey.trim() ? "已填 Key" : "还没填 Key"
+      const name = document.createElement("span")
+      name.className = "settings-card-name"
+      name.textContent = provider.name
+      head.append(dot, name)
+      if (!provider.builtin) {
+        const tag = document.createElement("span")
+        tag.className = "settings-tag"
+        tag.textContent = "自定义"
+        head.appendChild(tag)
+      }
+      if (provider.id === aiSettings.providerId) {
+        const tag = document.createElement("span")
+        tag.className = "settings-tag current"
+        tag.textContent = "当前"
+        head.appendChild(tag)
+      }
+      const actions = document.createElement("div")
+      actions.className = "settings-card-actions"
+      const edit = document.createElement("button")
+      edit.type = "button"
+      edit.textContent = "编辑"
+      actions.appendChild(edit)
+      edit.addEventListener("click", () => {
+        const editor = settingsModelEditor({
+          provider,
+          tab: provider.builtin ? "builtin" : "custom",
+          onCancel: reRender,
+          onSaved: (message) => {
+            setStatus(message)
+            reRender()
+          },
+        })
+        wrap.replaceChildren(editor)
+      })
+      if (!provider.builtin) {
+        const del = document.createElement("button")
+        del.type = "button"
+        del.className = "danger"
+        del.textContent = "删除"
+        del.addEventListener("click", () => {
+          removeCustomProvider(provider)
+          buildList()
+        })
+        actions.appendChild(del)
+      }
+      head.appendChild(actions)
+      card.appendChild(head)
+
+      const modelRow = document.createElement("div")
+      modelRow.className = "settings-card-model"
+      const select = document.createElement("select")
+      for (const model of provider.models) {
+        const option = document.createElement("option")
+        option.value = model
+        option.textContent = modelLabel(model)
+        select.appendChild(option)
+      }
+      select.value =
+        provider.id === aiSettings.providerId ? aiSettings.model : (provider.models[0] ?? "")
+      select.disabled = !provider.apiKey.trim()
+      select.addEventListener("change", () => {
+        if (!provider.apiKey.trim()) {
+          setStatus("先填这个服务商的 API Key", true)
+          return
+        }
+        if (provider.models.length === 0) {
+          setStatus("这个服务商还没配模型", true)
+          return
+        }
+        aiSettings = { ...aiSettings, providerId: provider.id, model: select.value }
+        saveAiSettings(aiSettings)
+        renderAiChips()
+        buildList()
+        setStatus(`已切换：${provider.name} · ${modelLabel(select.value)}`)
+      })
+      modelRow.appendChild(select)
+      card.appendChild(modelRow)
+      cards.appendChild(card)
+    }
+  }
+
+  const add = document.createElement("button")
+  add.type = "button"
+  add.className = "settings-add"
+  add.textContent = "＋ 添加模型提供商"
+  add.addEventListener("click", () => {
+    const editor = settingsModelEditor({
+      provider: null,
+      tab: "custom",
+      onCancel: reRender,
+      onSaved: (message) => {
+        setStatus(message)
+        reRender()
+      },
+    })
+    wrap.replaceChildren(editor)
+  })
+  wrap.appendChild(add)
+
+  const presets = document.createElement("div")
+  presets.className = "settings-presets"
+  presets.append(document.createTextNode("服务商预设 · 照 DSH 目录内置 50 家，改目录后重跑生成脚本"))
+  const refresh = document.createElement("button")
+  refresh.type = "button"
+  refresh.textContent = "刷新"
+  refresh.addEventListener("click", () => {
+    buildList()
+    setStatus("服务商预设已刷新")
+  })
+  presets.appendChild(refresh)
+  wrap.appendChild(presets)
+
+  buildList()
   return wrap
 }
 

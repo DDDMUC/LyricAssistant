@@ -38,6 +38,7 @@ beforeAll(async () => {
   await import("./main")
 })
 
+/** 填一把测试 Key：模型弹窗 → 管理模型 → 设置·模型 → 第一张卡（DeepSeek）编辑 → 填 Key → 保存 */
 async function setupKey(): Promise<void> {
   const panel = document.querySelector<HTMLElement>("#ai-panel")!
   if (panel.hasAttribute("hidden")) document.querySelector<HTMLButtonElement>("#btn-ai")!.click()
@@ -45,14 +46,22 @@ async function setupKey(): Promise<void> {
   Array.from(document.querySelectorAll<HTMLButtonElement>(".ai-pop button"))
     .find((button) => button.textContent === "管理模型")!
     .click()
-  const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
-  dialog.querySelectorAll<HTMLInputElement>('input[type="password"]').forEach((input) => {
-    input.value = "sk-test"
-  })
-  Array.from(dialog.querySelectorAll("button"))
+  await tick(30)
+  const settings = document.querySelector<HTMLDialogElement>(".settings-dialog")!
+  settings
+    .querySelectorAll<HTMLElement>(".settings-card")[0]!
+    .querySelector<HTMLButtonElement>(".settings-card-actions button")!
+    .click()
+  await tick(20)
+  settings.querySelector<HTMLInputElement>('.settings-editor input[type="password"]')!.value = "sk-test"
+  Array.from(settings.querySelectorAll<HTMLButtonElement>(".settings-editor-actions button"))
     .find((button) => button.textContent === "保存")!
     .click()
-  await tick(30)
+  await tick(20)
+  Array.from(settings.querySelectorAll<HTMLButtonElement>(".settings-head button"))
+    .find((button) => button.textContent === "完成")!
+    .click()
+  await tick(20)
 }
 
 it("流式回复按行预览，delta 合并后 DOM 重建次数远小于 chunk 数", async () => {
