@@ -13,13 +13,24 @@ const source =
 /** 我们系统支持的档位；off 归一成 none，其余（xhigh / minimal / ultra…）丢弃 */
 const KEEP = ["none", "low", "medium", "high", "max"]
 
+/** 有国内版对应的「国际版」：不上架（聚合平台 / 没有对应国内版的不在此列） */
+const DROP_INTERNATIONAL = new Set([
+  "moonshot-global",
+  "zai",
+  "stepfun-step-plan-global",
+  "qwen-token-plan-global",
+  "minimax-coding-plan",
+  "xiaomi-token-plan-sgp",
+  "xiaomi-token-plan-ams",
+])
+
 const mod = await import(pathToFileURL(source).href)
 if (!Array.isArray(mod.PRESETS)) {
   console.error(`${source} 里没有 PRESETS`)
   process.exit(1)
 }
 
-const providers = mod.PRESETS.map((p) => ({
+const providers = mod.PRESETS.filter((p) => !DROP_INTERNATIONAL.has(p.id)).map((p) => ({
   id: p.id,
   name: p.name,
   baseUrl: p.baseURL,
@@ -52,6 +63,7 @@ const out = []
 out.push("// 自动生成，别手改：改上游目录后跑 node tools/gen-provider-presets.mjs 重新生成")
 out.push(`// 来源：DSH 的 provider 目录（dsh-provider-hub/core/providers.js），生成于 ${new Date().toISOString().slice(0, 10)}`)
 out.push("// 归一化：reasoningEfforts 的 off 键改成 none；xhigh / minimal / ultra 等我们系统没有的档位丢掉")
+out.push(`// 已剔除：有国内版对应的「国际版」（${[...DROP_INTERNATIONAL].join(" / ")}）`)
 out.push("")
 out.push('export type PresetApi = "openai-completions" | "anthropic-messages" | "openai-responses"')
 out.push("")

@@ -288,6 +288,25 @@ html.win-desktop .titlebar #btn-settings {
   transition: width 0.16s ease, padding 0.16s ease;
 }
 
+/* 右栏（AI 面板 / 原文）打开时：左栏的上限要给右栏的下限让路——
+   保证工作区至少放得下右栏自己的宽度，否则窗口一窄，右栏会被挤出窗口裁掉。
+   左栏最多让到自己的下限 240px。（AI 面板下限 400 = main.ts 的 AI_MIN_WIDTH） */
+html.ai-open .sidebar {
+  /* 400（AI 面板下限） + 7（侧栏拖拽条） + 1（工作区左边框） */
+  max-width: max(240px, calc(100% - 408px));
+}
+
+html.source-open .sidebar {
+  /* 280（原文面板） + 7 + 1 */
+  max-width: max(240px, calc(100% - 288px));
+}
+
+/* 独立窗里侧栏是铺满的，不受上面的让路规则影响 */
+body.docs-window .sidebar,
+body.ai-window .sidebar {
+  max-width: none;
+}
+
 .status-right #status-path {
   cursor: pointer;
 }

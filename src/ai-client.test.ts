@@ -25,15 +25,19 @@ beforeEach(() => {
 })
 
 describe("AI 设置", () => {
-  it("默认内置 DeepSeek 和 MiMo + 照 DSH 目录的 48 家（跳过目录里的 deepseek / xiaomi），自定义在最后", () => {
+  it("默认内置 DeepSeek 和 MiMo + 照 DSH 目录的 41 家（跳过目录里的 deepseek / xiaomi），自定义在最后", () => {
     const settings = defaultAiSettings()
     const ids = settings.providers.map((provider) => provider.id)
     expect(ids.slice(0, 2)).toEqual(["deepseek", "mimo"])
     expect(ids[ids.length - 1]).toBe("custom")
-    expect(ids).toHaveLength(51)
+    expect(ids).toHaveLength(44)
     expect(new Set(ids).size).toBe(ids.length)
     expect(ids).not.toContain("xiaomi")
     expect(ids.filter((id) => id === "deepseek")).toHaveLength(1)
+    // 有国内版对应的国际版不上架
+    for (const dropped of ["moonshot-global", "zai", "stepfun-step-plan-global", "qwen-token-plan-global", "minimax-coding-plan", "xiaomi-token-plan-sgp", "xiaomi-token-plan-ams"]) {
+      expect(ids).not.toContain(dropped)
+    }
     expect(ids).toContain("openai")
     expect(ids).toContain("anthropic")
     expect(ids).toContain("opencode-zen")

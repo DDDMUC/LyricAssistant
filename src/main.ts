@@ -7517,6 +7517,9 @@ function bindDockBack(
 ): void {
   let hovering = false
   let stopTimer: number | undefined
+  let hideTimer: number | undefined
+  let snapping = false
+  let snappedTimer: number | undefined
 
   // 拖拽期间主窗与自己的几何基本不变：缓存 500ms，省掉每次 onMoved 的 4 个 IPC 查询
   let zoneCache: {
@@ -7552,8 +7555,9 @@ function bindDockBack(
     return zoneCache
   }
 
-  /** 指针（取不到就用窗口中心）是否落在主窗那侧的停靠区：一条贴着主窗边缘、面板宽、整高的带 */
-  const inDockZone = async (): Promise<boolean> => {
+  /** 指针（取不到就用窗口中心）是否落在主窗那侧的停靠区：一条贴着主窗边缘、面板宽、整高的带。
+   *  keep=true（框已经亮着）时把边界向外扩 80px——迟滞，避免指针在边界抖一下就让虚线框一闪一闪。 */
+  const inDockZone = async (keep = false): Promise<boolean> => {
     const geo = await zoneGeometry()
     if (!geo) return false
     let point: { x: number; y: number }
@@ -7563,26 +7567,48 @@ function bindDockBack(
       const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()])
       point = { x: pos.x + size.width / 2, y: pos.y + size.height / 2 }
     }
-    if (point.y < geo.y || point.y > geo.y + geo.height) return false
+    const pad = keep ? 80 : 0
+    if (point.y < geo.y - pad || point.y > geo.y + geo.height + pad) return false
     if (dockSide === "right") {
-      return point.x >= geo.x + geo.width - geo.winW && point.x <= geo.x + geo.width
+      return (
+        point.x >= geo.x + geo.width - geo.winW - pad &&
+        point.x <= geo.x + geo.width + pad
+      )
     }
-    return point.x >= geo.x && point.x <= geo.x + geo.winW
+    return point.x >= geo.x - pad && point.x <= geo.x + geo.winW + pad
+  }
+
+  /** 更新停靠高亮：进带立刻亮；离带晚 140ms 再熄——避免边界抖动让虚线框「一闪一闪」 */
+  const applyHover = (over: boolean): void => {
+    if (snapping) return
+    if (over) {
+      if (hideTimer !== undefined) {
+        window.clearTimeout(hideTimer)
+        hideTimer = undefined
+      }
+      if (!hovering) {
+        hovering = true
+        emitQuiet(hoverChannel, { over: true })
+      }
+      return
+    }
+    if (!hovering || hideTimer !== undefined) return
+    hideTimer = window.setTimeout(() => {
+      hideTimer = undefined
+      if (hovering) {
+        hovering = false
+        emitQuiet(hoverChannel, { over: false })
+      }
+    }, 140)
   }
 
   const onMoved = (): void => {
+    if (snapping) return
     // 高亮不用跟满帧：60ms 查一次就够，拖的时候少打点 IPC
     const now = Date.now()
     if (now - lastZoneCheck >= 60) {
       lastZoneCheck = now
-      void inDockZone()
-        .then((over) => {
-          if (over !== hovering) {
-            hovering = over
-            emitQuiet(hoverChannel, { over })
-          }
-        })
-        .catch(() => {})
+      void inDockZone(hovering).then(applyHover).catch(() => {})
     }
     if (stopTimer !== undefined) window.clearTimeout(stopTimer)
     stopTimer = window.setTimeout(() => {
@@ -7602,8 +7628,12 @@ function bindDockBack(
       return
     }
     hovering = false
+    if (hideTimer !== undefined) {
+      window.clearTimeout(hideTimer)
+      hideTimer = undefined
+    }
     emitQuiet(hoverChannel, { over: false })
-    if (!(await inDockZone())) return
+    if (!(await inDockZone(true))) return
     void snapBackDocked()
   }
   // 没有 onMoved（测试桩 / 老环境）就退化成只有「放回」按钮的旧行为
@@ -7613,11 +7643,33 @@ function bindDockBack(
     // 忽略
   }
 
-  /** 磁吸动画：滑向主窗停靠边，然后收回内嵌、藏起自己 */
+  /** 磁吸动画：滑向主窗停靠边，然后收回内嵌、藏起自己。
+   *  一进来就置 snapping：滑动会不停 setPosition、触发 onMoved；若不屏蔽，刚熄掉的虚线框会被重新点亮，
+   *  settle 也会被重新武装、反复收回——表现就是「吸回后虚线还闪几秒」。 */
   const snapBackDocked = async (): Promise<void> => {
-    await slideToDock(win, dockSide)
-    redock()
-    void win.hide().catch(() => {})
+    snapping = true
+    if (stopTimer !== undefined) {
+      window.clearTimeout(stopTimer)
+      stopTimer = undefined
+    }
+    if (hideTimer !== undefined) {
+      window.clearTimeout(hideTimer)
+      hideTimer = undefined
+    }
+    hovering = false
+    emitQuiet(hoverChannel, { over: false })
+    try {
+      await slideToDock(win, dockSide)
+      redock()
+      await win.hide().catch(() => {})
+    } finally {
+      // 藏好、事件静下来后再放开：之后重拆出来还能正常磁吸
+      if (snappedTimer !== undefined) window.clearTimeout(snappedTimer)
+      snappedTimer = window.setTimeout(() => {
+        snappedTimer = undefined
+        snapping = false
+      }, 400)
+    }
   }
 }
 
