@@ -67,6 +67,12 @@ it("文档栏窗口模式：主工作区不加载，只挂侧边栏", () => {
   // 「拆出」藏起来、「放回」露出来
   expect(document.querySelector<HTMLElement>("#btn-docs-win")!.hidden).toBe(true)
   expect(document.querySelector<HTMLElement>("#btn-docs-redock")!.hidden).toBe(false)
+  // 标题栏的「✕」换成「放回主窗口」（关窗＝放回，别用红叉骗人）
+  const titleBtn = document.querySelector<HTMLElement>("#win-close")!
+  expect(titleBtn.title).toBe("放回主窗口")
+  expect(titleBtn.classList.contains("close")).toBe(false)
+  expect(titleBtn.innerHTML).toContain("#ic-frame")
+  expect(titleBtn.innerHTML).toContain("#ic-arrow-in")
   // 列表照常画
   expect(document.querySelectorAll<HTMLElement>(".doc-item").length).toBe(3)
 })

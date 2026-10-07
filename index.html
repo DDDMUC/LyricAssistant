@@ -80,7 +80,7 @@
         </div>
         <button id="btn-new-doc" class="new-doc" type="button" title="新建歌词文件" aria-label="新建歌词文件">＋ 新建歌词</button>
         <div class="work-head">
-          <span>工作区</span>
+          <span>文档栏</span>
           <button id="btn-new-convo" type="button" title="新建对话" aria-label="新建对话">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" />
@@ -144,7 +144,12 @@
           </div>
           <span class="topbar-right">
             <button id="btn-help" type="button" title="帮助：使用说明 / 快捷键 / 导出诊断日志">帮助</button>
-            <button id="btn-ai" type="button" aria-expanded="false">AI</button>
+            <button id="btn-ai" type="button" aria-label="AI 面板" aria-expanded="false">
+              <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+                <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.4" />
+                <rect x="9.5" y="4.4" width="3.1" height="7.2" rx="0.9" fill="currentColor" />
+              </svg>
+            </button>
             <button id="btn-ai-redock-main" type="button" title="放回主窗口" aria-label="放回主窗口" hidden>
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>
               <span>AI</span>

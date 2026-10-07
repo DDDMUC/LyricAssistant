@@ -97,11 +97,15 @@ it("模型：服务商卡片列表（状态点 / 当前 / 编辑）+ 添加按�
   expect(dialog.textContent).toContain("填入各提供商的 API 密钥即可使用其模型")
   expect(dialog.textContent).toContain("Key 只存在这台电脑上")
   const cards = dialog.querySelectorAll<HTMLElement>(".settings-card")
-  expect(cards.length).toBeGreaterThan(10)
-  // 第一张是 DeepSeek 且是当前服务商；未填 Key 时状态点不亮
-  expect(cards[0]!.querySelector(".settings-card-name")?.textContent).toContain("DeepSeek")
-  expect(cards[0]!.classList.contains("current")).toBe(true)
+  // 列表只放常驻两家（DeepSeek / 小米）+ 配过的；没配过的目录家不占卡片
+  expect(Array.from(cards).map((c) => c.querySelector(".settings-card-name")?.textContent)).toEqual([
+    "DeepSeek",
+    "MiMo（小米）",
+  ])
+  // 第一张是 DeepSeek；未填 Key 时状态点不亮
   expect(cards[0]!.querySelector(".settings-dot")?.classList.contains("on")).toBe(false)
+  // 「当前」不做高亮 / 不加标签
+  expect(dialog.querySelector(".settings-card.current, .settings-tag.current")).toBeNull()
   // 「＋ 添加模型提供商」＋「服务商预设 · 刷新」
   expect(
     Array.from(dialog.querySelectorAll("button")).some((b) => b.textContent === "＋ 添加模型提供商"),

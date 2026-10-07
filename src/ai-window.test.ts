@@ -194,10 +194,9 @@ it("「放回」主窗口：发 ai-redock 并把窗藏起来", async () => {
 
 it("独立窗拖回主窗口：指针进停靠区先高亮，停手还在区里就磁吸收回", async () => {
   state.emitCalls.length = 0
-  // 独立窗在 (800, 150)，400×700；主窗在 (400, 100)，1100×800
-  // 右停靠区 = x∈[1100,1500]：指针放到 1300 才该亮
-  state.cursor = { x: 1300, y: 500 }
-  state.tauriWindow.outerPosition.mockResolvedValue({ x: 800, y: 150 })
+  // 独立窗在 (1100, 150)，400×700；主窗在 (400, 100)，1100×800
+  // 右停靠看边：浮窗右缘 1500 = 主窗右缘 1500（差 0，≤20 写死），该亮
+  state.tauriWindow.outerPosition.mockResolvedValue({ x: 1100, y: 150 })
   state.tauriWindow.outerSize.mockResolvedValue({ width: 400, height: 700 })
   const { getAllWindows } = await import("@tauri-apps/api/window")
   vi.mocked(getAllWindows).mockResolvedValue([
@@ -228,8 +227,7 @@ it("窗口压在主窗上面、指针不在停靠区：不亮不吸，能随便�
   state.emitCalls.length = 0
   state.tauriWindow.hide.mockClear()
   state.tauriWindow.setPosition.mockClear()
-  // 窗口整个盖在主窗中间（重叠很多），但指针在主窗左半边、离右停靠区远
-  state.cursor = { x: 700, y: 500 }
+  // 窗口整个盖在主窗中间（重叠很多），但右缘离主窗右缘很远（950 vs 1500）→ 不亮不吸
   state.tauriWindow.outerPosition.mockResolvedValue({ x: 550, y: 150 })
   state.tauriWindow.outerSize.mockResolvedValue({ width: 400, height: 700 })
   const { getAllWindows } = await import("@tauri-apps/api/window")
@@ -256,8 +254,8 @@ it("磁吸：鼠标还按着不吸，松手才吸回", async () => {
   state.emitCalls.length = 0
   state.tauriWindow.hide.mockClear()
   state.tauriWindow.setPosition.mockClear()
-  state.cursor = { x: 1300, y: 500 }
-  state.tauriWindow.outerPosition.mockResolvedValue({ x: 800, y: 150 })
+  // 右缘和主窗右缘对上（差 0）→ 在停靠区里
+  state.tauriWindow.outerPosition.mockResolvedValue({ x: 1100, y: 150 })
   state.tauriWindow.outerSize.mockResolvedValue({ width: 400, height: 700 })
   const { getAllWindows } = await import("@tauri-apps/api/window")
   vi.mocked(getAllWindows).mockResolvedValue([

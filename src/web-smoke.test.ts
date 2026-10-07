@@ -136,6 +136,53 @@ describe("网页环境", () => {
     document.querySelector<HTMLButtonElement>(".find-close")!.click()
     expect(document.querySelector(".find-panel")!.hasAttribute("hidden")).toBe(true)
   })
+
+  it("导入弹窗：「新建导入」会新建一份歌词再导入，原来那份不动", async () => {
+    const importText = async (text: string, target: "current" | "new"): Promise<void> => {
+      document.querySelector<HTMLButtonElement>("#btn-import-lyrics")!.click()
+      const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
+      dialog.querySelector("textarea")!.value = text
+      const radio = dialog.querySelector<HTMLInputElement>(
+        `input[name="import-target"][value="${target}"]`,
+      )!
+      radio.checked = true
+      Array.from(dialog.querySelectorAll("button"))
+        .find((button) => button.textContent === "导入")!
+        .click()
+      await new Promise((resolve) => setTimeout(resolve, 30))
+    }
+    const docCount = (): number => document.querySelectorAll(".doc-item").length
+    const firstSentence = (): string => {
+      const first = document.querySelectorAll(".sentence")[0]
+      if (!first) return ""
+      return Array.from(first.querySelectorAll<HTMLElement>(".cell, .cell-input"))
+        .map((cell) =>
+          cell.classList.contains("cell-input")
+            ? (cell as HTMLInputElement).value
+            : (cell.textContent ?? ""),
+        )
+        .join("")
+    }
+    // 先「新建导入」一份干净的，写上标记
+    await importText("标记 句子啊", "new")
+    const beforeCount = docCount()
+    // 再「新建导入」：多一份、当前这份是新歌词
+    await importText("换首 新歌啊", "new")
+    expect(docCount()).toBe(beforeCount + 1)
+    expect(firstSentence()).toContain("换首")
+    // 标记那份的内容没被动（按内容找——几份的默认名字都一样，不能按标题找）
+    const stored = JSON.parse(localStorage.getItem("cige-grid-docs") ?? "{}") as {
+      docs?: {
+        project?: { sections?: { sentences?: { alternatives?: { cells?: string[] }[] }[] }[] }
+      }[]
+    }
+    const kept = stored.docs?.find((doc) =>
+      (doc.project?.sections?.[0]?.sentences?.[0]?.alternatives?.[0]?.cells?.join("") ?? "").includes(
+        "标记",
+      ),
+    )
+    expect(kept).toBeTruthy()
+  })
 })
 
 it("MIDI 导入的元数据防护：识别不到就清空旧的歌名 / 原文 / 创作信息", async () => {
