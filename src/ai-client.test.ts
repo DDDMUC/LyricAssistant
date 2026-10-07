@@ -5,6 +5,7 @@ vi.mock("@tauri-apps/plugin-http", () => ({ fetch: fetchMock }))
 
 import {
   defaultAiSettings,
+  discoverModels,
   effortLevelsFor,
   effortOf,
   loadAiSettings,
@@ -469,6 +470,43 @@ describe("testAiConnection", () => {
     await expect(testAiConnection(targetOf("deepseek", "deepseek-flash", "default"))).rejects.toThrow(
       /500/,
     )
+  })
+})
+
+describe("discoverModels（获取可用模型）", () => {
+  const input = {
+    baseUrl: "https://api.deepseek.com",
+    api: "openai-completions" as const,
+    apiKey: "sk-test",
+    auth: "bearer" as const,
+  }
+
+  it("读 OpenAI 风格的 data[].id，带 Key，去重", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: "b" }, { id: "a" }, { id: "b" }] }), {
+        status: 200,
+      }),
+    )
+    await expect(discoverModels(input)).resolves.toEqual(["b", "a"])
+    const [url, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string> }]
+    expect(url).toBe("https://api.deepseek.com/models")
+    expect(init.headers.Authorization).toBe("Bearer sk-test")
+  })
+
+  it("也认 models[] 字段", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ models: [{ id: "m1" }] }), { status: 200 }),
+    )
+    await expect(discoverModels(input)).resolves.toEqual(["m1"])
+  })
+
+  it("Anthropic 协议没有统一的列表接口：直接报错", async () => {
+    await expect(discoverModels({ ...input, api: "anthropic-messages" })).rejects.toThrow(/手工填/)
+  })
+
+  it("失败时报错", async () => {
+    fetchMock.mockResolvedValue(new Response("nope", { status: 401 }))
+    await expect(discoverModels(input)).rejects.toThrow(/401/)
   })
 })
 

@@ -5,7 +5,6 @@ import { emit, listen } from "@tauri-apps/api/event"
 import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow"
 import {
-  cursorPosition,
   getAllWindows,
   getCurrentWindow,
   type Window as TauriWindow,
@@ -21,8 +20,11 @@ import {
   type SavedFile,
 } from "./platform"
 import {
+  BUILTIN_PROVIDERS,
   EFFORT_LEVELS,
+  PINNED_PROVIDER_IDS,
   THINKING_LEVELS,
+  discoverModels,
   effortLevelsFor,
   effortOf,
   loadAiSettings,
@@ -651,11 +653,8 @@ function switchDoc(id: string): void {
   setStatus(`已切换到「${target.project.title || "未命名"}」`)
 }
 
-function addDoc(): void {
-  if (DOCS_WINDOW_MODE) {
-    emitQuiet(DOCS_INTENT_CHANNEL, { type: "new-doc" })
-    return
-  }
+/** 建一份新的空歌词并切过去（「新建歌词」按钮和「新建导入」共用） */
+function addDocCore(): void {
   syncActiveDoc()
   const doc = createDoc(`未命名 ${docsState.docs.length + 1}`)
   docsState.docs.push(doc)
@@ -667,6 +666,14 @@ function addDoc(): void {
   activateDoc(doc)
   persistDocs()
   render()
+}
+
+function addDoc(): void {
+  if (DOCS_WINDOW_MODE) {
+    emitQuiet(DOCS_INTENT_CHANNEL, { type: "new-doc" })
+    return
+  }
+  addDocCore()
   titleEl.focus()
   titleEl.select()
   setStatus("已新建歌词文件")
@@ -2722,7 +2729,9 @@ async function saveProject(saveAs: boolean): Promise<void> {
     const docId = docsState.activeId
     store.project.updatedAt = new Date().toISOString()
     const saved = await saveText({
-      suggestedName: store.filePath ?? `${store.project.title || "未命名"}.json`,
+      // 默认文件名跟当前歌名走——改了歌名再「另存为」不该还拿旧文件名；
+      // 「保存工程」有已绑定的 target 时根本不弹这个框（直接覆盖原文件）
+      suggestedName: `${store.project.title || "未命名"}.json`,
       description: "词格工程",
       extensions: ["json"],
       pickerId: "cige-project",
@@ -3289,6 +3298,10 @@ function openImportDialog(initialText?: string, fileTitle?: string): void {
         <label><input type="radio" name="import-mode" value="lyrics" checked /> 同时导入歌词</label>
         <label><input type="radio" name="import-mode" value="grid" /> 仅词格</label>
       </div>
+      <div class="dialog-radios">
+        <label><input type="radio" name="import-target" value="current" checked /> 覆盖导入</label>
+        <label><input type="radio" name="import-target" value="new" /> 新建导入</label>
+      </div>
       <label class="dialog-check">
         <input type="checkbox" id="import-merge" />
         合并到现有歌词（不覆盖）
@@ -3311,6 +3324,17 @@ function openImportDialog(initialText?: string, fileTitle?: string): void {
   const modeInputs = Array.from(
     dialog.querySelectorAll<HTMLInputElement>('input[name="import-mode"]'),
   )
+  const targetInputs = Array.from(
+    dialog.querySelectorAll<HTMLInputElement>('input[name="import-target"]'),
+  )
+  const importNewOf = (): boolean =>
+    targetInputs.some((el) => el.checked && el.value === "new")
+  const syncTarget = (): void => {
+    // 「新建导入」下「合并到现有」没意义，灰掉
+    mergeInput.disabled = importNewOf()
+  }
+  targetInputs.forEach((el) => el.addEventListener("change", syncTarget))
+  syncTarget()
   dialog.addEventListener("close", async () => {
     const action = dialog.returnValue
     if (action === "file") {
@@ -3337,10 +3361,12 @@ function openImportDialog(initialText?: string, fileTitle?: string): void {
       void pickMidiFile()
       return
     }
-    const merge = mergeInput.checked
+    const importNew = importNewOf()
+    const merge = mergeInput.checked && !importNew
     const fillLyrics = modeInputs.find((el) => el.checked)?.value !== "grid"
     dialog.remove()
     if (action === "ok") {
+      if (importNew) addDocCore()
       const imported = await applyLyricsText(
         textarea.value,
         textarea.dataset.fileTitle,
@@ -4067,7 +4093,10 @@ function renderAiChips(): void {
   )
   const target = resolveTarget(aiSettings)
   const effort = effortOf(aiSettings)
-  if (target && !target.supportsThinking) {
+  // 档位是「模型」的属性（我们实测的 / 目录里 DSH 标的）——模型自带档位就不算「不适用」，
+  // 不跟「这家勾没勾开关」走（请求那边本来就是按目录档位发 reasoning_effort）
+  const levels = target ? effortLevelsFor(model, provider?.supportsEffort ?? false) : []
+  if (target && !target.supportsThinking && levels.length === 0) {
     setChip(aiEffortChip, "思考：不适用", "这个接口不发思考参数（去 ⚙ 勾上）")
     aiEffortChip.disabled = true
   } else if (target && !target.supportsEffort) {
@@ -4115,6 +4144,15 @@ function closeAiPops(): void {
     .forEach((el) => delete el.dataset.open)
 }
 
+/** 点弹层 / 芯片以外的地方 → 收起弹层。
+ *  这个监听**只挂一次**——以前是每开一次弹层挂一个、关的时候不摘，
+ *  第二次开时旧监听把新弹层当"外面"，鼠标一点（比如点搜索框）就把整个框关掉。 */
+document.addEventListener("click", (event) => {
+  const el = event.target instanceof Element ? event.target : null
+  if (el?.closest(".ai-pop") || el?.closest(".ai-chip")) return
+  closeAiPops()
+})
+
 function openAiPop(anchor: HTMLElement, build: (pop: HTMLElement) => void): void {
   const wasOpen = anchor.dataset.open === "1"
   closeAiPops()
@@ -4124,13 +4162,6 @@ function openAiPop(anchor: HTMLElement, build: (pop: HTMLElement) => void): void
   pop.className = "ai-pop"
   build(pop)
   document.querySelector(".ai-composer")?.appendChild(pop)
-  const onDocClick = (event: MouseEvent) => {
-    const target = event.target as HTMLElement
-    if (pop.contains(target) || anchor.contains(target)) return
-    closeAiPops()
-    document.removeEventListener("click", onDocClick)
-  }
-  setTimeout(() => document.addEventListener("click", onDocClick), 0)
 }
 
 function chooseModel(providerId: string, model: string): void {
@@ -4152,6 +4183,10 @@ function openModelPop(): void {
       const keyword = search.value.trim().toLowerCase()
       list.replaceChildren()
       for (const provider of aiSettings.providers) {
+        // 只列「加过的」：常驻两家 / 填过 Key 的 / 自定义的——和设置页卡片同一套规则
+        if (provider.id === "custom" && !provider.apiKey.trim() && !provider.baseUrl.trim()) continue
+        if (provider.builtin && !PINNED_PROVIDER_IDS.includes(provider.id) && !provider.apiKey.trim())
+          continue
         const models = provider.models.filter(
           (model) =>
             model.toLowerCase().includes(keyword) ||
@@ -5281,13 +5316,6 @@ async function runAiGeneration(
   }
 }
 
-function parseList(value: string): string[] {
-  return value
-    .split(/[,，\s]+/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
-
 /** 打开外部链接：桌面走系统浏览器，网页开新标签 */
 async function openExternal(url: string): Promise<void> {
   const value = url.trim()
@@ -5317,7 +5345,7 @@ const HELP_GUIDE: string[] = [
   "<b>导入</b>：<code>导入</code> 收歌词（可直接粘贴、选 <code>.txt/.lrc/.md</code>、或把文件拖进窗口）与 <code>选择 MIDI…</code>；导入会自动断句（连续 8 句以内不动，超过就在第 4、5 句之间断；一小节 ≤16 字、一句 ≤32 字）；多轨 MIDI：不重叠的带词轨合并循序读字，重叠的按字数定主歌 / 和声；MIDI 里带的歌词事件会整段抄进原文",
   "<b>导出 / 复制</b>：导出 → 歌词 / 词格 / 带歌词 MIDI（写回原 MIDI）；复制 → 歌词 / 词格",
   "<b>查找替换</b>：工具栏「查找」或 <kbd>Cmd/Ctrl+F</kbd>；替换会<b>按字数改词格</b>（短了删格、长了插格），可一步撤销",
-  "<b>工作区（左栏）</b>：歌词分组，每组下面是它的 AI 会话；鼠标悬浮歌名行时左边的文件夹会变成三角，点它折叠 / 展开；「＋ 新建对话」开新会话",
+  "<b>文档栏（左栏）</b>：歌词分组，每组下面是它的 AI 会话；鼠标悬浮歌名行时左边的文件夹会变成三角，点它折叠 / 展开；「＋ 新建对话」开新会话",
   "<b>AI 面板（桌面版）</b>：点工具栏「AI」开一个<b>独立窗口</b>（每篇歌词一个，关窗＝隐藏、生成继续；主窗口一保存就把最新词格推过去；「填入词格」写回主窗口，可撤销；Enter 发送 / Esc 收弹层）；选模型和等级 → 说要求；范围可选 整首 / 空句 / 选段 / 选句 / 对话（对话＝不附词格，直接聊；网页版是内嵌面板，其余相同）；回复能翻页（输入版本 × 回复版本）",
   "<b>保存</b>：草稿自动存本机；<code>保存工程</code> 存成 <code>.json</code> 文件，可换机 / 分享",
   "<b>网页版</b>：AI 不可用；Chrome / Edge 保存就地覆盖，Safari 走下载",
@@ -5553,9 +5581,203 @@ interface SettingsModelEditorConfig {
   onSaved: (message: string) => void
 }
 
+/** 自定义提供商可选协议（值 = schema 标识符；界面显示产品名，照 DSH） */
+const API_PROTOCOLS: Array<{ value: AiProvider["api"]; label: string }> = [
+  { value: "openai-completions", label: "OpenAI Chat Completions" },
+  { value: "openai-responses", label: "OpenAI Responses" },
+  { value: "anthropic-messages", label: "Anthropic Messages" },
+]
+
+/** 「模型目录」小节（照 DSH）：状态行 + 行编辑 + ＋添加模型 / 恢复默认模型 / 获取可用模型 */
+function settingsModelCatalog(config: {
+  models: string[]
+  /** 出厂目录（内置才有）；null = 没有基线，不给「恢复默认模型」 */
+  defaultModels: () => string[] | null
+  api: () => AiProvider["api"]
+  baseUrl: () => string
+  apiKey: () => string
+  auth: () => "bearer" | "both"
+  onMessage: (text: string, isError?: boolean) => void
+}): { el: HTMLElement; read: () => string[]; set: (models: string[]) => void; refresh: () => void } {
+  let rows = config.models.slice()
+  const box = document.createElement("div")
+  box.className = "settings-catalog"
+
+  const head = document.createElement("div")
+  head.className = "settings-catalog-head"
+  const title = document.createElement("span")
+  title.className = "settings-catalog-title"
+  title.textContent = "模型目录"
+  const status = document.createElement("span")
+  status.className = "settings-catalog-status"
+  const fetchBtn = document.createElement("button")
+  fetchBtn.type = "button"
+  fetchBtn.className = "settings-inline-btn"
+  fetchBtn.textContent = "获取可用模型"
+  const resetBtn = document.createElement("button")
+  resetBtn.type = "button"
+  resetBtn.className = "settings-inline-btn"
+  resetBtn.textContent = "恢复默认模型"
+  head.append(title, status, fetchBtn, resetBtn)
+
+  const empty = document.createElement("div")
+  empty.className = "settings-catalog-empty"
+  empty.textContent = "模型列表为空：模型选择器里不会出现这家；目录外的模型 id 仍可直接发送。"
+  const list = document.createElement("div")
+  list.className = "settings-catalog-list"
+
+  const foot = document.createElement("div")
+  foot.className = "settings-catalog-actions"
+  const addBtn = document.createElement("button")
+  addBtn.type = "button"
+  addBtn.className = "settings-inline-btn"
+  addBtn.textContent = "＋ 添加模型"
+  foot.appendChild(addBtn)
+
+  const picker = document.createElement("div")
+  picker.className = "settings-model-picker"
+  picker.hidden = true
+  const pickerList = document.createElement("div")
+  pickerList.className = "settings-model-picker-list"
+  const pickerFoot = document.createElement("div")
+  pickerFoot.className = "settings-model-picker-actions"
+  const pickerCancel = document.createElement("button")
+  pickerCancel.type = "button"
+  pickerCancel.className = "settings-inline-btn"
+  pickerCancel.textContent = "取消"
+  const pickerAdd = document.createElement("button")
+  pickerAdd.type = "button"
+  pickerAdd.className = "primary"
+  pickerAdd.textContent = "添加所选"
+  pickerFoot.append(pickerCancel, pickerAdd)
+  picker.append(pickerList, pickerFoot)
+
+  const read = (): string[] => rows.map((row) => row.trim()).filter((row) => row !== "")
+
+  const syncStatus = (): void => {
+    const now = read()
+    const def = config.defaultModels()
+    const sameAsDefault = def !== null && now.length === def.length && now.every((m, i) => m === def[i])
+    status.textContent =
+      now.length === 0 ? "" : def === null || !sameAsDefault ? "已自定义模型目录" : "正在使用默认模型"
+    resetBtn.hidden = def === null || sameAsDefault
+    fetchBtn.hidden = config.api() === "anthropic-messages"
+    empty.hidden = now.length > 0
+  }
+
+  const renderRows = (): void => {
+    list.replaceChildren()
+    rows.forEach((value, index) => {
+      const row = document.createElement("div")
+      row.className = "settings-model-row"
+      const input = document.createElement("input")
+      input.type = "text"
+      input.value = value
+      input.placeholder = "模型 id"
+      input.addEventListener("input", () => {
+        rows[index] = input.value
+        syncStatus()
+      })
+      const del = document.createElement("button")
+      del.type = "button"
+      del.className = "settings-model-del"
+      del.textContent = "✕"
+      del.title = "删掉这一行"
+      del.addEventListener("click", () => {
+        rows.splice(index, 1)
+        renderRows()
+      })
+      row.append(input, del)
+      list.appendChild(row)
+    })
+    syncStatus()
+  }
+
+  const set = (models: string[]): void => {
+    rows = models.slice()
+    picker.hidden = true
+    renderRows()
+  }
+
+  addBtn.addEventListener("click", () => {
+    rows.push("")
+    renderRows()
+    list.lastElementChild?.querySelector<HTMLInputElement>("input")?.focus()
+  })
+
+  resetBtn.addEventListener("click", () => {
+    const def = config.defaultModels()
+    if (def) set(def)
+  })
+
+  fetchBtn.addEventListener("click", () => {
+    fetchBtn.disabled = true
+    config.onMessage("正在获取可用模型…")
+    void discoverModels({
+      baseUrl: config.baseUrl(),
+      api: config.api(),
+      apiKey: config.apiKey(),
+      auth: config.auth(),
+    })
+      .then((ids) => {
+        pickerList.replaceChildren()
+        const known = new Set(read())
+        for (const id of ids) {
+          const label = document.createElement("label")
+          label.className = "settings-model-pick"
+          const check = document.createElement("input")
+          check.type = "checkbox"
+          check.value = id
+          check.checked = known.has(id)
+          const name = document.createElement("span")
+          name.className = "settings-model-id-text"
+          name.textContent = id
+          label.append(check, name)
+          pickerList.appendChild(label)
+        }
+        picker.hidden = false
+        config.onMessage(`拿到 ${ids.length} 个模型；勾选后点「添加所选」`)
+      })
+      .catch((err) => {
+        config.onMessage(err instanceof Error ? err.message : String(err), true)
+        picker.hidden = true
+      })
+      .finally(() => {
+        fetchBtn.disabled = false
+      })
+  })
+
+  pickerCancel.addEventListener("click", () => {
+    picker.hidden = true
+  })
+
+  pickerAdd.addEventListener("click", () => {
+    const chosen = Array.from(pickerList.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+      .filter((check) => check.checked)
+      .map((check) => check.value)
+    const known = new Set(read())
+    let added = 0
+    for (const id of chosen) {
+      if (known.has(id)) continue
+      rows.push(id)
+      known.add(id)
+      added += 1
+    }
+    renderRows()
+    picker.hidden = true
+    config.onMessage(added > 0 ? `已加入 ${added} 个模型` : "这些模型都已经在了")
+  })
+
+  box.append(head, empty, list, foot, picker)
+  renderRows()
+  return { el: box, read, set, refresh: syncStatus }
+}
+
 /** 模型设置的内嵌编辑器（照参考图：两个分页 + 表单 + 取消/保存） */
 function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
   const editing = config.provider
+  /** 只有「添加」才显示分页和「提供商」下拉；卡片里编辑用紧凑面板（对齐 DSH） */
+  const adding = editing === null
   let tab: "builtin" | "custom" = config.tab
   const wrap = document.createElement("div")
   wrap.className = "settings-editor"
@@ -5563,7 +5785,7 @@ function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
   const tabBuiltin = document.createElement("button")
   tabBuiltin.type = "button"
   tabBuiltin.className = "settings-tab"
-  tabBuiltin.textContent = "第三方模型提供商"
+  tabBuiltin.textContent = "预设提供商"
   tabBuiltin.addEventListener("click", () => {
     tab = "builtin"
     render()
@@ -5571,7 +5793,7 @@ function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
   const tabCustom = document.createElement("button")
   tabCustom.type = "button"
   tabCustom.className = "settings-tab"
-  tabCustom.textContent = "自定义模型 API"
+  tabCustom.textContent = "自定义"
   tabCustom.addEventListener("click", () => {
     tab = "custom"
     render()
@@ -5594,9 +5816,24 @@ function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
   }
 
   const render = (): void => {
-    wrap.replaceChildren(tabs)
+    wrap.replaceChildren()
+    if (adding) wrap.appendChild(tabs)
     tabBuiltin.classList.toggle("active", tab === "builtin")
     tabCustom.classList.toggle("active", tab === "custom")
+
+    // 编辑态：顶部一行「名字 + id」（对齐 DSH）
+    if (editing) {
+      const title = document.createElement("div")
+      title.className = "settings-editor-title"
+      const titleName = document.createElement("span")
+      titleName.className = "settings-editor-name"
+      titleName.textContent = editing.name
+      const titleId = document.createElement("span")
+      titleId.className = "settings-editor-id"
+      titleId.textContent = editing.id
+      title.append(titleName, titleId)
+      wrap.appendChild(title)
+    }
 
     const keyEl = document.createElement("input")
     keyEl.type = "password"
@@ -5605,6 +5842,33 @@ function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
     const keyRow = document.createElement("div")
     keyRow.className = "row"
     keyRow.append(keyEl)
+    // 显示 / 隐藏（password ←→ text，不然填了既看不见也没法核对）
+    const reveal = document.createElement("button")
+    reveal.type = "button"
+    reveal.className = "settings-inline-btn"
+    reveal.textContent = "显示"
+    reveal.title = "显示 / 隐藏密钥"
+    reveal.addEventListener("click", () => {
+      const show = keyEl.type === "password"
+      keyEl.type = show ? "text" : "password"
+      reveal.textContent = show ? "隐藏" : "显示"
+    })
+    keyRow.append(reveal)
+    // 复制当前 Key
+    const keyCopy = document.createElement("button")
+    keyCopy.type = "button"
+    keyCopy.className = "settings-inline-btn"
+    keyCopy.textContent = "复制"
+    keyCopy.title = "把当前 Key 复制到剪贴板"
+    keyCopy.addEventListener("click", () => {
+      const value = keyEl.value.trim()
+      if (!value) {
+        setStatus("还没填 Key", true)
+        return
+      }
+      void copyText(value).then((ok) => setStatus(ok ? "已复制 Key" : "复制失败", !ok))
+    })
+    keyRow.append(keyCopy)
     if (editing?.keyUrl) {
       const get = document.createElement("button")
       get.type = "button"
@@ -5627,22 +5891,180 @@ function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
     actions.className = "settings-editor-actions"
     actions.append(cancel, save)
 
+    // ===== 卡片里编辑：紧凑面板（对齐 DSH：名字+id / 密钥 / 自定义设置 / 取消·保存），没有分页、没有「提供商」下拉 =====
+    if (editing) {
+      const nameEl = document.createElement("input")
+      nameEl.type = "text"
+      nameEl.value = editing.name
+      const baseEl = document.createElement("input")
+      baseEl.type = "text"
+      baseEl.value = editing.baseUrl
+      const protoEl = document.createElement("select")
+      for (const item of API_PROTOCOLS) {
+        const option = document.createElement("option")
+        option.value = item.value
+        option.textContent = item.label
+        protoEl.appendChild(option)
+      }
+      protoEl.value = editing.api
+      const thinkEl = document.createElement("input")
+      thinkEl.type = "checkbox"
+      thinkEl.checked = editing.supportsThinking
+      const thinkRow = document.createElement("label")
+      thinkRow.className = "settings-field"
+      thinkRow.append(thinkEl, document.createTextNode("支持 thinking 开关（thinking: enabled / disabled）"))
+      const effortEl = document.createElement("input")
+      effortEl.type = "checkbox"
+      effortEl.checked = editing.supportsEffort
+      const effortRow = document.createElement("label")
+      effortRow.className = "settings-field"
+      effortRow.append(effortEl, document.createTextNode("支持 reasoning_effort（low / high / max）"))
+
+      const resultEl = document.createElement("span")
+      resultEl.className = "hint"
+      resultEl.hidden = true
+      const say = (text: string, isError = false): void => {
+        resultEl.hidden = false
+        resultEl.textContent = text
+        resultEl.classList.toggle("error", isError)
+      }
+
+      const apiOf = (): AiProvider["api"] =>
+        editing.builtin ? editing.api : (protoEl.value as AiProvider["api"])
+      const catalog = settingsModelCatalog({
+        models: editing.models,
+        // 内置用出厂目录当基线；自定义没有基线
+        defaultModels: () =>
+          editing.builtin
+            ? (BUILTIN_PROVIDERS.find((item) => item.id === editing.id)?.models ?? null)
+            : null,
+        api: apiOf,
+        baseUrl: () => baseEl.value,
+        apiKey: () => keyEl.value,
+        auth: () => editing.auth,
+        onMessage: say,
+      })
+
+      const collapseBody = document.createElement("div")
+      collapseBody.className = "body"
+      if (!editing.builtin) collapseBody.append(field("显示名称", nameEl))
+      collapseBody.append(
+        field("API 地址", baseEl, editing.builtin ? "一般不用改" : "到 /v1 为止；不填 /v1 会按官方路径补"),
+      )
+      if (!editing.builtin) collapseBody.append(field("API 协议", protoEl, "以产品名显示，存的是协议标识符"))
+      collapseBody.append(catalog.el)
+      if (!editing.builtin) collapseBody.append(thinkRow, effortRow)
+      const collapse = document.createElement("details")
+      collapse.className = "settings-collapse"
+      const summary = document.createElement("summary")
+      summary.textContent = "自定义设置"
+      collapse.append(summary, collapseBody)
+
+      // 自定义：地址占位和提示跟着协议走（照 DSH）
+      if (!editing.builtin) {
+        const baseHint = collapse.querySelector(".settings-field .hint")
+        protoEl.addEventListener("change", () => {
+          const anthropic = protoEl.value === "anthropic-messages"
+          baseEl.placeholder = anthropic ? "https://gateway.example" : ""
+          if (baseHint) {
+            baseHint.textContent = anthropic
+              ? "请填写兼容 Anthropic Messages 协议的地址（会按 /v1/messages 补）"
+              : "到 /v1 为止；不填 /v1 会按官方路径补"
+          }
+          catalog.refresh()
+        })
+      }
+
+      // 「测试」：改完 Key / 地址能立刻试通一下（小的，跟「显示 / 复制」同款）
+      const testBtn = document.createElement("button")
+      testBtn.type = "button"
+      testBtn.className = "settings-inline-btn"
+      testBtn.textContent = "测试"
+      testBtn.addEventListener("click", () => {
+        const models = catalog.read()
+        say("连接中…")
+        void testAiConnection({
+          baseUrl: baseEl.value,
+          api: apiOf(),
+          apiKey: keyEl.value,
+          model: models[0] ?? "",
+          effort: "default",
+          auth: editing.auth,
+          tokenParam: editing.tokenParam,
+          supportsThinking: editing.builtin ? editing.supportsThinking : thinkEl.checked,
+          supportsEffort: editing.builtin ? editing.supportsEffort : effortEl.checked,
+          temperature: aiSettings.temperature,
+        })
+          .then((message) => {
+            say(message)
+          })
+          .catch((err) => {
+            say(err instanceof Error ? err.message : String(err), true)
+          })
+      })
+      actions.prepend(testBtn)
+
+      save.addEventListener("click", () => {
+        const models = catalog.read()
+        if (models.length === 0) {
+          say("至少留一个模型", true)
+          return
+        }
+        if (editing.builtin) {
+          applyModelEditor(editing, {
+            providerId: editing.id,
+            key: keyEl.value.trim(),
+            baseUrl: baseEl.value.trim(),
+            models,
+            name: editing.name,
+            supportsThinking: editing.supportsThinking,
+            supportsEffort: editing.supportsEffort,
+          })
+          config.onSaved(`已保存「${editing.name}」`)
+          return
+        }
+        const name = nameEl.value.trim() || editing.name
+        const providers = aiSettings.providers.map((item) =>
+          item.id === editing.id
+            ? {
+                ...item,
+                name,
+                baseUrl: baseEl.value.trim(),
+                api: protoEl.value as AiProvider["api"],
+                models,
+                apiKey: keyEl.value.trim(),
+                supportsThinking: thinkEl.checked,
+                supportsEffort: effortEl.checked,
+              }
+            : item,
+        )
+        aiSettings = { ...aiSettings, providers }
+        saveAiSettings(aiSettings)
+        renderAiChips()
+        config.onSaved(`已保存「${name}」`)
+      })
+
+      wrap.append(field("API 密钥", keyRow), collapse, actions, resultEl)
+      return
+    }
+
     if (tab === "custom") {
       const nameEl = document.createElement("input")
       nameEl.type = "text"
-      nameEl.placeholder = "比如：我的小网关"
-      nameEl.value = editing?.name ?? ""
+      nameEl.placeholder = "显示名称"
       const baseEl = document.createElement("input")
       baseEl.type = "text"
       baseEl.placeholder = "https://…（到 /v1 为止）"
-      baseEl.value = editing?.baseUrl ?? ""
-      const modelsEl = document.createElement("input")
-      modelsEl.type = "text"
-      modelsEl.placeholder = "模型 id，逗号分隔"
-      modelsEl.value = (editing?.models ?? []).join(", ")
+      const protoEl = document.createElement("select")
+      for (const item of API_PROTOCOLS) {
+        const option = document.createElement("option")
+        option.value = item.value
+        option.textContent = item.label
+        protoEl.appendChild(option)
+      }
+      protoEl.value = "openai-completions"
       const thinkEl = document.createElement("input")
       thinkEl.type = "checkbox"
-      thinkEl.checked = editing?.supportsThinking ?? false
       const thinkRow = document.createElement("label")
       thinkRow.className = "settings-field"
       thinkRow.append(
@@ -5651,47 +6073,66 @@ function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
       )
       const effortEl = document.createElement("input")
       effortEl.type = "checkbox"
-      effortEl.checked = editing?.supportsEffort ?? false
       const effortRow = document.createElement("label")
       effortRow.className = "settings-field"
       effortRow.append(effortEl, document.createTextNode("支持 reasoning_effort（low / high / max）"))
+
+      const resultEl = document.createElement("span")
+      resultEl.className = "hint"
+      resultEl.hidden = true
+      const say = (text: string, isError = false): void => {
+        resultEl.hidden = false
+        resultEl.textContent = text
+        resultEl.classList.toggle("error", isError)
+      }
+
+      const catalog = settingsModelCatalog({
+        models: [],
+        defaultModels: () => null,
+        api: () => protoEl.value as AiProvider["api"],
+        baseUrl: () => baseEl.value,
+        apiKey: () => keyEl.value,
+        auth: () => "bearer",
+        onMessage: say,
+      })
+
+      const baseField = field("API 地址", baseEl, "到 /v1 为止；不填 /v1 会按官方路径补")
+      const baseHint = baseField.querySelector(".hint")
+      protoEl.addEventListener("change", () => {
+        const anthropic = protoEl.value === "anthropic-messages"
+        baseEl.placeholder = anthropic ? "https://gateway.example" : "https://…（到 /v1 为止）"
+        if (baseHint) {
+          baseHint.textContent = anthropic
+            ? "请填写兼容 Anthropic Messages 协议的地址（会按 /v1/messages 补）"
+            : "到 /v1 为止；不填 /v1 会按官方路径补"
+        }
+        catalog.refresh()
+      })
+
       save.addEventListener("click", () => {
-        const id = editing?.id ?? nextCustomProviderId()
-        const models = parseList(modelsEl.value)
-        const providers = editing
-          ? aiSettings.providers.map((item) =>
-              item.id === id
-                ? {
-                    ...item,
-                    name: nameEl.value.trim() || item.name,
-                    baseUrl: baseEl.value.trim(),
-                    models: models.length > 0 ? models : item.models,
-                    apiKey: keyEl.value.trim(),
-                    supportsThinking: thinkEl.checked,
-                    supportsEffort: effortEl.checked,
-                  }
-                : item,
-            )
-          : [
-              ...aiSettings.providers,
-              {
-                id,
-                name: nameEl.value.trim() || "自定义",
-                baseUrl: baseEl.value.trim(),
-                api: "openai-completions" as const,
-                models,
-                apiKey: keyEl.value.trim(),
-                auth: "bearer" as const,
-                tokenParam: "max_tokens" as const,
-                supportsThinking: thinkEl.checked,
-                supportsEffort: effortEl.checked,
-                builtin: false,
-              },
-            ]
-        const justAdded = !editing
-        const providerId = justAdded || aiSettings.providerId === id || aiSettings.providerId === ""
-          ? id
-          : aiSettings.providerId
+        const models = catalog.read()
+        if (models.length === 0) {
+          say("至少填一个模型", true)
+          return
+        }
+        const id = nextCustomProviderId()
+        const providers = [
+          ...aiSettings.providers,
+          {
+            id,
+            name: nameEl.value.trim() || "自定义",
+            baseUrl: baseEl.value.trim(),
+            api: protoEl.value as AiProvider["api"],
+            models,
+            apiKey: keyEl.value.trim(),
+            auth: "bearer" as const,
+            tokenParam: "max_tokens" as const,
+            supportsThinking: thinkEl.checked,
+            supportsEffort: effortEl.checked,
+            builtin: false,
+          },
+        ]
+        const providerId = id
         const activeProvider = providers.find((item) => item.id === providerId)!
         const model = activeProvider.models.includes(aiSettings.model)
           ? aiSettings.model
@@ -5699,24 +6140,41 @@ function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
         aiSettings = { ...aiSettings, providers, providerId, model }
         saveAiSettings(aiSettings)
         renderAiChips()
-        config.onSaved(editing ? `已保存「${nameEl.value.trim() || editing.name}」` : "已添加自定义服务商")
+        config.onSaved("已添加自定义服务商")
       })
       wrap.append(
-        field("名称", nameEl),
-        field("接口地址", baseEl, "到 /v1 为止；不填 /v1 会按官方路径补"),
+        field("显示名称", nameEl),
+        baseField,
+        field("API 协议", protoEl, "以产品名显示，存的是协议标识符"),
         field("API 密钥", keyRow),
-        field("模型", modelsEl, "逗号分隔；第一个是默认模型"),
+        catalog.el,
         thinkRow,
         effortRow,
         actions,
+        resultEl,
       )
       return
     }
 
-    // 第三方：从内置目录里挑一家填 Key
+    // 第三方：从内置目录里挑一家填 Key（添加流程）。
+    // 已经加过的（常驻两家 / 填过 Key 已经占卡片的）不再列出来
     const options = aiSettings.providers.filter(
-      (item) => item.builtin && item.id !== (editing?.builtin ? null : "custom"),
+      (item) =>
+        item.builtin &&
+        item.id !== "custom" &&
+        !PINNED_PROVIDER_IDS.includes(item.id) &&
+        !item.apiKey.trim(),
     )
+    // 排序：中文在前（按拼音）、英文在后（按首字母）
+    const isCjkName = (name: string): boolean => /^[\u3400-\u9fff]/.test(name)
+    const zhName = new Intl.Collator("zh-Hans-CN", { usage: "sort", sensitivity: "base" })
+    const enName = new Intl.Collator("en", { usage: "sort", sensitivity: "base" })
+    options.sort((a, b) => {
+      const aCjk = isCjkName(a.name)
+      const bCjk = isCjkName(b.name)
+      if (aCjk !== bCjk) return aCjk ? -1 : 1
+      return (aCjk ? zhName : enName).compare(a.name, b.name)
+    })
     const select = document.createElement("select")
     for (const item of options) {
       const option = document.createElement("option")
@@ -5724,8 +6182,7 @@ function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
       option.textContent = item.name
       select.appendChild(option)
     }
-    const selectedId = editing?.builtin ? editing.id : options[0]?.id ?? ""
-    select.value = selectedId
+    select.value = options[0]?.id ?? ""
     let provider = options.find((item) => item.id === select.value) ?? options[0]
     keyEl.value = provider?.apiKey ?? ""
     if (provider?.keyUrl) {
@@ -5737,27 +6194,44 @@ function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
     const baseEl = document.createElement("input")
     baseEl.type = "text"
     baseEl.value = provider?.baseUrl ?? ""
-    const modelsEl = document.createElement("input")
-    modelsEl.type = "text"
-    modelsEl.value = (provider?.models ?? []).join(", ")
+
+    const resultEl = document.createElement("span")
+    resultEl.className = "hint"
+    resultEl.hidden = true
+    const say = (text: string, isError = false): void => {
+      resultEl.hidden = false
+      resultEl.textContent = text
+      resultEl.classList.toggle("error", isError)
+    }
+
+    const catalog = settingsModelCatalog({
+      models: provider?.models ?? [],
+      defaultModels: () =>
+        provider ? (BUILTIN_PROVIDERS.find((item) => item.id === provider.id)?.models ?? null) : null,
+      api: () => provider?.api ?? "openai-completions",
+      baseUrl: () => baseEl.value,
+      apiKey: () => keyEl.value,
+      auth: () => provider?.auth ?? "bearer",
+      onMessage: say,
+    })
+
     const syncSelected = (): void => {
       provider = options.find((item) => item.id === select.value) ?? options[0]
       keyEl.value = provider?.apiKey ?? ""
       baseEl.value = provider?.baseUrl ?? ""
-      modelsEl.value = (provider?.models ?? []).join(", ")
+      resultEl.hidden = true
+      catalog.set(provider?.models ?? [])
     }
     select.addEventListener("change", syncSelected)
 
-    const resultEl = document.createElement("span")
-    resultEl.className = "hint"
     const testBtn = document.createElement("button")
     testBtn.type = "button"
     testBtn.className = "settings-inline-btn"
     testBtn.textContent = "测试"
     testBtn.addEventListener("click", () => {
       if (!provider) return
-      const models = parseList(modelsEl.value)
-      resultEl.textContent = "连接中…"
+      const models = catalog.read()
+      say("连接中…")
       void testAiConnection({
         baseUrl: baseEl.value,
         api: provider.api,
@@ -5771,10 +6245,10 @@ function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
         temperature: aiSettings.temperature,
       })
         .then((message) => {
-          resultEl.textContent = message
+          say(message)
         })
         .catch((err) => {
-          resultEl.textContent = err instanceof Error ? err.message : String(err)
+          say(err instanceof Error ? err.message : String(err), true)
         })
     })
 
@@ -5784,15 +6258,16 @@ function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
     summary.textContent = "自定义设置"
     const body = document.createElement("div")
     body.className = "body"
-    body.append(
-      field("接口地址", baseEl, "一般不用改"),
-      field("模型", modelsEl, "逗号分隔"),
-    )
+    body.append(field("接口地址", baseEl, "一般不用改"), catalog.el)
     collapse.append(summary, body)
 
     save.addEventListener("click", () => {
       if (!provider) return
-      const models = parseList(modelsEl.value)
+      const models = catalog.read()
+      if (models.length === 0) {
+        say("至少留一个模型", true)
+        return
+      }
       applyModelEditor(editing, {
         providerId: provider.id,
         key: keyEl.value.trim(),
@@ -5806,7 +6281,13 @@ function settingsModelEditor(config: SettingsModelEditorConfig): HTMLElement {
     })
 
     wrap.append(
-      field("提供商", select, "从内置目录里选 OpenAI、Anthropic、Kimi 等，填入 API 密钥即可使用"),
+      field(
+        "提供商",
+        select,
+        options.length > 0
+          ? "从内置目录里选 OpenAI、Anthropic、Kimi 等，填入 API 密钥即可使用"
+          : "内置提供商都已经加过了；要加新的用上面的「自定义」",
+      ),
       field("API 密钥", keyRow),
       collapse,
       field("连接", testBtn, "发一句最小请求试通"),
@@ -5831,35 +6312,40 @@ function settingsAiView(reRender: () => void): HTMLElement {
   cards.className = "settings-cards"
   wrap.appendChild(cards)
 
+  /** 正在原地展开的卡片：服务商 id，或 "__add__"（展开「新建自定义」那张）；一次只展开一张 */
+  let expandedId: string | null = null
+  /** 底部的「＋ 添加模型提供商」（建在下面；展开新建卡时把它藏起来） */
+  let addBtn: HTMLButtonElement | null = null
+
   const buildList = (): void => {
     cards.replaceChildren()
     for (const provider of aiSettings.providers) {
       // 内置的 custom 占位（没配过）不占卡片
       if (provider.id === "custom" && !provider.apiKey.trim() && !provider.baseUrl.trim()) continue
+      // 照 DSH：列表 ≠ 目录。常驻只有 DeepSeek / 小米；其余内置填过 Key 才算「配过」才占卡片
+      // （想用哪家去「＋ 添加模型提供商」里挑；预设目录没动）
+      if (provider.builtin && !PINNED_PROVIDER_IDS.includes(provider.id) && !provider.apiKey.trim()) continue
       const card = document.createElement("div")
-      card.className = `settings-card${provider.id === aiSettings.providerId ? " current" : ""}`
+      card.className = "settings-card"
 
+      const expanded = provider.id === expandedId
       const head = document.createElement("div")
       head.className = "settings-card-head"
-      const dot = document.createElement("span")
-      dot.className = `settings-dot${provider.apiKey.trim() ? " on" : ""}`
-      dot.title = provider.apiKey.trim() ? "已填 Key" : "还没填 Key"
       const name = document.createElement("span")
       name.className = "settings-card-name"
       name.textContent = provider.name
-      head.append(dot, name)
+      head.append(name)
       if (!provider.builtin) {
         const tag = document.createElement("span")
         tag.className = "settings-tag"
         tag.textContent = "自定义"
         head.appendChild(tag)
       }
-      if (provider.id === aiSettings.providerId) {
-        const tag = document.createElement("span")
-        tag.className = "settings-tag current"
-        tag.textContent = "当前"
-        head.appendChild(tag)
-      }
+      // 状态点放在名字（标签）后面，照 DSH
+      const dot = document.createElement("span")
+      dot.className = `settings-dot${provider.apiKey.trim() ? " on" : ""}`
+      dot.title = provider.apiKey.trim() ? "已填 Key" : "还没填 Key"
+      head.appendChild(dot)
       const actions = document.createElement("div")
       actions.className = "settings-card-actions"
       const edit = document.createElement("button")
@@ -5867,16 +6353,9 @@ function settingsAiView(reRender: () => void): HTMLElement {
       edit.textContent = "编辑"
       actions.appendChild(edit)
       edit.addEventListener("click", () => {
-        const editor = settingsModelEditor({
-          provider,
-          tab: provider.builtin ? "builtin" : "custom",
-          onCancel: reRender,
-          onSaved: (message) => {
-            setStatus(message)
-            reRender()
-          },
-        })
-        wrap.replaceChildren(editor)
+        // 原地展开：编辑器长在这张卡片里（别的卡片不动）；再点一下收起
+        expandedId = expanded ? null : provider.id
+        buildList()
       })
       if (!provider.builtin) {
         const del = document.createElement("button")
@@ -5892,37 +6371,48 @@ function settingsAiView(reRender: () => void): HTMLElement {
       head.appendChild(actions)
       card.appendChild(head)
 
-      const modelRow = document.createElement("div")
-      modelRow.className = "settings-card-model"
-      const select = document.createElement("select")
-      for (const model of provider.models) {
-        const option = document.createElement("option")
-        option.value = model
-        option.textContent = modelLabel(model)
-        select.appendChild(option)
+      if (expanded) {
+        // 展开态：编辑器挂在卡片里，原来的「编辑 / 删除」都留着
+        card.appendChild(
+          settingsModelEditor({
+            provider,
+            tab: provider.builtin ? "builtin" : "custom",
+            onCancel: () => {
+              expandedId = null
+              reRender()
+            },
+            onSaved: (message) => {
+              expandedId = null
+              setStatus(message)
+              reRender()
+            },
+          }),
+        )
       }
-      select.value =
-        provider.id === aiSettings.providerId ? aiSettings.model : (provider.models[0] ?? "")
-      select.disabled = !provider.apiKey.trim()
-      select.addEventListener("change", () => {
-        if (!provider.apiKey.trim()) {
-          setStatus("先填这个服务商的 API Key", true)
-          return
-        }
-        if (provider.models.length === 0) {
-          setStatus("这个服务商还没配模型", true)
-          return
-        }
-        aiSettings = { ...aiSettings, providerId: provider.id, model: select.value }
-        saveAiSettings(aiSettings)
-        renderAiChips()
-        buildList()
-        setStatus(`已切换：${provider.name} · ${modelLabel(select.value)}`)
-      })
-      modelRow.appendChild(select)
-      card.appendChild(modelRow)
       cards.appendChild(card)
     }
+    // 「添加」也是原地展开：在列表末尾长出一张新卡，别的卡片不动
+    if (expandedId === "__add__") {
+      const card = document.createElement("div")
+      card.className = "settings-card"
+      card.appendChild(
+        settingsModelEditor({
+          provider: null,
+          tab: "custom",
+          onCancel: () => {
+            expandedId = null
+            reRender()
+          },
+          onSaved: (message) => {
+            expandedId = null
+            setStatus(message)
+            reRender()
+          },
+        }),
+      )
+      cards.appendChild(card)
+    }
+    if (addBtn) addBtn.hidden = expandedId === "__add__"
   }
 
   const add = document.createElement("button")
@@ -5930,22 +6420,15 @@ function settingsAiView(reRender: () => void): HTMLElement {
   add.className = "settings-add"
   add.textContent = "＋ 添加模型提供商"
   add.addEventListener("click", () => {
-    const editor = settingsModelEditor({
-      provider: null,
-      tab: "custom",
-      onCancel: reRender,
-      onSaved: (message) => {
-        setStatus(message)
-        reRender()
-      },
-    })
-    wrap.replaceChildren(editor)
+    expandedId = "__add__"
+    buildList()
   })
+  addBtn = add
   wrap.appendChild(add)
 
   const presets = document.createElement("div")
   presets.className = "settings-presets"
-  presets.append(document.createTextNode("服务商预设 · 照 DSH 目录内置 50 家，改目录后重跑生成脚本"))
+  presets.append(document.createTextNode("服务商预设"))
   const refresh = document.createElement("button")
   refresh.type = "button"
   refresh.textContent = "刷新"
@@ -7187,14 +7670,13 @@ function screenClampedSize(width: number, height: number): { width: number; heig
   return { width: Math.round(width), height: Math.round(height) }
 }
 
-/** 拆出 AI 时的默认尺寸：宽 = 内嵌面板宽（默认 400），高 = 拆出时主窗口的高度 */
+/** 拆出 AI 时的尺寸：宽 = 内嵌面板**最窄**宽（写死 400，不再跟内嵌当前宽度走），高 = 拆出时主窗口的高度 */
 function detachedAiDefaultSize(): { width: number; height: number } {
-  const width = Math.max(AI_MIN_WIDTH, Math.round(aiCurrentWidth || AI_DEFAULT_WIDTH))
   const height = Math.round(window.outerHeight || window.innerHeight || 780)
-  return screenClampedSize(width, height)
+  return screenClampedSize(AI_MIN_WIDTH, height)
 }
 
-/** 拆出窗口的尺寸：一律用内嵌面板的默认大小（不沿用上次拉大的尺寸）；只记住上次的位置 */
+/** 拆出窗口的尺寸：一律用写死的最窄宽（不沿用上次拉大的尺寸）；只记住上次的位置 */
 function readAiWinGeometry(): { width: number; height: number; x?: number; y?: number } {
   const geo: { width: number; height: number; x?: number; y?: number } = detachedAiDefaultSize()
   try {
@@ -7507,6 +7989,9 @@ function bindDetachedWindowDrag(handle: HTMLElement): void {
   })
 }
 
+/** 停靠判定：指针贴着主窗侧边多近算「要停靠」（写死 20px，和悬浮窗宽度无关） */
+const DOCK_EDGE_PX = 20
+
 /** 独立窗拖回主窗口：指针进停靠区才高亮；松手还在停靠区 → 滑过去磁吸收回内嵌。
  *  窗口压在主窗上面、但指针不在停靠区时：什么都不吸，爱放哪放哪。 */
 function bindDockBack(
@@ -7521,14 +8006,12 @@ function bindDockBack(
   let snapping = false
   let snappedTimer: number | undefined
 
-  // 拖拽期间主窗与自己的几何基本不变：缓存 500ms，省掉每次 onMoved 的 4 个 IPC 查询
+  // 拖拽期间主窗几何基本不变：缓存 500ms，省掉每次 onMoved 的 IPC 查询
   let zoneCache: {
     x: number
     y: number
     width: number
     height: number
-    winW: number
-    winH: number
   } | null = null
   let zoneCacheAt = 0
   let lastZoneCheck = 0
@@ -7538,44 +8021,32 @@ function bindDockBack(
     if (zoneCache && now - zoneCacheAt <= 500) return zoneCache
     const main = (await getAllWindows()).find((item) => item.label === "main")
     if (!main) return null
-    const [mainPos, mainSize, winSize] = await Promise.all([
-      main.outerPosition(),
-      main.outerSize(),
-      win.outerSize(),
-    ])
+    const [mainPos, mainSize] = await Promise.all([main.outerPosition(), main.outerSize()])
     zoneCache = {
       x: mainPos.x,
       y: mainPos.y,
       width: mainSize.width,
       height: mainSize.height,
-      winW: winSize.width,
-      winH: winSize.height,
     }
     zoneCacheAt = now
     return zoneCache
   }
 
-  /** 指针（取不到就用窗口中心）是否落在主窗那侧的停靠区：一条贴着主窗边缘、面板宽、整高的带。
-   *  keep=true（框已经亮着）时把边界向外扩 80px——迟滞，避免指针在边界抖一下就让虚线框一闪一闪。 */
+  /** 浮窗的竖边离主窗的竖边多近算「要停靠」：写死 20px，**看窗口自己的边、不看鼠标**。
+   *  浮窗左/右缘 ↔ 主窗左/右缘，任意一对在 20px 内就亮（对上原位＝右缘对右缘也算）。
+   *  keep=true（框已经亮着）时放宽 80px——迟滞，避免边缘抖一下就让虚线框一闪一闪。 */
   const inDockZone = async (keep = false): Promise<boolean> => {
     const geo = await zoneGeometry()
     if (!geo) return false
-    let point: { x: number; y: number }
-    try {
-      point = await cursorPosition()
-    } catch {
-      const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()])
-      point = { x: pos.x + size.width / 2, y: pos.y + size.height / 2 }
-    }
+    const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()])
     const pad = keep ? 80 : 0
-    if (point.y < geo.y - pad || point.y > geo.y + geo.height + pad) return false
-    if (dockSide === "right") {
-      return (
-        point.x >= geo.x + geo.width - geo.winW - pad &&
-        point.x <= geo.x + geo.width + pad
-      )
-    }
-    return point.x >= geo.x - pad && point.x <= geo.x + geo.winW + pad
+    const centerY = pos.y + size.height / 2
+    if (centerY < geo.y - pad || centerY > geo.y + geo.height + pad) return false
+    const mainEdges = [geo.x, geo.x + geo.width]
+    const winEdges = [pos.x, pos.x + size.width]
+    return winEdges.some((edge) =>
+      mainEdges.some((mainEdge) => Math.abs(edge - mainEdge) <= DOCK_EDGE_PX + pad),
+    )
   }
 
   /** 更新停靠高亮：进带立刻亮；离带晚 140ms 再熄——避免边界抖动让虚线框「一闪一闪」 */
@@ -7792,7 +8263,7 @@ async function openAiWindowInner(docId: string, at?: { x: number; y: number }): 
     title: `AI 面板 · ${doc?.project.title || "未命名歌曲"}`,
     width: geo.width,
     height: geo.height,
-    minWidth: 360,
+    minWidth: AI_MIN_WIDTH,
     minHeight: 420,
     // Windows：和主窗一样用页面内自绘标题栏；macOS 保留系统窗框
     decorations: !IS_WINDOWS_DESKTOP,
@@ -7880,13 +8351,14 @@ async function openDocsWindow(at?: { x: number; y: number }): Promise<TauriWindo
       return opened
     }
     const url = `${window.location.origin}${window.location.pathname}?win=docs`
-    const docsSize = screenClampedSize(300, Math.round(window.outerHeight || window.innerHeight || 780))
+    // 宽 = 左栏内嵌最窄宽（写死 240）；高 = 拆出时主窗口高度
+    const docsSize = screenClampedSize(SIDEBAR_MIN_WIDTH, Math.round(window.outerHeight || window.innerHeight || 780))
     const win = new WebviewWindow(DOCS_WINDOW_LABEL, {
       url,
       title: "文档栏",
       width: docsSize.width,
       height: docsSize.height,
-      minWidth: 260,
+      minWidth: SIDEBAR_MIN_WIDTH,
       minHeight: 420,
       // Windows：和主窗一样用页面内自绘标题栏；macOS 保留系统窗框
       decorations: !IS_WINDOWS_DESKTOP,
@@ -7931,6 +8403,16 @@ function initDocsWindowMode(): void {
     await redock()
   })
   document.querySelector("#btn-docs-redock")?.addEventListener("click", () => void redock())
+  // 标题栏右上角那个「✕」在这个窗口里其实就是「放回主窗口」（关窗＝收回，见上）——
+  // 图标 / 悬停色 / 提示都换成「放回」，别用红叉骗人
+  const titleClose = document.querySelector<HTMLButtonElement>("#win-close")
+  if (titleClose) {
+    titleClose.classList.remove("close")
+    titleClose.title = "放回主窗口"
+    titleClose.setAttribute("aria-label", "放回主窗口")
+    titleClose.innerHTML =
+      '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>'
+  }
   // 这两个按钮的 handler 平时挂在 bindToolbar / initAiPanel 里，文档栏窗口模式自己绑
   document.querySelector("#btn-new-doc")?.addEventListener("click", () => addDoc())
   document.querySelector("#btn-new-convo")?.addEventListener("click", () => newConvo())

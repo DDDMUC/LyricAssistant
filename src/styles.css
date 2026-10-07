@@ -731,6 +731,17 @@ button:disabled {
   margin-left: auto;
 }
 
+/* 工具栏「AI」：图标按钮（和侧栏同款方框，竖条在右） */
+#btn-ai {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#btn-ai svg {
+  display: block;
+}
+
 .editor-actions {
   display: contents;
 }
@@ -1020,19 +1031,17 @@ button:disabled {
 }
 
 .sentence-meta {
-  display: flex;
+  display: none; /* 只有「当前句」长这一块；其余句子不占这个位 */
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
   min-height: 30px;
   margin-bottom: 4px;
   padding: 2px 2px 0;
-  visibility: hidden;
 }
 
-.sentence:hover .sentence-meta,
 .sentence.active .sentence-meta {
-  visibility: visible;
+  display: flex;
 }
 
 .sentence-index {
@@ -2510,11 +2519,6 @@ body.pick-mode .cell-input:not(.selected):hover {
   gap: 8px;
 }
 
-.settings-card.current {
-  border-color: var(--accent);
-  background: var(--accent-bg);
-}
-
 .settings-card-head {
   display: flex;
   align-items: center;
@@ -2552,11 +2556,6 @@ body.pick-mode .cell-input:not(.selected):hover {
   flex: none;
 }
 
-.settings-tag.current {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
 .settings-card-actions {
   margin-left: auto;
   display: flex;
@@ -2570,16 +2569,18 @@ body.pick-mode .cell-input:not(.selected):hover {
   border-radius: 8px;
   padding: 2px 10px;
   font-size: 12px;
-  background: var(--field-bg);
+  background: var(--bg-elevated);
   color: var(--text);
 }
 
 .settings-card-actions button:hover {
-  background: var(--field-bg-hover);
+  background: var(--bg-hover);
 }
 
 .settings-card-actions .danger {
   color: var(--danger);
+  border-color: transparent;
+  background: transparent;
 }
 
 /* 卡片里的「模型能力」：选这个服务商当前用哪个模型 */
@@ -2592,12 +2593,12 @@ body.pick-mode .cell-input:not(.selected):hover {
 .settings-card-model select {
   flex: 1;
   min-width: 0;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 5px 8px;
-  font-size: 12.5px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 13px;
   color: var(--text);
-  background: var(--field-bg);
+  background: var(--bg-elevated);
 }
 
 .settings-card-model .none {
@@ -2647,11 +2648,198 @@ body.pick-mode .cell-input:not(.selected):hover {
   background: var(--field-bg-hover);
 }
 
-/* ===== 编辑器（第三方模型提供商 / 自定义模型 API） ===== */
+/* ===== 编辑器：分页只在「添加」；卡片里编辑用紧凑面板 ===== */
 .settings-editor {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* 卡片里展开的编辑器：内嵌面板（对齐 DSH），输入框换白底 */
+.settings-card .settings-editor {
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.settings-card .settings-editor .settings-field input,
+.settings-card .settings-editor .settings-field select,
+.settings-card .settings-editor .settings-model-row input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+}
+
+.settings-card .settings-editor .settings-inline-btn {
+  background: var(--bg-elevated);
+}
+
+.settings-card .settings-editor .settings-inline-btn:hover {
+  background: var(--bg-hover);
+}
+
+.settings-card .settings-editor .settings-tab:not(.active) {
+  background: var(--bg-elevated);
+}
+
+/* 卡片里编辑时的顶行：名字 + id（对齐 DSH） */
+.settings-editor-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.settings-editor-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-editor-id {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* 编辑器里的报错 / 状态一行 */
+.settings-editor .hint.error {
+  color: var(--danger);
+}
+
+/* ===== 模型目录小节（照 DSH）：状态行 + 行编辑 + 添加 / 恢复 / 获取 ===== */
+.settings-catalog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-catalog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-catalog-title {
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex: none;
+}
+
+.settings-catalog-status {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.settings-catalog-head .settings-inline-btn {
+  margin-left: auto;
+}
+
+.settings-catalog-head .settings-inline-btn + .settings-inline-btn {
+  margin-left: 0;
+}
+
+.settings-catalog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-model-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-model-row input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--field-bg);
+}
+
+.settings-model-del {
+  border: none;
+  border-radius: 6px;
+  padding: 4px 7px;
+  font-size: 13px;
+  line-height: 1;
+  background: transparent;
+  color: var(--text-muted);
+  flex: none;
+}
+
+.settings-model-del:hover {
+  color: var(--danger);
+  background: var(--accent-wash);
+}
+
+.settings-catalog-empty {
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.settings-catalog-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 「获取可用模型」的勾选面板 */
+.settings-model-picker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-model-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.settings-model-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.settings-model-id-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-model-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-model-picker-actions .primary {
+  border: none;
+  border-radius: 8px;
+  padding: 6px 16px;
+  font-size: 12.5px;
+  background: var(--accent);
+  color: #fff;
 }
 
 .settings-tabs {
@@ -2701,6 +2889,16 @@ body.pick-mode .cell-input:not(.selected):hover {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Key 那一排按钮多了：输入框可缩、窄了换行，别把按钮挤出去 */
+.settings-field .row {
+  flex-wrap: wrap;
+}
+
+.settings-field .row input {
+  flex: 1 1 160px;
+  min-width: 0;
 }
 
 .settings-inline-btn {

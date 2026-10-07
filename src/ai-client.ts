@@ -251,6 +251,9 @@ export const BUILTIN_PROVIDERS: AiProvider[] = [
   },
 ]
 
+/** 列表里常驻卡片的两家（我们自己维护的 DeepSeek / 小米）；其余内置要填过 Key 才占卡片（照 DSH：列表 ≠ 目录） */
+export const PINNED_PROVIDER_IDS: string[] = OUR_PROVIDERS.map((provider) => provider.id)
+
 function cloneProviders(): AiProvider[] {
   return BUILTIN_PROVIDERS.map((provider) => ({ ...provider, models: [...provider.models] }))
 }
@@ -390,7 +393,7 @@ function modelsEndpoint(baseUrl: string): string {
     : `${base}/models`
 }
 
-function headers(target: AiTarget): Record<string, string> {
+function headers(target: Pick<AiTarget, "apiKey" | "auth">): Record<string, string> {
   const result: Record<string, string> = { "Content-Type": "application/json" }
   const key = target.apiKey.trim()
   if (key) {
@@ -804,4 +807,45 @@ export async function testAiConnection(target: AiTarget): Promise<string> {
     body = ""
   }
   throw new Error(friendlyError(response.status, body))
+}
+
+/** 获取可用模型：问 OpenAI 兼容的 GET /models（Anthropic 协议没有统一的模型列表端点） */
+export async function discoverModels(input: {
+  baseUrl: string
+  api: AiApi
+  apiKey: string
+  auth: "bearer" | "both"
+}): Promise<string[]> {
+  if (!input.baseUrl.trim()) throw new Error("先填接口地址")
+  if (input.api === "anthropic-messages") throw new Error("Anthropic 协议没有统一的模型列表接口，模型得手工填")
+  let response: Response
+  try {
+    response = await fetch(modelsEndpoint(input.baseUrl), {
+      method: "GET",
+      headers: headers(input),
+    })
+  } catch (err) {
+    throw new Error(`连不上：${err instanceof Error ? err.message : String(err)}`)
+  }
+  if (!response.ok) {
+    let body = ""
+    try {
+      body = await response.text()
+    } catch {
+      body = ""
+    }
+    throw new Error(friendlyError(response.status, body))
+  }
+  const data = (await response.json().catch(() => null)) as
+    | { data?: Array<{ id?: unknown }>; models?: Array<{ id?: unknown }> }
+    | null
+  const rows = Array.isArray(data?.data)
+    ? data.data
+    : Array.isArray(data?.models)
+      ? data.models
+      : []
+  const ids = rows
+    .map((row) => (row && typeof row.id === "string" ? row.id.trim() : ""))
+    .filter((id) => id !== "")
+  return Array.from(new Set(ids))
 }

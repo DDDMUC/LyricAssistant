@@ -103,25 +103,42 @@ it("模型页：服务商卡片列表（状态点 / 当前 / 编辑），编辑�
       b.textContent,
     ),
   ).toEqual(["外观", "模型", "数据", "关于"])
-  // 卡片列表：DeepSeek 在最前，且是当前服务商
+  // 卡片列表：DeepSeek 在最前
   const cards = dialog!.querySelectorAll<HTMLElement>(".settings-card")
-  expect(cards.length).toBeGreaterThan(10)
+  expect(cards.length).toBe(2)
   expect(cards[0]!.querySelector(".settings-card-name")?.textContent).toContain("DeepSeek")
-  expect(cards[0]!.classList.contains("current")).toBe(true)
-  // 模型下拉是「模型能力」
-  expect(cards[0]!.querySelector<HTMLSelectElement>(".settings-card-model select")?.value).toBe(
-    "deepseek-flash",
-  )
+  // 「当前」不做高亮 / 不加标签
+  expect(dialog!.querySelector(".settings-card.current, .settings-tag.current")).toBeNull()
+  // 卡片里不再有模型下拉
+  expect(dialog!.querySelector(".settings-card-model")).toBeNull()
 
-  // 编辑第一张卡：有「提供商 / API 密钥 / 自定义设置 / 测试 / 取消 / 保存」
+  // 编辑第一张卡：紧凑面板（名字+id / API 密钥 / 自定义设置 / 取消·保存），没有添加面板的分页和「提供商」下拉
   cards[0]!
     .querySelector<HTMLButtonElement>(".settings-card-actions button")!
     .click()
   await tick(20)
   const editor = dialog!.querySelector<HTMLElement>(".settings-editor")!
-  expect(editor.textContent).toContain("第三方模型提供商")
+  expect(editor.querySelector(".settings-editor-name")?.textContent).toContain("DeepSeek")
+  expect(editor.querySelector(".settings-editor-id")?.textContent).toBe("deepseek")
   expect(editor.textContent).toContain("API 密钥")
   expect(editor.textContent).toContain("自定义设置")
+  // 「模型目录」小节：状态行 + 行编辑 + ＋添加模型 / 获取可用模型
+  expect(editor.textContent).toContain("模型目录")
+  expect(editor.textContent).toContain("正在使用默认模型")
+  expect(editor.querySelectorAll(".settings-model-row input").length).toBeGreaterThan(0)
+  const editorButtons = Array.from(editor.querySelectorAll("button")).map((b) => b.textContent)
+  expect(editorButtons).toContain("＋ 添加模型")
+  expect(editorButtons).toContain("获取可用模型")
+  expect(editor.textContent).not.toContain("预设提供商")
+  // 编辑面板里没有添加用的分页（「自定义」这词和「自定义设置」重了，按元素查）
+  expect(editor.querySelector(".settings-tab")).toBeNull()
+  expect(editor.querySelector("select")).toBeNull()
+  // 编辑面板里有小的「测试」按钮（在取消 / 保存左边）
+  expect(
+    Array.from(editor.querySelectorAll<HTMLButtonElement>(".settings-editor-actions button")).map(
+      (b) => b.textContent,
+    ),
+  ).toEqual(["测试", "取消", "保存"])
   editor.querySelector<HTMLInputElement>('input[type="password"]')!.value = "sk-card-1"
   Array.from(editor.querySelectorAll<HTMLButtonElement>(".settings-editor-actions button"))
     .find((button) => button.textContent === "保存")!
@@ -166,6 +183,76 @@ it("等级芯片跟随模型能力：MiMo 是 low/medium/high（最高 high）�
   document.querySelector<HTMLButtonElement>("#ai-model-chip")!.click()
   pick("MiMo V2.6 Flash")
   expect(effortChip.textContent).toContain("High")
+})
+
+it("模型弹层：开→选→再开，点搜索框不会把弹层关掉（旧监听没摘的回归）", async () => {
+  const panel = document.querySelector<HTMLElement>("#ai-panel")!
+  if (panel.hasAttribute("hidden")) document.querySelector<HTMLButtonElement>("#btn-ai")!.click()
+  const chip = document.querySelector<HTMLButtonElement>("#ai-model-chip")!
+  // 第一次开 → 选一个模型关掉（这一步会在修复前留下一个没摘掉的旧监听）
+  chip.click()
+  const firstItem = document.querySelector<HTMLButtonElement>(".ai-pop button")!
+  firstItem.click()
+  await tick(20)
+  expect(document.querySelector(".ai-pop")).toBeNull()
+  // 第二次开 → 点搜索框，弹层必须还在
+  chip.click()
+  await tick(20)
+  const pop = document.querySelector<HTMLElement>(".ai-pop")!
+  expect(pop).toBeTruthy()
+  const search = pop.querySelector<HTMLInputElement>('input[placeholder="搜索模型"]')!
+  search.click()
+  await tick(20)
+  expect(document.querySelector(".ai-pop")).toBeTruthy()
+  // 收尾：再点一次芯片关掉
+  chip.click()
+})
+
+it("模型弹层只列「加过的」服务商：没配过的不出现", async () => {
+  const panel = document.querySelector<HTMLElement>("#ai-panel")!
+  if (panel.hasAttribute("hidden")) document.querySelector<HTMLButtonElement>("#btn-ai")!.click()
+  document.querySelector<HTMLButtonElement>("#ai-model-chip")!.click()
+  await tick(20)
+  const pop = document.querySelector<HTMLElement>(".ai-pop")!
+  const titles = Array.from(pop.querySelectorAll<HTMLElement>(".ai-pop-title")).map(
+    (el) => el.textContent,
+  )
+  expect(titles).toContain("DeepSeek")
+  expect(titles).not.toContain("OpenAI")
+  expect(titles).not.toContain("OpenRouter")
+  document.querySelector<HTMLButtonElement>("#ai-model-chip")!.click()
+})
+
+it("添加卡片的「预设提供商」下拉：已经加过的（常驻两家）不再列出来", async () => {
+  await openAiSettingsDialog()
+  const dialog = document.querySelector<HTMLDialogElement>(".settings-dialog")!
+  Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"))
+    .find((button) => button.textContent === "＋ 添加模型提供商")!
+    .click()
+  await tick(30)
+  const cards = dialog.querySelectorAll<HTMLElement>(".settings-card")
+  const addCard = cards[cards.length - 1]!
+  Array.from(addCard.querySelectorAll<HTMLButtonElement>(".settings-tab"))
+    .find((tab) => tab.textContent === "预设提供商")!
+    .click()
+  await tick(30)
+  const names = Array.from(
+    addCard.querySelectorAll<HTMLSelectElement>(".settings-editor select")[0]!.options,
+  ).map((option) => option.textContent ?? "")
+  expect(names).not.toContain("DeepSeek")
+  expect(names).not.toContain("MiMo（小米）")
+  expect(names).toContain("OpenAI")
+  // 排序：中文在前（按拼音）、英文在后（按字母）
+  const isCjkName = (name: string): boolean => /^[\u3400-\u9fff]/.test(name)
+  const firstLatin = names.findIndex((name) => !isCjkName(name))
+  expect(firstLatin).toBeGreaterThan(0)
+  expect(names.slice(firstLatin).every((name) => !isCjkName(name))).toBe(true)
+  const zh = names.filter((name) => isCjkName(name))
+  const zhCollator = new Intl.Collator("zh-Hans-CN", { usage: "sort", sensitivity: "base" })
+  expect(zh).toEqual([...zh].sort((a, b) => zhCollator.compare(a, b)))
+  const en = names.filter((name) => !isCjkName(name))
+  expect(en).toEqual([...en].sort((a, b) => a.localeCompare(b, "en")))
+  dialog.close()
 })
 
 it("输入版本 / 回复版本两条链：编辑追加输入版本，重跑追加回复版本", async () => {
@@ -324,7 +411,7 @@ it("AI 面板默认内嵌：AI 按钮开合面板，不建窗；点「拆出」�
   ]
   expect(label.startsWith("ai-")).toBe(true)
   expect(options.url).toContain("?win=ai&doc=")
-  // 默认尺寸：宽 = 内嵌面板宽（默认 400）；高 = 拆出时应用窗口的高度（钳到屏幕内）
+  // 分离尺寸写死：宽 = 内嵌面板最窄宽 400；高 = 拆出时应用窗口的高度（钳到屏幕内）
   const aiOptions = options as unknown as { width: number; height: number }
   expect(aiOptions.width).toBe(400)
   const expectedHeight = Math.min(
