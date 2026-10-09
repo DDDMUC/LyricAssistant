@@ -1,4 +1,4 @@
-import type { Alternative, Cursor, Project, ProjectStats, Section, Sentence } from "./model/types"
+import type { Alternative, Cursor, Project, ProjectStats, Section, Sentence, SvMapEntry } from "./model/types"
 import { cellsFromPattern, resizeToPattern } from "./model/grid"
 import { totalCells } from "./model/pattern"
 import { hanOnly } from "./model/rhyme"
@@ -257,6 +257,26 @@ export function parseProject(raw: string): Project {
   project.credits = Array.isArray(project.credits)
     ? project.credits.filter((credit): credit is string => typeof credit === "string" && credit.trim() !== "")
     : []
+  // SV2 对照表：结构不合法的条目直接丢掉（旧工程没有这字段，照常能开）
+  if (Array.isArray(project.svMap)) {
+    const map = project.svMap.filter(
+      (entry): entry is SvMapEntry =>
+        !!entry &&
+        typeof entry === "object" &&
+        typeof entry.sid === "string" &&
+        entry.sid !== "" &&
+        typeof entry.id === "string" &&
+        entry.id !== "" &&
+        typeof entry.cell === "number" &&
+        Number.isInteger(entry.cell) &&
+        entry.cell >= 0 &&
+        typeof entry.char === "string",
+    )
+    if (map.length > 0) project.svMap = map
+    else delete project.svMap
+  } else {
+    delete project.svMap
+  }
   sanitizeProject(project)
   return project
 }

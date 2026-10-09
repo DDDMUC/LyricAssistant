@@ -44,6 +44,14 @@ export interface Section {
   sentences: Sentence[]
 }
 
+/** 格子 ↔ SV2 音符对照（实时同步用）：句子 id + 格号 → 音符身份证 + 上次同步时对应的字 */
+export interface SvMapEntry {
+  sid: string
+  cell: number
+  id: string
+  char: string
+}
+
 export interface Project {
   version: 2
   title: string
@@ -53,6 +61,8 @@ export interface Project {
   updatedAt: string
   credits?: string[]
   source?: string
+  /** 连过 SV2 的话：格子 ↔ 音符对照表（跟着工程存） */
+  svMap?: SvMapEntry[]
 }
 
 export interface Cursor {
