@@ -150,6 +150,15 @@ import {
   switchAlternative,
 } from "./state"
 import { applyTheme, initTheme, themeIcon, themeLabel, themeState, type ThemePref } from "./theme"
+import {
+  applyMetaLayout,
+  initMetaLayout,
+  metaLayoutLabel,
+  metaLayoutState,
+  type MetaLayout,
+} from "./sentence-meta"
+import { bindZoomShortcuts, initZoom } from "./zoom"
+import { callBridge, launchSv2, orderedChars, readBridgeState } from "./sv-bridge"
 
 const sentencesEl = document.querySelector("#sentences") as HTMLElement
 const scrollProgressEl = document.querySelector("#scroll-progress") as HTMLElement
@@ -2459,8 +2468,10 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
 
     if (e.key === "Enter") {
       e.preventDefault()
+      // 句尾回车：光标到「下一句的第一个字」
       const idx = sentenceIndex(store.project, sentenceId)
-      moveCursorToFlatIndex(sentenceId, idx + 1)
+      const next = sentenceAt(store.project, idx + 1)
+      if (next) moveCursorInPlace({ sentenceId: next.id, cell: 0 })
     }
   })
 }
@@ -2488,11 +2499,16 @@ function commitInput(input: HTMLInputElement): void {
   const sentence = store.findSentence(sentenceId)
   if (!sentence) return
 
+  // 格子里原来的字还在、新字跟在后头（追加）→ 从下一格开始写；
+  // 原来的字被替掉了（全选重打、粘贴覆盖等）→ 还是写当前格
+  const appended = base !== "" && raw.startsWith(base)
+  const writeFrom = appended ? start + 1 : start
+
   // 逐格锁：有锁的格子只收押该辙的字（写到哪格查哪格）
   {
     const total = totalCells(sentence.pattern)
     const chars = [...text]
-    for (let i = start, j = 0; i < total && j < chars.length; i++, j++) {
+    for (let i = writeFrom, j = 0; i < total && j < chars.length; i++, j++) {
       const lock = cellLockAt(sentence, i)
       if (lock && !charFitsRhyme(chars[j], lock)) {
         const name = (RHYME_LABEL_BY_KEY.get(lock) ?? lock).replace(/辙$/, "")
@@ -2510,11 +2526,15 @@ function commitInput(input: HTMLInputElement): void {
   }
 
   store.pushUndo()
-  const result = writeChars(getCells(sentence), start, text)
+  const result = writeChars(getCells(sentence), writeFrom, text)
   setCells(sentence, result.cells)
   const excess = [...text].slice(result.written).join("")
   if (excess) sentence.overflow = sentence.overflow + excess
-  store.cursor.cell = Math.min(start + result.written, totalCells(sentence.pattern) - 1)
+  // 光标停在「最后写到的那个格子」——刚输入的字右侧，而不是下一格的左侧
+  store.cursor.cell = Math.min(
+    writeFrom + Math.max(result.written, 1) - 1,
+    totalCells(sentence.pattern) - 1,
+  )
   store.touch()
   repaintSentences([sentence.id])
   focusCellInput()
@@ -2980,6 +3000,83 @@ function openCreditsDialog(): void {
   })
   dialog.showModal()
   textarea.focus()
+}
+
+/** SV2 桥：把作词助手的歌词按序填进 SV2（预演 / 真填），或把 SV2 的歌词读回来 */
+async function openSvBridgeDialog(): Promise<void> {
+  dismissOpenDialogs()
+  const dialog = document.createElement("dialog")
+  dialog.innerHTML = `
+    <form method="dialog" class="dialog-body">
+      <button class="dialog-close" value="cancel" type="submit" title="关闭" aria-label="关闭">×</button>
+      <strong>作词助手 ⇄ Synthesizer V Studio 2</strong>
+      <p>把当前工程里<b>填了字的格子</b>按顺序填进 SV2（与词格、旋律无关）：所有轨的带字音符时间不重叠时，第 i 个字替换第 i 个；有重叠就按「导入 MIDI」的规则（字数多的当主歌，和声挂在重叠的主句后）。只替换能对上的部分。</p>
+      <p class="dialog-note" id="sv-bridge-status">正在检查 SV2 脚本…</p>
+      <div class="dialog-actions">
+        <button type="button" id="sv-bridge-launch">启动 SV2</button>
+        <button type="button" id="sv-bridge-preview">预演</button>
+        <button type="button" id="sv-bridge-fill">按序填词到 SV2</button>
+        <button type="button" id="sv-bridge-read">从 SV2 读回歌词</button>
+      </div>
+      <p class="dialog-note" id="sv-bridge-result"></p>
+    </form>
+  `
+  document.body.appendChild(dialog)
+  const statusEl = dialog.querySelector<HTMLElement>("#sv-bridge-status")!
+  const resultEl = dialog.querySelector<HTMLElement>("#sv-bridge-result")!
+
+  const refreshStatus = async (): Promise<void> => {
+    const state = await readBridgeState()
+    if (!state) {
+      statusEl.textContent = "还没看到 SV2 脚本的状态——去 SV2 里跑「脚本 → 作词助手 → LyricAssistant bridge」"
+      return
+    }
+    const seconds = Math.max(0, Math.floor(Date.now() / 1000) - state.updated)
+    statusEl.textContent = state.running
+      ? `SV2 脚本运行中 · 工程「${state.project || "未保存"}」· 带字音符 ${state.svNotes} 个`
+      : `SV2 脚本好像没在跑（状态是 ${seconds} 秒前的）——去 SV2 里跑一下脚本`
+  }
+  void refreshStatus()
+
+  const run = async (dry: boolean): Promise<void> => {
+    const chars = orderedChars(store.project)
+    if (!chars) {
+      resultEl.textContent = "当前工程一个字都没有"
+      return
+    }
+    resultEl.textContent = dry ? "预演中…" : "发送中…"
+    const resp = await callBridge("fillLyrics", { chars, dry: dry ? "1" : "0" })
+    if (!resp) {
+      resultEl.textContent = "SV2 那边没响应——先在 SV2 里跑「脚本 → 作词助手 → LyricAssistant bridge」"
+      return
+    }
+    resultEl.textContent = resp.note || (resp.ok ? "完成" : "SV2 报错")
+    if (!dry && resp.ok) setStatus(`SV2：已替换 ${resp.matched} 个字`)
+    void refreshStatus()
+  }
+  dialog.querySelector("#sv-bridge-launch")!.addEventListener("click", () => {
+    void (async () => {
+      const ok = await launchSv2()
+      resultEl.textContent = ok
+        ? "已启动 SV2——等它打开后在 SV2 里跑「脚本 → 作词助手 → LyricAssistant bridge」"
+        : "没能启动 SV2（路径不对 / 权限没给？）"
+      if (ok) void refreshStatus()
+    })()
+  })
+  dialog.querySelector("#sv-bridge-preview")!.addEventListener("click", () => void run(true))
+  dialog.querySelector("#sv-bridge-fill")!.addEventListener("click", () => void run(false))
+  dialog.querySelector("#sv-bridge-read")!.addEventListener("click", () => {
+    void (async () => {
+      const state = await readBridgeState()
+      if (!state || !state.chars) {
+        resultEl.textContent = "没读到 SV2 的歌词（脚本没在跑？）"
+        return
+      }
+      dialog.close()
+      openImportDialog(state.chars, "SV2")
+    })()
+  })
+  dialog.showModal()
 }
 
 function askExportOptions(): Promise<ExportOptions | null> {
@@ -5479,6 +5576,7 @@ function settingsSection(title: string, hint?: string): HTMLElement {
 }
 
 function settingsAppearanceView(): HTMLElement {
+  const box = document.createElement("div")
   const wrap = settingsSection("主题", "选界面的亮暗。")
   const list = document.createElement("div")
   list.className = "settings-choices"
@@ -5506,7 +5604,35 @@ function settingsAppearanceView(): HTMLElement {
     list.appendChild(row)
   }
   wrap.appendChild(list)
-  return wrap
+  box.appendChild(wrap)
+
+  // 句子工具条排版：两种都留着，用户自己选（占位不跳版 / 不占位更紧凑）
+  const metaWrap = settingsSection("句子工具条", "「备选 / 备注 / 按钮」那一条怎么排。")
+  const metaList = document.createElement("div")
+  metaList.className = "settings-choices"
+  for (const value of ["compact", "reserve"] as MetaLayout[]) {
+    const row = document.createElement("button")
+    row.type = "button"
+    row.className = "settings-choice"
+    row.classList.toggle("active", metaLayoutState.value === value)
+    const label = document.createElement("span")
+    label.textContent = metaLayoutLabel(value)
+    const tick = document.createElement("span")
+    tick.className = "tick"
+    tick.textContent = "✓"
+    row.append(label, tick)
+    row.addEventListener("click", () => {
+      applyMetaLayout(value)
+      for (const other of metaList.querySelectorAll(".settings-choice")) {
+        other.classList.toggle("active", other === row)
+      }
+      setStatus(`句子工具条：${metaLayoutLabel(value)}`)
+    })
+    metaList.appendChild(row)
+  }
+  metaWrap.appendChild(metaList)
+  box.appendChild(metaWrap)
+  return box
 }
 
 /** 下一个自定义服务商的编号（custom-1 / custom-2 …，内置那个 custom 占位不占号） */
@@ -8646,6 +8772,7 @@ function bindToolbar(): void {
   })
 
   document.querySelector("#btn-import-lyrics")?.addEventListener("click", () => openImportDialog())
+  document.querySelector("#btn-sv")?.addEventListener("click", () => void openSvBridgeDialog())
   document.querySelector("#btn-help")?.addEventListener("click", openHelpDialog)
   newDocBtn.addEventListener("click", addDoc)
   creditsBtn.addEventListener("click", openCreditsDialog)
@@ -8756,6 +8883,9 @@ function doRedo(): void {
 
 initDiag()
 initTheme()
+initMetaLayout()
+initZoom()
+bindZoomShortcuts((zoom) => setStatus(`界面缩放：${Math.round(zoom * 100)}%`))
 // Windows 桌面版：系统标题栏已去掉（见 Rust 端 set_decorations(false)），用页面内自绘标题栏，自己实现窗口控制
 if (IS_WINDOWS_DESKTOP) {
   document.documentElement.classList.add("win-desktop")

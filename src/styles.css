@@ -1031,7 +1031,7 @@ button:disabled {
 }
 
 .sentence-meta {
-  display: none; /* 只有「当前句」长这一块；其余句子不占这个位 */
+  display: none; /* 默认（不占位）：只有「当前句」长这一块；其余句子不占这个位 */
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
@@ -1042,6 +1042,17 @@ button:disabled {
 
 .sentence.active .sentence-meta {
   display: flex;
+}
+
+/* 「占位」排版（设置 → 外观里选）：一直占位，悬停或当前句才显形——切句不跳版 */
+html.meta-reserve .sentence-meta {
+  display: flex;
+  visibility: hidden;
+}
+
+html.meta-reserve .sentence:hover .sentence-meta,
+html.meta-reserve .sentence.active .sentence-meta {
+  visibility: visible;
 }
 
 .sentence-index {

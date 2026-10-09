@@ -7,13 +7,24 @@
   ],
   "permissions": [
     "core:default",
+    "core:webview:allow-set-webview-zoom",
     "core:window:allow-start-dragging",
     "opener:default",
+    "opener:allow-open-path",
     "dialog:default",
     "fs:allow-read-text-file",
     "fs:allow-read-file",
     "fs:allow-write-text-file",
     "fs:allow-write-file",
+    "fs:allow-mkdir",
+    "fs:allow-exists",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        "$LOCALDATA/LyricAssistantBridge",
+        "$LOCALDATA/LyricAssistantBridge/**/*"
+      ]
+    },
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
     "core:window:allow-create",

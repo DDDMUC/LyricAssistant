@@ -48,7 +48,8 @@ it("标题栏 ⚙ 打开设置：分类是 外观 / 模型 / 数据 / 关于（�
 
 it("外观：点主题立即生效并记住（跟系统 / 亮色 / 深色）", () => {
   const dialog = openSettings()
-  const choices = Array.from(dialog.querySelectorAll<HTMLButtonElement>(".settings-choice"))
+  const lists = dialog.querySelectorAll<HTMLElement>(".settings-choices")
+  const choices = Array.from(lists[0]!.querySelectorAll<HTMLButtonElement>(".settings-choice"))
   expect(choices).toHaveLength(3)
   expect(choices[0]!.textContent).toContain("跟随系统")
   expect(choices[1]!.textContent).toContain("亮色")
@@ -65,6 +66,25 @@ it("外观：点主题立即生效并记住（跟系统 / 亮色 / 深色）", (
 
   choices[0]!.click()
   expect(localStorage.getItem("cige-grid-theme")).toBe("auto")
+  dialog.close()
+})
+
+it("外观：句子工具条排版可选（占位 / 不占位），点了生效并记住", () => {
+  const dialog = openSettings()
+  const lists = dialog.querySelectorAll<HTMLElement>(".settings-choices")
+  const meta = Array.from(lists[1]!.querySelectorAll<HTMLButtonElement>(".settings-choice"))
+  expect(meta).toHaveLength(2)
+  expect(meta[0]!.textContent).toContain("不占位")
+  expect(meta[1]!.textContent).toContain("占位")
+
+  meta[1]!.click()
+  expect(document.documentElement.classList.contains("meta-reserve")).toBe(true)
+  expect(localStorage.getItem("cige-grid-meta-layout")).toBe("reserve")
+  expect(meta[1]!.classList.contains("active")).toBe(true)
+
+  meta[0]!.click()
+  expect(document.documentElement.classList.contains("meta-reserve")).toBe(false)
+  expect(localStorage.getItem("cige-grid-meta-layout")).toBe("compact")
   dialog.close()
 })
 

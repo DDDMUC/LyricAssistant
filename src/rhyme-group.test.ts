@@ -44,6 +44,10 @@ it("Ctrl+G 挑格 → 浮动条 → 建韵组：同组高亮、打字拦字、�
   input.value = "东"
   input.dispatchEvent(new Event("input", { bubbles: true }))
   await tick(20)
+  // 输完光标会停在刚写的第 1 格；先把光标挪到没被挑的第 2 格，
+  // 后面「点推荐字」才会落在第一个空格（第 3 格），而不是把种子字顶掉
+  cellAt(1).click()
+  await tick(20)
 
   // Ctrl+G 挑格模式里挑第 1 格 + 第 3 格（模式里直接点浮动条）
   togglePickMode()
