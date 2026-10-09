@@ -158,7 +158,7 @@ import {
   type MetaLayout,
 } from "./sentence-meta"
 import { bindZoomShortcuts, initZoom } from "./zoom"
-import { callBridge, launchSv2, orderedChars, readBridgeState } from "./sv-bridge"
+import { allCellRefs, applySvEdits, buildSvMapFromRefs, callBridge, diffSvMap, filledCellRefs, hasCigeMarks, launchSv2, orderedChars, readBridgeState, readSvNotes, svNotesToSections } from "./sv-bridge"
 
 const sentencesEl = document.querySelector("#sentences") as HTMLElement
 const scrollProgressEl = document.querySelector("#scroll-progress") as HTMLElement
@@ -3012,6 +3012,7 @@ async function openSvBridgeDialog(): Promise<void> {
       <strong>作词助手 ⇄ Synthesizer V Studio 2</strong>
       <p>把当前工程里<b>填了字的格子</b>按顺序填进 SV2（与词格、旋律无关）：所有轨的带字音符时间不重叠时，第 i 个字替换第 i 个；有重叠就按「导入 MIDI」的规则（字数多的当主歌，和声挂在重叠的主句后）。只替换能对上的部分。</p>
       <p class="dialog-note" id="sv-bridge-status">正在检查 SV2 脚本…</p>
+      <label class="dialog-check"><input type="checkbox" id="sv-bridge-sync"> <span>实时同步（打开后：你在格子里改字会自动推给 SV2，你在 SV2 里改字会自动写回格子；先「按序填词」或「读回」一次建立格子 ↔ 音符对照表）</span></label>
       <div class="dialog-actions">
         <button type="button" id="sv-bridge-launch">启动 SV2</button>
         <button type="button" id="sv-bridge-preview">预演</button>
@@ -3024,8 +3025,15 @@ async function openSvBridgeDialog(): Promise<void> {
   document.body.appendChild(dialog)
   const statusEl = dialog.querySelector<HTMLElement>("#sv-bridge-status")!
   const resultEl = dialog.querySelector<HTMLElement>("#sv-bridge-result")!
+  const syncBox = dialog.querySelector<HTMLInputElement>("#sv-bridge-sync")!
+  syncBox.checked = svSyncOn()
+  syncBox.addEventListener("change", () => {
+    svSyncSet(syncBox.checked)
+    void refreshStatus()
+  })
 
   const refreshStatus = async (): Promise<void> => {
+    const mapCount = store.project.svMap?.length ?? 0
     const state = await readBridgeState()
     if (!state) {
       statusEl.textContent = "还没看到 SV2 脚本的状态——去 SV2 里跑「脚本 → 作词助手 → LyricAssistant bridge」"
@@ -3033,7 +3041,7 @@ async function openSvBridgeDialog(): Promise<void> {
     }
     const seconds = Math.max(0, Math.floor(Date.now() / 1000) - state.updated)
     statusEl.textContent = state.running
-      ? `SV2 脚本运行中 · 工程「${state.project || "未保存"}」· 带字音符 ${state.svNotes} 个`
+      ? `SV2 脚本运行中 · 工程「${state.project || "未保存"}」· 带字音符 ${state.svNotes} 个 · 对照表 ${mapCount} 格 · 实时同步${svSyncOn() ? "开" : "关"}`
       : `SV2 脚本好像没在跑（状态是 ${seconds} 秒前的）——去 SV2 里跑一下脚本`
   }
   void refreshStatus()
@@ -3051,7 +3059,16 @@ async function openSvBridgeDialog(): Promise<void> {
       return
     }
     resultEl.textContent = resp.note || (resp.ok ? "完成" : "SV2 报错")
-    if (!dry && resp.ok) setStatus(`SV2：已替换 ${resp.matched} 个字`)
+    if (!dry && resp.ok) {
+      // 建对照表：这次填的字 ↔ 对上的音符身份证（实时同步靠它点对点）
+      if (resp.ids.length > 0) {
+        store.project.svMap = buildSvMapFromRefs(store.project, filledCellRefs(store.project), resp.ids)
+        store.touch()
+        svSyncRebase()
+        resultEl.textContent += `；已建立对照表 ${store.project.svMap.length} 格`
+      }
+      setStatus(`SV2：已替换 ${resp.matched} 个字`)
+    }
     void refreshStatus()
   }
   dialog.querySelector("#sv-bridge-launch")!.addEventListener("click", () => {
@@ -3067,16 +3084,213 @@ async function openSvBridgeDialog(): Promise<void> {
   dialog.querySelector("#sv-bridge-fill")!.addEventListener("click", () => void run(false))
   dialog.querySelector("#sv-bridge-read")!.addEventListener("click", () => {
     void (async () => {
+      resultEl.textContent = "读取中…"
+      // 先问 SV 要一份音符（含「词格酱」标记）：有标记 → 按标记生成新词格；没有 → 只往现有词格填字
+      const dumped = await callBridge("dumpNotes", {}, 5000)
+      const svNotes = dumped?.ok ? await readSvNotes() : []
+      if (hasCigeMarks(svNotes)) {
+        const built = svNotesToSections(svNotes)
+        const count = built.reduce(
+          (n, section) => n + section.lines.reduce((m, line) => m + line.cells.length, 0),
+          0,
+        )
+        if (built.length === 0 || count === 0) {
+          resultEl.textContent = "检测到「词格酱」标记，但没解析出可用的词格"
+          return
+        }
+        const mapRefs: { sid: string; cell: number }[] = []
+        const mapIds: string[] = []
+        mutate(() => {
+          const sections = built.map((section, i) => {
+            const sentences = section.lines.map((line) => {
+              const sentence = createSentence(line.pattern)
+              setCells(sentence, line.cells)
+              for (let k = 0; k < line.cells.length; k++) {
+                mapRefs.push({ sid: sentence.id, cell: k })
+                mapIds.push(line.ids?.[k] ?? "")
+              }
+              return sentence
+            })
+            return createSection(section.name || `段落 ${i + 1}`, sentences)
+          })
+          store.project.sections = sections
+          store.cursor = { sentenceId: sections[0]?.sentences[0]?.id ?? "", cell: 0 }
+        })
+        let mapNote = ""
+        if (mapIds.some((id) => id !== "")) {
+          store.project.svMap = buildSvMapFromRefs(store.project, mapRefs, mapIds)
+          store.touch()
+          svSyncRebase()
+          mapNote = `；已建立对照表 ${store.project.svMap.length} 格`
+        }
+        resultEl.textContent = `检测到「词格酱」标记：已按标记生成新词格（成为当前词格）并填入 ${count} 个字；一次撤销可还原${mapNote}`
+        setStatus(`从 SV2 读回：按标记重建词格，填入 ${count} 个字`)
+        return
+      }
       const state = await readBridgeState()
       if (!state || !state.chars) {
         resultEl.textContent = "没读到 SV2 的歌词（脚本没在跑？）"
         return
       }
-      dialog.close()
-      openImportDialog(state.chars, "SV2")
+      const chars = [...state.chars]
+      if (chars.length === 0) {
+        resultEl.textContent = "SV2 里没有带字的音符"
+        return
+      }
+      // 没有约定：只按顺序往「现有格子」里填字——词格一个字都不动（可一次撤销）
+      let at = 0
+      let total = 0
+      mutate(() => {
+        for (const section of store.project.sections) {
+          for (const sentence of section.sentences) {
+            total += totalCells(sentence.pattern)
+            const cells = getCells(sentence).slice()
+            let changed = false
+            for (let k = 0; k < cells.length && at < chars.length; k++) {
+              cells[k] = chars[at]
+              at += 1
+              changed = true
+            }
+            if (changed) setCells(sentence, cells)
+          }
+        }
+      })
+      const notes = [`已按顺序填进当前工程的格子里 ${at} 个字（词格没动，一次撤销可还原）`]
+      if (chars.length > at) notes.push(`SV 里还有 ${chars.length - at} 个字没地方放`)
+      else if (total > at) notes.push(`当前工程还有 ${total - at} 个格子没填`)
+      // 建对照表：这次填的格子 ↔ SV 音符身份证（实时同步靠它点对点）
+      const ids = state.ids.slice(0, at)
+      if (ids.length > 0 && ids.some((id) => id !== "")) {
+        store.project.svMap = buildSvMapFromRefs(store.project, allCellRefs(store.project).slice(0, at), ids)
+        store.touch()
+        svSyncRebase()
+        notes.push(`已建立对照表 ${store.project.svMap.length} 格`)
+      }
+      resultEl.textContent = notes.join("；")
+      setStatus(`从 SV2 读回：按序填了 ${at} 个字`)
     })()
   })
   dialog.showModal()
+}
+
+/** ===== SV2 实时同步 =====
+ * 桥脚本（bridge.lua）本来就每 150ms 看一次工程：它把「用户自己改的字」记进 state.txt。
+ * 我们这边每隔一小会儿：① 格子里的字变了对点推给 SV（防抖，只发改过的格子）；
+ * ② state.txt 里有新改动就按对照表写回格子。两边都记「上次同步的字」掐掉来回刷。
+ */
+const SV_SYNC_KEY = "cige-grid-sv-sync"
+const SV_SYNC_INTERVAL_MS = 700
+const SV_SYNC_DEBOUNCE_MS = 900
+
+function svSyncOn(): boolean {
+  try {
+    return localStorage.getItem(SV_SYNC_KEY) === "1"
+  } catch {
+    return false
+  }
+}
+
+let svSyncTimer: number | null = null
+let svSyncBaseline: number | null = null
+let svSyncApplied = new Map<string, number>()
+let svSyncSig = ""
+let svSyncSigAt = 0
+let svSyncBusy = false
+let svSyncLastPush = 0
+
+/** 一键开关（弹窗里的勾选框用） */
+function svSyncSet(on: boolean): void {
+  try {
+    localStorage.setItem(SV_SYNC_KEY, on ? "1" : "0")
+  } catch {
+    // 忽略
+  }
+  if (on) startSvSync()
+  else stopSvSync()
+  setStatus(on ? "SV2 实时同步：开" : "SV2 实时同步：关")
+}
+
+/** 对照表刚重建：把 SV 的「改字序号」重新对表，别把旧改动当新的 */
+function svSyncRebase(): void {
+  svSyncBaseline = null
+  svSyncApplied.clear()
+  svSyncSig = ""
+  svSyncSigAt = 0
+}
+
+function startSvSync(): void {
+  if (svSyncTimer !== null || !isDesktop()) return
+  svSyncRebase()
+  svSyncTimer = window.setInterval(() => void svSyncTick(), SV_SYNC_INTERVAL_MS)
+}
+
+function stopSvSync(): void {
+  if (svSyncTimer === null) return
+  window.clearInterval(svSyncTimer)
+  svSyncTimer = null
+}
+
+async function svSyncTick(): Promise<void> {
+  if (svSyncBusy) return
+  svSyncBusy = true
+  try {
+    const state = await readBridgeState()
+    if (!state || !state.running) return
+    // ① SV → 作词助手：用户在 SV 里改的字，按对照表写回格子
+    if (svSyncBaseline === null) {
+      // 刚起步/刚建表：只记「已经见过的改动」，不往回灌
+      svSyncBaseline = state.editSeq
+      svSyncApplied.clear()
+      for (const item of state.edited) svSyncApplied.set(item.id, item.seq)
+    } else if (state.editSeq !== svSyncBaseline && state.edited.length > 0) {
+      svSyncBaseline = state.editSeq
+      const fresh = state.edited.filter((item) => (svSyncApplied.get(item.id) ?? -1) < item.seq)
+      for (const item of state.edited) svSyncApplied.set(item.id, item.seq)
+      const map = store.project.svMap ?? []
+      if (fresh.length > 0 && map.length > 0) {
+        let applied = 0
+        mutate(() => {
+          applied = applySvEdits(store.project, map, fresh)
+        })
+        if (applied > 0) {
+          svSyncSig = ""
+          setStatus(`SV2 改了字：已按对照表更新 ${applied} 格`)
+        }
+      }
+    }
+    // ② 作词助手 → SV：格子里的字变了对点推过去（防抖，等你不敲了才发）
+    const map = store.project.svMap ?? []
+    if (map.length === 0) return
+    const changes = diffSvMap(store.project, map)
+    if (changes.length === 0) {
+      svSyncSig = ""
+      return
+    }
+    const sig = changes.map((change) => `${change.id}:${change.char}`).join("|")
+    const now = Date.now()
+    if (sig !== svSyncSig) {
+      svSyncSig = sig
+      svSyncSigAt = now
+      return
+    }
+    if (now - svSyncSigAt < SV_SYNC_DEBOUNCE_MS || now - svSyncLastPush < SV_SYNC_DEBOUNCE_MS) return
+    svSyncLastPush = now
+    const resp = await callBridge("fillLyrics", {
+      ids: changes.map((change) => change.id).join(","),
+      cs: changes.map((change) => change.char).join(","),
+    })
+    if (resp?.ok) {
+      for (const change of changes) {
+        const entry = map.find((item) => item.id === change.id)
+        if (entry) entry.char = change.char
+      }
+      store.touch()
+      svSyncSig = ""
+      setStatus(`已实时同步 ${changes.length} 格到 SV2`)
+    }
+  } finally {
+    svSyncBusy = false
+  }
 }
 
 function askExportOptions(): Promise<ExportOptions | null> {
@@ -8773,6 +8987,7 @@ function bindToolbar(): void {
 
   document.querySelector("#btn-import-lyrics")?.addEventListener("click", () => openImportDialog())
   document.querySelector("#btn-sv")?.addEventListener("click", () => void openSvBridgeDialog())
+if (svSyncOn()) startSvSync()
   document.querySelector("#btn-help")?.addEventListener("click", openHelpDialog)
   newDocBtn.addEventListener("click", addDoc)
   creditsBtn.addEventListener("click", openCreditsDialog)

@@ -1603,6 +1603,22 @@ dialog::backdrop {
   display: none;
 }
 
+.dialog-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: -2px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.dialog-check input {
+  margin: 3px 0 0;
+  flex: none;
+}
+
 .dialog-field select:focus,
 .dialog-field input:focus {
   outline: none;
