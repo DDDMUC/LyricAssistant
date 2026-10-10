@@ -143,9 +143,11 @@ import {
   reflowOverflow,
   sentenceAt,
   sentenceIndex,
+  sentenceLabels,
   sentenceLine,
   setCells,
   setPattern,
+  setPatternShape,
   statsOf,
   switchAlternative,
 } from "./state"
@@ -159,6 +161,7 @@ import {
 } from "./sentence-meta"
 import { bindZoomShortcuts, initZoom } from "./zoom"
 import { allCellRefs, applySvEdits, buildSvMapFromRefs, callBridge, diffSvMap, filledCellRefs, hasCigeMarks, launchSv2, orderedChars, readBridgeState, readSvNotes, svNotesToSections } from "./sv-bridge"
+import { fillUstx, readUstxLyrics } from "./openutau"
 
 const sentencesEl = document.querySelector("#sentences") as HTMLElement
 const scrollProgressEl = document.querySelector("#scroll-progress") as HTMLElement
@@ -884,7 +887,8 @@ function repaintSentence(sentenceId: string): boolean {
   const root = sentencesEl.querySelector<HTMLElement>(`.sentence[data-id="${sentenceId}"]`)
   if (!root) return false
   const index = allSentences(store.project).findIndex((item) => item.id === sentenceId)
-  root.replaceWith(renderSentence(sentence, index))
+  const labels = sentenceLabels(allSentences(store.project))
+  root.replaceWith(renderSentence(sentence, labels[index] ?? String(index + 1)))
   paintGroupLit()
   return true
 }
@@ -1529,18 +1533,25 @@ function renderSection(section: Section, sectionIdx: number): HTMLElement {
   const actions = document.createElement("div")
   actions.className = "section-actions"
 
-  const addBtn = document.createElement("button")
-  addBtn.type = "button"
-  addBtn.textContent = "+ 新增一句"
-  addBtn.addEventListener("click", () => addSentenceToSection(section.id))
-  actions.appendChild(addBtn)
-
-  const addHarmonyBtn = document.createElement("button")
-  addHarmonyBtn.type = "button"
-  addHarmonyBtn.textContent = "+ 和声"
-  addHarmonyBtn.title = "在本段末尾加一句和声（与上一句同时唱的背景人声）"
-  addHarmonyBtn.addEventListener("click", () => addHarmonyToSection(section.id))
-  actions.appendChild(addHarmonyBtn)
+  const delSectionBtn = document.createElement("button")
+  delSectionBtn.type = "button"
+  delSectionBtn.textContent = "- 段"
+  delSectionBtn.title = "删除本段"
+  delSectionBtn.addEventListener("click", () => {
+    mutate(() => {
+      if (store.project.sections.length <= 1) {
+        store.project.sections = [
+          createSection("歌词", [createSentence([4, 4])]),
+        ]
+        return
+      }
+      store.project.sections = store.project.sections.filter((s) => s.id !== section.id)
+    })
+    store.ensureCursor()
+    render()
+    setStatus("已删段落")
+  })
+  actions.appendChild(delSectionBtn)
 
   const addSectionBtn = document.createElement("button")
   addSectionBtn.type = "button"
@@ -1565,26 +1576,6 @@ function renderSection(section: Section, sectionIdx: number): HTMLElement {
   downSectionBtn.addEventListener("click", () => moveSectionBy(section.id, 1))
   actions.appendChild(downSectionBtn)
 
-  const delSectionBtn = document.createElement("button")
-  delSectionBtn.type = "button"
-  delSectionBtn.textContent = "删段落"
-  delSectionBtn.className = "danger"
-  delSectionBtn.addEventListener("click", () => {
-    mutate(() => {
-      if (store.project.sections.length <= 1) {
-        store.project.sections = [
-          createSection("歌词", [createSentence([4, 4])]),
-        ]
-        return
-      }
-      store.project.sections = store.project.sections.filter((s) => s.id !== section.id)
-    })
-    store.ensureCursor()
-    render()
-    setStatus("已删段落")
-  })
-  actions.appendChild(delSectionBtn)
-
   header.appendChild(actions)
   root.appendChild(header)
 
@@ -1593,8 +1584,9 @@ function renderSection(section: Section, sectionIdx: number): HTMLElement {
     indexBase += store.project.sections[i].sentences.length
   }
 
+  const sectionLabels = sentenceLabels(allSentences(store.project))
   section.sentences.forEach((sentence, i) => {
-    root.appendChild(renderSentence(sentence, indexBase + i))
+    root.appendChild(renderSentence(sentence, sectionLabels[indexBase + i] ?? String(indexBase + i + 1)))
   })
 
   return root
@@ -1616,39 +1608,6 @@ function addSentenceAfter(sentenceId: string): void {
   })
   focusCellInput()
   setStatus("已加句")
-}
-
-/** 在本段末尾加一句：词格沿用本段最后一句（空段默认 4+4） */
-function addSentenceToSection(sectionId: string): void {
-  const section = store.project.sections.find((s) => s.id === sectionId)
-  if (!section) return
-  const last = section.sentences[section.sentences.length - 1]
-  const pattern = last ? last.pattern.slice() : [4, 4]
-  mutate(() => {
-    const target = store.project.sections.find((s) => s.id === sectionId)
-    if (!target) return
-    const sentence = createSentence(pattern)
-    target.sentences.push(sentence)
-    store.cursor = { sentenceId: sentence.id, cell: 0 }
-  })
-  setStatus("已加句")
-  focusCellInput()
-}
-
-function addHarmonyToSection(sectionId: string): void {
-  const section = store.project.sections.find((s) => s.id === sectionId)
-  if (!section) return
-  const prev = section.sentences[section.sentences.length - 1]
-  const pattern = prev ? prev.pattern.slice() : [4, 4]
-  mutate(() => {
-    const target = store.project.sections.find((s) => s.id === sectionId)
-    if (!target) return
-    const sentence = createSentence(pattern, "harmony")
-    target.sentences.push(sentence)
-    store.cursor = { sentenceId: sentence.id, cell: 0 }
-  })
-  setStatus("已加和声句")
-  focusCellInput()
 }
 
 function addSectionAfter(sectionId: string): void {
@@ -1737,7 +1696,7 @@ function flashGroup(groupId: string): void {
   }, 650)
 }
 
-function renderSentence(sentence: Sentence, index: number): HTMLElement {
+function renderSentence(sentence: Sentence, label: string): HTMLElement {
   const isActive = sentence.id === store.cursor.sentenceId
   const isHarmony = sentence.role === "harmony"
   const root = document.createElement("article")
@@ -1767,7 +1726,7 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
 
   const indexEl = document.createElement("span")
   indexEl.className = "sentence-index"
-  indexEl.textContent = String(index + 1)
+  indexEl.textContent = label
   side.appendChild(indexEl)
 
   const patternInput = document.createElement("input")
@@ -1927,13 +1886,6 @@ function renderSentence(sentence: Sentence, index: number): HTMLElement {
   shiftRightBtn.title = "整句右移一格 (Alt+→)"
   shiftRightBtn.addEventListener("click", () => doShift(sentence.id, 1))
   controls.appendChild(shiftRightBtn)
-
-  const dupBtn = document.createElement("button")
-  dupBtn.type = "button"
-  dupBtn.textContent = "⧉"
-  dupBtn.title = "复制本句词格，在下方插入新句"
-  dupBtn.addEventListener("click", () => duplicateSentence(sentence.id))
-  controls.appendChild(dupBtn)
 
   const harmonyBtn = document.createElement("button")
   harmonyBtn.type = "button"
@@ -2572,8 +2524,18 @@ function addCellHere(sentenceId: string): void {
     if (!target) return
     const result = addCellAt(target.pattern, getCells(target), store.cursor.cell)
     shiftCellRefs(target, result.cursor, 1)
-    setPattern(target, result.pattern)
+    setPatternShape(target, result.pattern)
     setCells(target, result.cells)
+    // 加在句尾时：按顺序从溢出取字填进新格（中间插格不动溢出）
+    if (result.cursor === totalCells(target.pattern) - 1 && target.overflow) {
+      const cells = getCells(target).slice()
+      const chars = [...target.overflow]
+      if (cells[result.cursor] === "" && chars.length > 0) {
+        cells[result.cursor] = chars.shift() as string
+        setCells(target, cells)
+        target.overflow = chars.join("")
+      }
+    }
     store.cursor.cell = result.cursor
   })
   focusCellInput()
@@ -2592,13 +2554,12 @@ function removeCellHere(sentenceId: string): void {
     const s = store.findSentence(sentenceId)
     if (!s) return
     dropCellRefs(s, store.cursor.cell, 1)
-    setPattern(s, result.pattern)
+    setPatternShape(s, result.pattern)
     setCells(s, result.cells)
-    if (result.overflow) s.overflow = s.overflow + result.overflow
     store.cursor.cell = result.cursor
   })
   focusCellInput()
-  setStatus(result.overflow ? "已删格，尾部字记为溢出" : "已删格")
+  setStatus("已删格")
 }
 
 function splitHere(sentenceId: string): void {
@@ -2614,24 +2575,10 @@ function splitHere(sentenceId: string): void {
   mutateSentence(sentenceId, () => {
     const s = store.findSentence(sentenceId)
     if (!s) return
-    setPattern(s, next)
+    setPatternShape(s, next)
   })
   focusCellInput()
   setStatus(merged ? "已与上一分句合并" : "已在光标处断开分句")
-}
-
-function duplicateSentence(sentenceId: string): void {
-  mutate(() => {
-    const section = findSectionBySentence(store.project, sentenceId)
-    if (!section) return
-    const index = section.sentences.findIndex((s) => s.id === sentenceId)
-    if (index < 0) return
-    const copy = createSentence(section.sentences[index].pattern.slice())
-    section.sentences.splice(index + 1, 0, copy)
-    store.cursor = { sentenceId: copy.id, cell: 0 }
-  })
-  focusCellInput()
-  setStatus("已复制本句词格")
 }
 
 function toggleHarmony(sentenceId: string): void {
@@ -3002,27 +2949,63 @@ function openCreditsDialog(): void {
   textarea.focus()
 }
 
-/** SV2 桥：把作词助手的歌词按序填进 SV2（预演 / 真填），或把 SV2 的歌词读回来 */
-async function openSvBridgeDialog(): Promise<void> {
+/** 合成引擎桥（一个弹窗）：Synthesizer V Studio 2（脚本桥，支持实时同步）+ OpenUtau（工程文件，无实时） */
+async function openEngineDialog(): Promise<void> {
   dismissOpenDialogs()
   const dialog = document.createElement("dialog")
   dialog.innerHTML = `
     <form method="dialog" class="dialog-body">
       <button class="dialog-close" value="cancel" type="submit" title="关闭" aria-label="关闭">×</button>
-      <strong>作词助手 ⇄ Synthesizer V Studio 2</strong>
-      <p>把当前工程里<b>填了字的格子</b>按顺序填进 SV2（与词格、旋律无关）：所有轨的带字音符时间不重叠时，第 i 个字替换第 i 个；有重叠就按「导入 MIDI」的规则（字数多的当主歌，和声挂在重叠的主句后）。只替换能对上的部分。</p>
-      <p class="dialog-note" id="sv-bridge-status">正在检查 SV2 脚本…</p>
-      <label class="dialog-check"><input type="checkbox" id="sv-bridge-sync"> <span>实时同步（打开后：你在格子里改字会自动推给 SV2，你在 SV2 里改字会自动写回格子；先「按序填词」或「读回」一次建立格子 ↔ 音符对照表）</span></label>
-      <div class="dialog-actions">
-        <button type="button" id="sv-bridge-launch">启动 SV2</button>
-        <button type="button" id="sv-bridge-preview">预演</button>
-        <button type="button" id="sv-bridge-fill">按序填词到 SV2</button>
-        <button type="button" id="sv-bridge-read">从 SV2 读回歌词</button>
+      <strong>作词助手 ⇄ 合成引擎</strong>
+      <div class="engine-tabs">
+        <button type="button" class="engine-tab active" data-engine="sv">Synthesizer V Studio 2</button>
+        <button type="button" class="engine-tab" data-engine="ou">OpenUtau</button>
       </div>
-      <p class="dialog-note" id="sv-bridge-result"></p>
+
+      <div class="engine-page" id="engine-page-sv">
+        <p class="dialog-note">把<b>填了字的格子</b>按顺序填进 SV2（与词格、旋律无关）：时间不重叠时第 i 个字替换第 i 个；有重叠按「导入 MIDI」规则（字数多的当主歌，和声挂在重叠的主句后）。只替换能对上的部分。</p>
+        <p class="dialog-note" id="sv-bridge-status">正在检查 SV2 脚本…</p>
+        <label class="dialog-check"><input type="checkbox" id="sv-bridge-sync"> <span>实时同步（打开后：你在格子里改字会自动推给 SV2，你在 SV2 里改字会自动写回格子；先「按序填词」或「读回」一次建立格子 ↔ 音符对照表）</span></label>
+        <div class="dialog-actions">
+          <button type="button" id="sv-bridge-launch">启动 SV2</button>
+          <button type="button" id="sv-bridge-preview">预演</button>
+          <button type="button" id="sv-bridge-fill">按序填词到 SV2</button>
+          <button type="button" id="sv-bridge-read">从 SV2 读回歌词</button>
+        </div>
+        <p class="dialog-note" id="sv-bridge-result"></p>
+      </div>
+
+      <div class="engine-page" id="engine-page-ou" hidden>
+        <p class="dialog-note">把字按顺序写进 <code>.ustx</code> 的音符歌词（规则同上；延音 <code>-</code>、换气、静音轨不算字位）。<b>没有实时同步</b>：写完要在 OpenUtau 里<b>重新打开</b>工程才生效。</p>
+        <p class="dialog-note" id="ou-path">还没选工程</p>
+        <div class="dialog-actions">
+          <button type="button" id="ou-pick">选择 .ustx 工程</button>
+          <button type="button" id="ou-preview">预演</button>
+          <button type="button" id="ou-fill">按序填词到工程</button>
+          <button type="button" id="ou-read">从工程读回歌词</button>
+          <button type="button" id="ou-open">用 OpenUtau 打开</button>
+        </div>
+        <p class="dialog-note" id="ou-result"></p>
+      </div>
     </form>
   `
+  dialog.className = "engine-dialog"
   document.body.appendChild(dialog)
+
+  // 翻页：SV2 / OpenUtau 两页
+  const engineTabs = Array.from(dialog.querySelectorAll<HTMLButtonElement>(".engine-tab"))
+  const enginePages: Record<string, HTMLElement> = {
+    sv: dialog.querySelector<HTMLElement>("#engine-page-sv")!,
+    ou: dialog.querySelector<HTMLElement>("#engine-page-ou")!,
+  }
+  const showEngine = (key: string): void => {
+    for (const tab of engineTabs) tab.classList.toggle("active", tab.dataset.engine === key)
+    for (const [name, page] of Object.entries(enginePages)) page.hidden = name !== key
+  }
+  for (const tab of engineTabs) {
+    tab.addEventListener("click", () => showEngine(tab.dataset.engine ?? "sv"))
+  }
+
   const statusEl = dialog.querySelector<HTMLElement>("#sv-bridge-status")!
   const resultEl = dialog.querySelector<HTMLElement>("#sv-bridge-result")!
   const syncBox = dialog.querySelector<HTMLInputElement>("#sv-bridge-sync")!
@@ -3170,8 +3153,142 @@ async function openSvBridgeDialog(): Promise<void> {
       setStatus(`从 SV2 读回：按序填了 ${at} 个字`)
     })()
   })
+
+  // ===== OpenUtau 段（文件级） =====
+  const ouPathEl = dialog.querySelector<HTMLElement>("#ou-path")!
+  const ouResultEl = dialog.querySelector<HTMLElement>("#ou-result")!
+  const refreshOuPath = (): void => {
+    ouPathEl.textContent = ouSource ? `当前工程：${ouSource.path ?? ouSource.name}` : "还没选工程"
+  }
+  refreshOuPath()
+  const ensureOuSource = async (): Promise<FileSource | null> => {
+    if (ouSource) return ouSource
+    ouSource = await pickFile({ description: "OpenUtau 工程", extensions: ["ustx"] })
+    refreshOuPath()
+    return ouSource
+  }
+  dialog.querySelector("#ou-pick")!.addEventListener("click", () => {
+    void (async () => {
+      ouSource = await pickFile({ description: "OpenUtau 工程", extensions: ["ustx"] })
+      refreshOuPath()
+      ouResultEl.textContent = ouSource ? "已选工程" : ""
+    })()
+  })
+  dialog.querySelector("#ou-preview")!.addEventListener("click", () => {
+    void (async () => {
+      const src = await ensureOuSource()
+      if (!src) return
+      const chars = orderedChars(store.project)
+      if (!chars) {
+        ouResultEl.textContent = "当前工程一个字都没有"
+        return
+      }
+      try {
+        const filled = fillUstx(await src.readText(), chars)
+        const notes = [`预演：会替换 ${filled.matched} 个字（工程里字位 ${filled.total} 个）`]
+        if (filled.overlap) notes.push("检测到时间重叠：按「导入 MIDI」的规则排序（字数多的当主歌，和声挂在重叠的主句后）")
+        if (filled.ourChars > filled.matched) notes.push(`作词助手还有 ${filled.ourChars - filled.matched} 个字没地方放`)
+        else if (filled.total > filled.matched) notes.push(`工程里还有 ${filled.total - filled.matched} 个字位没被替换`)
+        ouResultEl.textContent = `${notes.join("；")}（预演不改文件）`
+      } catch (err) {
+        ouResultEl.textContent = err instanceof Error ? err.message : String(err)
+      }
+    })()
+  })
+  dialog.querySelector("#ou-fill")!.addEventListener("click", () => {
+    void (async () => {
+      const src = await ensureOuSource()
+      if (!src) return
+      const chars = orderedChars(store.project)
+      if (!chars) {
+        ouResultEl.textContent = "当前工程一个字都没有"
+        return
+      }
+      try {
+        const filled = fillUstx(await src.readText(), chars)
+        const saved = await saveText({
+          suggestedName: src.name,
+          description: "OpenUtau 工程",
+          extensions: ["ustx"],
+          target: src.path ? { kind: "path", name: src.name, path: src.path } : null,
+          contents: filled.text,
+        })
+        if (!saved) {
+          ouResultEl.textContent = "已取消（没有写文件）"
+          return
+        }
+        const notes = [`已按顺序写入 ${filled.matched} 个字（${saved.name}）`]
+        if (filled.overlap) notes.push("检测到时间重叠：按「导入 MIDI」的规则排序")
+        if (filled.ourChars > filled.matched) notes.push(`作词助手还有 ${filled.ourChars - filled.matched} 个字没地方放`)
+        else if (filled.total > filled.matched) notes.push(`工程里还有 ${filled.total - filled.matched} 个字位没被替换`)
+        notes.push("去 OpenUtau 里重新打开这个工程生效")
+        ouResultEl.textContent = notes.join("；")
+        setStatus(`OpenUtau：已写入 ${filled.matched} 个字`)
+      } catch (err) {
+        ouResultEl.textContent = err instanceof Error ? err.message : String(err)
+      }
+    })()
+  })
+  dialog.querySelector("#ou-read")!.addEventListener("click", () => {
+    void (async () => {
+      const src = await ensureOuSource()
+      if (!src) return
+      try {
+        const { chars, total } = readUstxLyrics(await src.readText())
+        if (!chars) {
+          ouResultEl.textContent = "工程里没读到歌词（都是延音/静音轨？）"
+          return
+        }
+        const list = [...chars]
+        let at = 0
+        let cellTotal = 0
+        mutate(() => {
+          for (const section of store.project.sections) {
+            for (const sentence of section.sentences) {
+              cellTotal += totalCells(sentence.pattern)
+              const cells = getCells(sentence).slice()
+              let changed = false
+              for (let k = 0; k < cells.length && at < list.length; k++) {
+                cells[k] = list[at]
+                at += 1
+                changed = true
+              }
+              if (changed) setCells(sentence, cells)
+            }
+          }
+        })
+        const notes = [`已按顺序读回 ${at} 个字符（工程里字位 ${total} 个；词格没动，一次撤销可还原）`]
+        if (list.length > at) notes.push(`工程里还有 ${list.length - at} 个没地方放`)
+        else if (cellTotal > at) notes.push(`当前工程还有 ${cellTotal - at} 个格子没填`)
+        ouResultEl.textContent = notes.join("；")
+        setStatus(`从 OpenUtau 读回：按序填了 ${at} 个字符`)
+      } catch (err) {
+        ouResultEl.textContent = err instanceof Error ? err.message : String(err)
+      }
+    })()
+  })
+  dialog.querySelector("#ou-open")!.addEventListener("click", () => {
+    void (async () => {
+      const src = await ensureOuSource()
+      if (!src || !src.path) {
+        ouResultEl.textContent = "先选一个 .ustx 工程（网页版不能直接打开本地程序）"
+        return
+      }
+      try {
+        const { openPath } = await import("@tauri-apps/plugin-opener")
+        await openPath(src.path)
+        ouResultEl.textContent = "已交给系统打开（若 .ustx 没关联 OpenUtau，请手动拖进 OpenUtau）"
+      } catch {
+        ouResultEl.textContent = "没能打开（路径不对 / 权限没给？）"
+      }
+    })()
+  })
+
   dialog.showModal()
 }
+
+/** OpenUtau：文件级（.ustx 工程读/写）——当前选中的工程 */
+let ouSource: FileSource | null = null
 
 /** ===== SV2 实时同步 =====
  * 桥脚本（bridge.lua）本来就每 150ms 看一次工程：它把「用户自己改的字」记进 state.txt。
@@ -4846,7 +4963,7 @@ function aiLineViews(
     const sentence = item.id ? store.findSentence(item.id) : undefined
     return {
       groups: sentence ? splitByPattern(item.text, sentence.pattern) : [item.text],
-      label: place ? String(place.line) : "",
+      label: place ? place.label : "",
       section: place ? place.section : "",
       bad: bad.has(item.id),
     }
@@ -5646,12 +5763,12 @@ async function openExternal(url: string): Promise<void> {
 
 const HELP_GUIDE: string[] = [
   "<b>格子</b>：点格子直接打字，一格一字——<b>只收汉字</b>（英文、拼音、数字、标点自动跳过）",
-  "<b>词格</b>：句子左边的小框改这句的词格（如 <code>4/4</code> 表示 4+4）；「＋ 新增一句」沿用本句 / 本段最后一句的词格",
+  "<b>词格</b>：句子左边的小框改这句的词格（如 <code>4/4</code> 表示 4+4）；「＋ 新增一句」沿用本句的词格",
   "<b>韵辙</b>：右侧徽章显示<b>光标所在那一格</b>的辙，点它给<b>这一格</b>加锁（任意一格都能锁）；锁住的格子只收押该辙的字；正在打拼音时徽章会实时显示这段拼音的辙",
   "<b>韵组</b>：<b>拖拽框选</b>一段格子，或按 <kbd>Ctrl/⌘+G</kbd> 进「挑格模式」后点格子加/减（跨句跳着挑；按 <kbd>G</kbd> 或 <kbd>Esc</kbd> 退）→ 选中后格子上方会出现小浮动条（复制 / 清空 / 成组 / 解散 / ✕）→ 点「成组」勾要锁的项（<b>辙 / 韵母 / 声母 / 声调</b>，默认只锁辙）→ 这几格互相押：**光标在哪一格 → 同组所有格子（跨句也算）整格亮起**，光标不在组里时不显示任何标记、**建组时不合约束的字直接清空**、打字不合会被拦；对话框里还有「<b>推荐同韵字</b>」（常用字排前，点字直接填入）；想解散：点成员格子弹出的「解散这个韵组」小条 / 状态栏「韵组 N」总览里逐组解散 / 点那格的徽章 →「解散这个韵组」",
   "<b>一键成组</b>：工具条「<b>成组</b>」——勾维度（<b>辙 / 韵母 / 声母 / 声调</b>，默认只按辙）就把<b>全曲</b>有字的格子按这个维度自动归组并锁起来（同辙的字一组、同韵母的一组）；<b>已经在韵组里的格子不动</b>、只出现一次的不建组；一步可撤销",
   "<b>状态栏 · 韵脚</b>：底部那串「韵脚 江阳×12 …」是**整首每句最后一个有字的格**的辙统计（按出现次数排序）——句尾还空着时，看的就是它前面最近的有字格；用来一眼看清押韵分布",
-  "<b>和声</b>：句子上「和声」按钮标记 / 取消；段落头「＋ 和声」在段尾加一句",
+  "<b>和声</b>：句子上「和声」按钮标记 / 取消（与上一句同时唱的背景人声，导出时带括号）",
   "<b>备选</b>：句首「备选 N ◇」可以开新备选，写不同版本",
   "<b>导入</b>：<code>导入</code> 收歌词（可直接粘贴、选 <code>.txt/.lrc/.md</code>、或把文件拖进窗口）与 <code>选择 MIDI…</code>；导入会自动断句（连续 8 句以内不动，超过就在第 4、5 句之间断；一小节 ≤16 字、一句 ≤32 字）；多轨 MIDI：不重叠的带词轨合并循序读字，重叠的按字数定主歌 / 和声；MIDI 里带的歌词事件会整段抄进原文",
   "<b>导出 / 复制</b>：导出 → 歌词 / 词格 / 带歌词 MIDI（写回原 MIDI）；复制 → 歌词 / 词格",
@@ -7144,6 +7261,7 @@ function openRhymeGroupsOverview(): void {
       membersText.className = "rhyme-group-members"
       let first: { sentenceId: string; index: number } | null = null
       let firstPart = true
+      const overviewLabels = sentenceLabels(sentences)
       sentences.forEach((sentence, sentenceIndex) => {
         const ref = (sentence.rhymeGroups ?? []).find((item) => item.id === group.id)
         if (!ref) return
@@ -7151,7 +7269,7 @@ function openRhymeGroupsOverview(): void {
         const indexes = [...ref.indexes].sort((a, b) => a - b)
         if (!firstPart) membersText.append(document.createTextNode("；"))
         firstPart = false
-        membersText.append(document.createTextNode(`第 ${sentenceIndex + 1} 句 `))
+        membersText.append(document.createTextNode(`第 ${overviewLabels[sentenceIndex] ?? sentenceIndex + 1} 句 `))
         indexes.forEach((index) => {
           if (!first) first = { sentenceId: sentence.id, index }
           const button = document.createElement("button")
@@ -8986,7 +9104,7 @@ function bindToolbar(): void {
   })
 
   document.querySelector("#btn-import-lyrics")?.addEventListener("click", () => openImportDialog())
-  document.querySelector("#btn-sv")?.addEventListener("click", () => void openSvBridgeDialog())
+  document.querySelector("#btn-engine")?.addEventListener("click", () => void openEngineDialog())
 if (svSyncOn()) startSvSync()
   document.querySelector("#btn-help")?.addEventListener("click", openHelpDialog)
   newDocBtn.addEventListener("click", addDoc)

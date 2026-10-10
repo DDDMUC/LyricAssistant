@@ -100,23 +100,33 @@ describe("shiftSentence", () => {
 })
 
 describe("addCellAt / removeCellAt", () => {
-  it("在当前组内加一格", () => {
+  it("加在光标这格的右边", () => {
     const pattern = [2, 2]
     const cells = ["a", "b", "c", "d"]
     const result = addCellAt(pattern, cells, 2)
     expect(result.pattern).toEqual([2, 3])
-    expect(result.cells).toEqual(["a", "b", "", "c", "d"])
-    expect(result.cursor).toBe(2)
+    expect(result.cells).toEqual(["a", "b", "c", "", "d"])
+    expect(result.cursor).toBe(3)
   })
 
-  it("组只剩一格且还有其他组时删掉整组，尾部字进入溢出", () => {
+  it("加在光标这格的右边：恩仇翻覆间□困选 仆伏于君业", () => {
+    const pattern = [7, 5]
+    const cells = ["恩", "仇", "翻", "覆", "间", "困", "选", "仆", "伏", "于", "君", "业"]
+    const result = addCellAt(pattern, cells, 4)
+    expect(result.pattern).toEqual([8, 5])
+    expect(result.cells).toEqual([
+      "恩", "仇", "翻", "覆", "间", "", "困", "选", "仆", "伏", "于", "君", "业",
+    ])
+    expect(result.cursor).toBe(5)
+  })
+
+  it("组只剩一格且还有其他组时删掉整组（删的是光标这一格）", () => {
     const pattern = [1, 2]
     const cells = ["a", "b", "c"]
     expect(removeCellAt(pattern, cells, 0)).toEqual({
       pattern: [2],
-      cells: ["a", "b"],
+      cells: ["b", "c"],
       cursor: 0,
-      overflow: "c",
     })
   })
 
@@ -124,22 +134,22 @@ describe("addCellAt / removeCellAt", () => {
     expect(removeCellAt([1], ["a"], 0)).toBeNull()
   })
 
-  it("移除后更新词格并保留尾部字", () => {
-    const pattern = [2, 3]
-    const cells = ["a", "b", "c", "d", "e"]
-    const result = removeCellAt(pattern, cells, 3)
-    expect(result).toEqual({
+  it("删掉光标这一格，后面的字左移补齐", () => {
+    expect(removeCellAt([2, 3], ["a", "b", "c", "d", "e"], 3)).toEqual({
       pattern: [2, 2],
-      cells: ["a", "b", "c", "d"],
+      cells: ["a", "b", "c", "e"],
       cursor: 3,
-      overflow: "e",
     })
   })
 
-  it("尾部为空时不产生溢出", () => {
-    const pattern = [2, 2]
-    const cells = ["a", "b", "c", ""]
-    expect(removeCellAt(pattern, cells, 0)?.overflow).toBe("")
+  it("删光标这格：恩仇翻覆[间]困选 仆伏于君业 → 恩仇翻覆困选 仆伏于君业", () => {
+    const pattern = [7, 5]
+    const cells = ["恩", "仇", "翻", "覆", "间", "困", "选", "仆", "伏", "于", "君", "业"]
+    expect(removeCellAt(pattern, cells, 4)).toEqual({
+      pattern: [6, 5],
+      cells: ["恩", "仇", "翻", "覆", "困", "选", "仆", "伏", "于", "君", "业"],
+      cursor: 4,
+    })
   })
 })
 

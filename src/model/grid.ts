@@ -75,7 +75,8 @@ export function addCellAt(
   if (flat < 0 || flat > total) {
     throw new Error(`插入位置越界: ${flat}`)
   }
-  const insertAt = Math.min(flat, total)
+  // 加在「光标这一格」的右边（空格子插到光标字右侧，那个字及之后的字不动）
+  const insertAt = Math.min(flat + 1, total)
   const { g } = locate(pattern, Math.min(flat, total - 1))
   const nextPattern = pattern.slice()
   nextPattern[g] += 1
@@ -88,7 +89,7 @@ export function removeCellAt(
   pattern: number[],
   cells: string[],
   flat: number,
-): { pattern: number[]; cells: string[]; cursor: number; overflow: string } | null {
+): { pattern: number[]; cells: string[]; cursor: number } | null {
   const total = totalCells(pattern)
   if (flat < 0 || flat >= total) return null
   const { g } = locate(pattern, flat)
@@ -100,12 +101,16 @@ export function removeCellAt(
   } else {
     return null
   }
+  // 删掉「光标这一格」本身，后面的字整体左移补齐（词格少一格，字也少一个）
   const nextTotal = totalCells(nextPattern)
+  const nextCells = cells.slice()
+  nextCells.splice(flat, 1)
+  while (nextCells.length < nextTotal) nextCells.push("")
+  nextCells.length = nextTotal
   return {
     pattern: nextPattern,
-    cells: resizeToPattern(nextPattern, cells),
+    cells: nextCells,
     cursor: Math.min(flat, nextTotal - 1),
-    overflow: cells.slice(nextTotal).filter(Boolean).join(""),
   }
 }
 

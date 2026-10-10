@@ -118,8 +118,27 @@ describe("sentencePlace", () => {
       section: "主歌",
       sectionIndex: 0,
       line: 1,
+      label: "1",
     })
     expect(sentencePlace(project, "不存在")).toBeNull()
+  })
+
+  it("和声句：段内序号用小数（主歌整数、和声 = 主歌号.序号）", () => {
+    const main = createSentence([4])
+    const h1 = createSentence([4], "harmony")
+    const h2 = createSentence([4], "harmony")
+    const main2 = createSentence([4])
+    const project: Project = {
+      version: 2,
+      title: "t",
+      sections: [createSection("主歌", [main, h1, h2, main2])],
+      updatedAt: new Date().toISOString(),
+    }
+    expect(sentencePlace(project, h1.id)?.label).toBe("1.1")
+    expect(sentencePlace(project, h2.id)?.label).toBe("1.2")
+    expect(sentencePlace(project, main2.id)?.label).toBe("2")
+    const { issues } = validateAiResults(project, [{ id: h1.id, text: "短" }])
+    expect(issues[0].label).toBe("第 1 段第 1.1 句")
   })
 })
 

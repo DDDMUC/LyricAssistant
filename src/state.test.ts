@@ -16,11 +16,31 @@ import {
   parseProject,
   reflowOverflow,
   sentenceLine,
+  sentenceLabels,
   setCells,
   setPattern,
+  setPatternShape,
   statsOf,
   allSentences,
 } from "./state"
+
+describe("sentenceLabels", () => {
+  it("主歌整数、和声小数（跟最近主歌），遇新主歌归零", () => {
+    const m1 = createSentence([4])
+    const h1 = createSentence([4], "harmony")
+    const h2 = createSentence([4], "harmony")
+    const m2 = createSentence([4])
+    const h3 = createSentence([4], "harmony")
+    expect(sentenceLabels([m1, h1, h2, m2, h3])).toEqual(["1", "1.1", "1.2", "2", "2.1"])
+  })
+
+  it("开头就是和声：按 0.1、0.2 排", () => {
+    const h1 = createSentence([4], "harmony")
+    const h2 = createSentence([4], "harmony")
+    const m1 = createSentence([4])
+    expect(sentenceLabels([h1, h2, m1])).toEqual(["0.1", "0.2", "1"])
+  })
+})
 
 describe("parseProject", () => {
   it("老的整句锁（句尾）迁移成逐格锁（锁在最后一格）", () => {
@@ -390,6 +410,19 @@ describe("溢出处理", () => {
     setPattern(sentence, [4])
     expect(getCells(sentence)).toEqual(["一", "二", "三", "四"])
     expect(sentence.overflow).toBe("")
+  })
+
+  it("setPatternShape 只对齐形状、不碰溢出（加/删格用）", () => {
+    const sentence = createSentence([4])
+    setCells(sentence, ["一", "二", "三", "四"])
+    sentence.overflow = "五六"
+    setPatternShape(sentence, [2])
+    expect(sentence.pattern).toEqual([2])
+    expect(getCells(sentence)).toEqual(["一", "二"])
+    expect(sentence.overflow).toBe("五六")
+    setPatternShape(sentence, [5])
+    expect(getCells(sentence)).toEqual(["一", "二", "", "", ""])
+    expect(sentence.overflow).toBe("五六")
   })
 
   it("reflowOverflow 把溢出顺移到下一句开头", () => {

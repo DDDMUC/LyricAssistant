@@ -65,6 +65,27 @@ export function sentenceIndex(project: Project, sentenceId: string): number {
   return allSentences(project).findIndex((s) => s.id === sentenceId)
 }
 
+/**
+ * 句子序号标签：主歌按整数（1、2、3…），和声 = 最近主歌号.序号（8.1、8.2…），遇新主歌和声序号归零。
+ * 传整个工程 = 全局序号；传单段 = 段内序号。工程开头就是和声时按 0.1、0.2 排。
+ */
+export function sentenceLabels(sentences: Sentence[]): string[] {
+  const labels: string[] = []
+  let main = 0
+  let harmony = 0
+  for (const sentence of sentences) {
+    if (sentence.role === "harmony") {
+      harmony += 1
+      labels.push(`${main}.${harmony}`)
+    } else {
+      main += 1
+      harmony = 0
+      labels.push(String(main))
+    }
+  }
+  return labels
+}
+
 export function sentenceAt(project: Project, index: number): Sentence | undefined {
   return allSentences(project)[index]
 }
@@ -128,6 +149,14 @@ export function setPattern(sentence: Sentence, pattern: number[]): void {
     setCells(sentence, cells)
     sentence.overflow = chars.join("")
   }
+}
+
+/** 只改词格形状、把各备选格子对齐到新形状（不碰溢出）：加/删格、断开分句这类"结构编辑"用 */
+export function setPatternShape(sentence: Sentence, pattern: number[]): void {
+  sentence.pattern = pattern
+  sentence.alternatives.forEach((alt) => {
+    alt.cells = resizeToPattern(pattern, alt.cells)
+  })
 }
 
 export function addAlternative(sentence: Sentence, name?: string): void {

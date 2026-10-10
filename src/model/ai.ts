@@ -1,4 +1,4 @@
-import { addAlternative, allSentences, getCells, setCells } from "../state"
+import { addAlternative, allSentences, getCells, sentenceLabels, setCells } from "../state"
 import { totalCells } from "./pattern"
 import {
   RHYME_LABEL_BY_KEY,
@@ -71,7 +71,7 @@ export function buildChatSystemPrompt(): string {
 export function sentencePlace(
   project: Project,
   sentenceId: string,
-): { section: string; sectionIndex: number; line: number } | null {
+): { section: string; sectionIndex: number; line: number; label: string } | null {
   for (let si = 0; si < project.sections.length; si++) {
     const section = project.sections[si]
     const index = section.sentences.findIndex((s) => s.id === sentenceId)
@@ -80,6 +80,7 @@ export function sentencePlace(
         section: section.name || `段落 ${si + 1}`,
         sectionIndex: si,
         line: index + 1,
+        label: sentenceLabels(section.sentences)[index] ?? String(index + 1),
       }
     }
   }
@@ -88,7 +89,7 @@ export function sentencePlace(
 
 function sentenceLabel(project: Project, sentenceId: string): string {
   const place = sentencePlace(project, sentenceId)
-  return place ? `第 ${place.sectionIndex + 1} 段第 ${place.line} 句` : "未知句"
+  return place ? `第 ${place.sectionIndex + 1} 段第 ${place.label} 句` : "未知句"
 }
 
 /** 从还在流式的 JSON 里，把已经写完的句子抓出来，好在气泡里逐行显示 */
