@@ -22,7 +22,8 @@
     "@tauri-apps/plugin-opener": "^2",
     "dompurify": "^3.4.16",
     "marked": "^18.0.14",
-    "pinyin-pro": "^3.29.4"
+    "pinyin-pro": "^3.29.4",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
