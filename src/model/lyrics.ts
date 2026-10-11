@@ -186,6 +186,11 @@ function nextCreditStart(value: string): number {
   return best
 }
 
+/** 这一行是不是「作词 / 作曲 / 编曲」这类创作信息（导入识别用的就是这套） */
+export function isCreditLine(line: string): boolean {
+  return extractCredits(line) !== null
+}
+
 function extractCredits(line: string): string[] | null {
   const entries: string[] = []
   let rest = line.trim()

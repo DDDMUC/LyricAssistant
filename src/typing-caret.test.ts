@@ -101,3 +101,41 @@ it("句尾回车：光标到下一句的第一个字", async () => {
   expect(after.dataset.sentenceId).not.toBe(firstSentenceId)
   expect(after.dataset.index).toBe("0")
 })
+
+it("方向键先在格子内移动光标：有字的格子能到第一个字左侧，也能回到字右侧", async () => {
+  // 第一格写个字（打完光标在字右侧）
+  await typeInto(activeInput()!, "预")
+  const cell = activeInput()!
+  expect(cell.dataset.index).toBe("0")
+  expect(cell.value).toBe("预")
+  expect(cell.selectionStart).toBe(1)
+
+  // ←：先移到「第一个字的左侧」
+  cell.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }))
+  await tick(15)
+  expect(activeInput()!.dataset.index).toBe("0")
+  expect(activeInput()!.selectionStart).toBe(0)
+
+  // 再 ←：已经最左，没有上一格就原地不动（不会跑出第一格）
+  activeInput()!.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
+  )
+  await tick(15)
+  expect(activeInput()!.dataset.index).toBe("0")
+  expect(activeInput()!.selectionStart).toBe(0)
+
+  // →：回到字右侧
+  activeInput()!.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+  )
+  await tick(15)
+  expect(activeInput()!.dataset.index).toBe("0")
+  expect(activeInput()!.selectionStart).toBe(1)
+
+  // 再 →：已经最右，换到下一格
+  activeInput()!.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+  )
+  await tick(15)
+  expect(activeInput()!.dataset.index).toBe("1")
+})

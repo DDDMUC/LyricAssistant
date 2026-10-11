@@ -37,7 +37,7 @@ it("标题栏 ⚙ 打开设置：分类是 外观 / 模型 / 数据 / 关于（�
   expect(document.querySelector("#ic-flower-gear-dot")).toBeTruthy()
   const dialog = openSettings()
   const navs = Array.from(dialog.querySelectorAll<HTMLButtonElement>(".settings-nav button"))
-  expect(navs.map((button) => button.textContent)).toEqual(["外观", "模型", "数据", "关于"])
+  expect(navs.map((button) => button.textContent)).toEqual(["外观", "模型", "引擎", "数据", "关于"])
   // 每个分类都带小图标
   expect(navs.every((button) => button.querySelector("svg use"))).toBe(true)
   expect(navs[0]!.classList.contains("active")).toBe(true)

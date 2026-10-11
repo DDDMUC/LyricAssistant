@@ -72,7 +72,7 @@ import {
   saveDocs,
   type DocRecord,
 } from "./docs"
-import { parseLyrics } from "./model/lyrics"
+import { isCreditLine, parseLyrics } from "./model/lyrics"
 import {
   KEYSWITCH,
   buildLyricMidi,
@@ -160,8 +160,10 @@ import {
   type MetaLayout,
 } from "./sentence-meta"
 import { bindZoomShortcuts, initZoom } from "./zoom"
-import { allCellRefs, applySvEdits, buildSvMapFromRefs, callBridge, diffSvMap, filledCellRefs, hasCigeMarks, launchSv2, orderedChars, readBridgeState, readSvNotes, svNotesToSections } from "./sv-bridge"
-import { fillUstx, readUstxLyrics } from "./openutau"
+import { allCellRefs, applySvEdits, buildSvMapFromRefs, callBridge, diffSvMap, filledCellRefs, hasCigeMarks, orderedChars, readBridgeState, readSvNotes, svNotesToSections } from "./sv-bridge"
+import { ENGINE_PATH_SETTINGS, launchEngineExe, ouPath, sv2Path, type EnginePathSetting } from "./engine-paths"
+import { fillUstx, ouEligible, parseUstx } from "./openutau"
+import { hanNotes, orderNotes, type EngineNote } from "./engine-core"
 
 const sentencesEl = document.querySelector("#sentences") as HTMLElement
 const scrollProgressEl = document.querySelector("#scroll-progress") as HTMLElement
@@ -179,7 +181,7 @@ const reflowBtn = document.querySelector("#btn-reflow") as HTMLButtonElement
 const creditsBtn = document.querySelector("#btn-credits") as HTMLButtonElement
 const sourceBtn = document.querySelector("#btn-source") as HTMLButtonElement
 const sourcePanel = document.querySelector("#source-panel") as HTMLElement
-const sourceTextEl = document.querySelector("#source-text") as HTMLTextAreaElement
+const sourceTextEl = document.querySelector<HTMLElement>("#source-text")!
 const sourceCloseBtn = document.querySelector("#btn-source-close") as HTMLButtonElement
 const editorActionsEl = document.querySelector("#editor-actions") as HTMLElement
 
@@ -788,7 +790,7 @@ function openSourcePanel(): void {
   closeAiPanel()
   sourcePanel.hidden = false
   document.documentElement.classList.add("source-open")
-  sourceTextEl.value = store.project.source ?? ""
+  renderSourceText(store.project.source ?? "")
 }
 
 function closeSourcePanel(): void {
@@ -799,8 +801,22 @@ function closeSourcePanel(): void {
 function syncSourcePanel(): void {
   const hasSource = !!store.project.source
   sourceBtn.hidden = !hasSource
-  sourceTextEl.value = store.project.source ?? ""
+  renderSourceText(store.project.source ?? "")
   if (!hasSource) closeSourcePanel()
+}
+
+/** 原文面板：按我们的识别把「创作信息」和「歌词」分开显示（原文只读，不改内容） */
+function renderSourceText(text: string): void {
+  const frag = document.createDocumentFragment()
+  for (const line of text.split(/\r?\n/)) {
+    const item = document.createElement("p")
+    item.textContent = line
+    if (line.trim() === "") item.className = "source-blank"
+    else if (isCreditLine(line)) item.className = "source-credit"
+    else item.className = "source-line"
+    frag.appendChild(item)
+  }
+  sourceTextEl.replaceChildren(frag)
 }
 
 function renderEmptyState(): HTMLElement {
@@ -882,13 +898,14 @@ function render(): void {
 
 /** 只重画某一句（就地替换旧节点）。找不到就返回 false，交调用方退回全量 */
 function repaintSentence(sentenceId: string): boolean {
-  const sentence = store.findSentence(sentenceId)
-  if (!sentence) return false
+  // 一次扫描拿到句子 + 序号 + 序号标签（原来这里 allSentences 被扫了三四遍）
+  const all = allSentences(store.project)
+  const index = all.findIndex((item) => item.id === sentenceId)
+  if (index < 0) return false
   const root = sentencesEl.querySelector<HTMLElement>(`.sentence[data-id="${sentenceId}"]`)
   if (!root) return false
-  const index = allSentences(store.project).findIndex((item) => item.id === sentenceId)
-  const labels = sentenceLabels(allSentences(store.project))
-  root.replaceWith(renderSentence(sentence, labels[index] ?? String(index + 1)))
+  const labels = sentenceLabels(all)
+  root.replaceWith(renderSentence(all[index], labels[index] ?? String(index + 1)))
   paintGroupLit()
   return true
 }
@@ -2320,7 +2337,8 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
   })
 
   input.addEventListener("input", () => {
-    clearSelection()
+    // 只有真的有选区才去清（没选东西时 clearSelection 会白刷一遍 DOM）
+    if (pickedCells.size > 0 || selectionAnchor !== null || pickLastClick !== null) clearSelection()
     if (composing) {
       const len = input.value.length
       input.style.width = len > 1 ? `${Math.max(54, (len + 1) * 16)}px` : ""
@@ -2392,16 +2410,28 @@ function bindCellInput(input: HTMLInputElement, sentenceId: string, index: numbe
       doShift(sentenceId, 1)
       return
     }
-
     if (e.key === "ArrowLeft" && !e.shiftKey) {
       e.preventDefault()
+      // 先在格子内左移光标（有字时能到「第一个字的左侧」），到最左端才换到上一格
+      const caretLeft = input.selectionStart ?? 0
+      if (caretLeft > 0) {
+        input.setSelectionRange(caretLeft - 1, caretLeft - 1)
+        return
+      }
       if (store.cursor.cell > 0) {
         moveCursorInPlace({ sentenceId, cell: store.cursor.cell - 1 })
       }
       return
     }
+
     if (e.key === "ArrowRight" && !e.shiftKey) {
       e.preventDefault()
+      // 先在格子内右移光标（到「最后一个字的右侧」），到最右端才换到下一格
+      const caretRight = input.selectionStart ?? 0
+      if (caretRight < input.value.length) {
+        input.setSelectionRange(caretRight + 1, caretRight + 1)
+        return
+      }
       const s = store.findSentence(sentenceId)
       if (!s) return
       if (store.cursor.cell < totalCells(s.pattern) - 1) {
@@ -2949,6 +2979,151 @@ function openCreditsDialog(): void {
   textarea.focus()
 }
 
+/**
+ * 共享读回（SV2 / OpenUtau 同一套）：
+ * 有「词格酱」标记 → 按标记重建词格（成为当前词格）；没有 → 按顺序只往现有格子填字（词格不动）。
+ * 音符带身份证时顺手建/刷新对照表（实时同步用）。
+ */
+function readEngineNotesBack(
+  allNotes: EngineNote[],
+  eligible: EngineNote[],
+  resultEl: HTMLElement,
+  who: string,
+): void {
+  if (hasCigeMarks(allNotes)) {
+    const built = svNotesToSections(allNotes)
+    const count = built.reduce(
+      (n, section) => n + section.lines.reduce((m, line) => m + line.cells.length, 0),
+      0,
+    )
+    if (built.length === 0 || count === 0) {
+      resultEl.textContent = "检测到「词格酱」标记，但没解析出可用的词格"
+      return
+    }
+    const mapRefs: { sid: string; cell: number }[] = []
+    const mapIds: string[] = []
+    mutate(() => {
+      const sections = built.map((section, i) => {
+        const sentences = section.lines.map((line) => {
+          const sentence = createSentence(line.pattern)
+          setCells(sentence, line.cells)
+          for (let k = 0; k < line.cells.length; k++) {
+            mapRefs.push({ sid: sentence.id, cell: k })
+            mapIds.push(line.ids?.[k] ?? "")
+          }
+          return sentence
+        })
+        return createSection(section.name || `段落 ${i + 1}`, sentences)
+      })
+      store.project.sections = sections
+      store.cursor = { sentenceId: sections[0]?.sentences[0]?.id ?? "", cell: 0 }
+    })
+    let mapNote = ""
+    if (mapIds.some((id) => id !== "")) {
+      store.project.svMap = buildSvMapFromRefs(store.project, mapRefs, mapIds)
+      store.touch()
+      svSyncRebase()
+      mapNote = `；已建立对照表 ${store.project.svMap.length} 格`
+    }
+    resultEl.textContent = `检测到「词格酱」标记：已按标记生成新词格（成为当前词格）并填入 ${count} 个字；一次撤销可还原${mapNote}`
+    setStatus(`从 ${who} 读回：按标记重建词格，填入 ${count} 个字`)
+    return
+  }
+  const { order } = orderNotes(eligible)
+  if (order.length === 0) {
+    resultEl.textContent = "没读到歌词（都是延音 / 静音轨？）"
+    return
+  }
+  let at = 0
+  let cellTotal = 0
+  mutate(() => {
+    for (const section of store.project.sections) {
+      for (const sentence of section.sentences) {
+        cellTotal += totalCells(sentence.pattern)
+        const cells = getCells(sentence).slice()
+        let changed = false
+        for (let k = 0; k < cells.length && at < order.length; k++) {
+          cells[k] = order[at].lyric
+          at += 1
+          changed = true
+        }
+        if (changed) setCells(sentence, cells)
+      }
+    }
+  })
+  const notes = [`已按顺序填进当前工程的格子里 ${at} 个字（词格没动，一次撤销可还原）`]
+  if (order.length > at) notes.push(`${who} 里还有 ${order.length - at} 个字没地方放`)
+  else if (cellTotal > at) notes.push(`当前工程还有 ${cellTotal - at} 个格子没填`)
+  const ids = order.slice(0, at).map((note) => note.id ?? "")
+  if (ids.some((id) => id !== "")) {
+    store.project.svMap = buildSvMapFromRefs(store.project, allCellRefs(store.project).slice(0, at), ids)
+    store.touch()
+    svSyncRebase()
+    notes.push(`已建立对照表 ${store.project.svMap.length} 格`)
+  }
+  resultEl.textContent = notes.join("；")
+  setStatus(`从 ${who} 读回：按序填了 ${at} 个字`)
+}
+
+/**
+ * 在引擎弹窗里直接改某个引擎的主程序路径（改完顺手重试启动）。
+ * 和「设置 → 引擎」共用同一份存储（本机 localStorage），两边永远同步。
+ */
+function askEnginePath(engine: EnginePathSetting, onSaved?: () => void): void {
+  dismissOpenDialogs()
+  const dialog = document.createElement("dialog")
+  dialog.innerHTML = `
+    <form method="dialog" class="dialog-body">
+      <button class="dialog-close" value="cancel" type="submit" title="关闭" aria-label="关闭">×</button>
+      <strong>设置 ${engine.label} 主程序</strong>
+      <p class="dialog-note">${engine.hint}</p>
+      <div class="dialog-field">
+        <label for="engine-exe-input">.exe 路径</label>
+        <input id="engine-exe-input" type="text" spellcheck="false" placeholder="默认：${engine.fallback}">
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="engine-exe-browse">浏览…</button>
+        <button type="button" id="engine-exe-restore">恢复默认</button>
+        <button type="button" id="engine-exe-save">保存</button>
+      </div>
+      <p class="dialog-note">留空＝用默认路径（换盘/重装过就改这里）。</p>
+    </form>
+  `
+  document.body.appendChild(dialog)
+  const input = dialog.querySelector<HTMLInputElement>("#engine-exe-input")!
+  input.value = engine.isCustom() ? engine.get() : ""
+  const save = (): void => {
+    engine.set(input.value)
+    dialog.close()
+    onSaved?.()
+  }
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault()
+      save()
+    }
+  })
+  dialog.querySelector("#engine-exe-browse")!.addEventListener("click", () => {
+    void (async () => {
+      const picked = await pickFile({ description: `${engine.label} 主程序`, extensions: ["exe"] })
+      if (picked?.path) input.value = picked.path
+    })()
+  })
+  dialog.querySelector("#engine-exe-restore")!.addEventListener("click", () => {
+    engine.set("")
+    dialog.close()
+    onSaved?.()
+  })
+  dialog.querySelector("#engine-exe-save")!.addEventListener("click", save)
+  dialog.showModal()
+  input.focus()
+}
+
+/** 按 key 取引擎路径设置项（sv2 / openutau） */
+function engineSetting(key: "sv2" | "openutau"): EnginePathSetting {
+  return ENGINE_PATH_SETTINGS.find((item) => item.key === key)!
+}
+
 /** 合成引擎桥（一个弹窗）：Synthesizer V Studio 2（脚本桥，支持实时同步）+ OpenUtau（工程文件，无实时） */
 async function openEngineDialog(): Promise<void> {
   dismissOpenDialogs()
@@ -2965,42 +3140,55 @@ async function openEngineDialog(): Promise<void> {
       <div class="engine-page" id="engine-page-sv">
         <p class="dialog-note">把<b>填了字的格子</b>按顺序填进 SV2（与词格、旋律无关）：时间不重叠时第 i 个字替换第 i 个；有重叠按「导入 MIDI」规则（字数多的当主歌，和声挂在重叠的主句后）。只替换能对上的部分。</p>
         <p class="dialog-note" id="sv-bridge-status">正在检查 SV2 脚本…</p>
+        <p class="dialog-note engine-path" id="sv-exe" role="button" tabindex="0">主程序：</p>
         <label class="dialog-check"><input type="checkbox" id="sv-bridge-sync"> <span>实时同步（打开后：你在格子里改字会自动推给 SV2，你在 SV2 里改字会自动写回格子；先「按序填词」或「读回」一次建立格子 ↔ 音符对照表）</span></label>
-        <div class="dialog-actions">
-          <button type="button" id="sv-bridge-launch">启动 SV2</button>
-          <button type="button" id="sv-bridge-preview">预演</button>
-          <button type="button" id="sv-bridge-fill">按序填词到 SV2</button>
-          <button type="button" id="sv-bridge-read">从 SV2 读回歌词</button>
-        </div>
         <p class="dialog-note" id="sv-bridge-result"></p>
       </div>
 
       <div class="engine-page" id="engine-page-ou" hidden>
         <p class="dialog-note">把字按顺序写进 <code>.ustx</code> 的音符歌词（规则同上；延音 <code>-</code>、换气、静音轨不算字位）。<b>没有实时同步</b>：写完要在 OpenUtau 里<b>重新打开</b>工程才生效。</p>
         <p class="dialog-note" id="ou-path">还没选工程</p>
+        <p class="dialog-note engine-path" id="ou-exe" role="button" tabindex="0">主程序：</p>
+        <p class="dialog-note" id="ou-result"></p>
+      </div>
+
+      <div class="engine-actions" id="engine-actions-sv">
         <div class="dialog-actions">
+          <button type="button" id="sv-bridge-launch">启动 SV2</button>
+          <button type="button" id="sv-bridge-preview">预演</button>
+          <button type="button" id="sv-bridge-fill">按序填词到 SV2</button>
+          <button type="button" id="sv-bridge-read">从 SV2 读回歌词</button>
+        </div>
+      </div>
+      <div class="engine-actions" id="engine-actions-ou" hidden>
+        <div class="dialog-actions">
+          <button type="button" id="ou-launch">启动 OpenUtau</button>
           <button type="button" id="ou-pick">选择 .ustx 工程</button>
           <button type="button" id="ou-preview">预演</button>
           <button type="button" id="ou-fill">按序填词到工程</button>
           <button type="button" id="ou-read">从工程读回歌词</button>
           <button type="button" id="ou-open">用 OpenUtau 打开</button>
         </div>
-        <p class="dialog-note" id="ou-result"></p>
       </div>
     </form>
   `
   dialog.className = "engine-dialog"
   document.body.appendChild(dialog)
 
-  // 翻页：SV2 / OpenUtau 两页
+  // 翻页：SV2 / OpenUtau 两页（内容区 + 底部按钮栏一起切）
   const engineTabs = Array.from(dialog.querySelectorAll<HTMLButtonElement>(".engine-tab"))
   const enginePages: Record<string, HTMLElement> = {
     sv: dialog.querySelector<HTMLElement>("#engine-page-sv")!,
     ou: dialog.querySelector<HTMLElement>("#engine-page-ou")!,
   }
+  const engineActions: Record<string, HTMLElement> = {
+    sv: dialog.querySelector<HTMLElement>("#engine-actions-sv")!,
+    ou: dialog.querySelector<HTMLElement>("#engine-actions-ou")!,
+  }
   const showEngine = (key: string): void => {
     for (const tab of engineTabs) tab.classList.toggle("active", tab.dataset.engine === key)
     for (const [name, page] of Object.entries(enginePages)) page.hidden = name !== key
+    for (const [name, bar] of Object.entries(engineActions)) bar.hidden = name !== key
   }
   for (const tab of engineTabs) {
     tab.addEventListener("click", () => showEngine(tab.dataset.engine ?? "sv"))
@@ -3009,6 +3197,24 @@ async function openEngineDialog(): Promise<void> {
   const statusEl = dialog.querySelector<HTMLElement>("#sv-bridge-status")!
   const resultEl = dialog.querySelector<HTMLElement>("#sv-bridge-result")!
   const syncBox = dialog.querySelector<HTMLInputElement>("#sv-bridge-sync")!
+  const svExeEl = dialog.querySelector<HTMLElement>("#sv-exe")!
+  const renderSvExe = (): void => {
+    svExeEl.textContent = `主程序：${sv2Path()}（点击修改）`
+  }
+  renderSvExe()
+  svExeEl.addEventListener("click", () => {
+    askEnginePath(engineSetting("sv2"), () => {
+      renderSvExe()
+      // 改完路径顺手重试一次启动
+      void (async () => {
+        const result = await launchEngineExe(sv2Path())
+        resultEl.textContent = result.ok
+          ? "已启动 SV2——等它打开后在 SV2 里跑「脚本 → 作词助手 → LyricAssistant bridge」"
+          : `还是没能启动：${result.error || "未知原因"}`
+        if (result.ok) void refreshStatus()
+      })()
+    })
+  })
   syncBox.checked = svSyncOn()
   syncBox.addEventListener("change", () => {
     svSyncSet(syncBox.checked)
@@ -3036,31 +3242,63 @@ async function openEngineDialog(): Promise<void> {
       return
     }
     resultEl.textContent = dry ? "预演中…" : "发送中…"
-    const resp = await callBridge("fillLyrics", { chars, dry: dry ? "1" : "0" })
-    if (!resp) {
+    const dumped = await callBridge("dumpNotes", {}, 5000)
+    const svNotes = dumped?.ok ? await readSvNotes() : []
+    if (svNotes.length === 0) {
       resultEl.textContent = "SV2 那边没响应——先在 SV2 里跑「脚本 → 作词助手 → LyricAssistant bridge」"
       return
     }
-    resultEl.textContent = resp.note || (resp.ok ? "完成" : "SV2 报错")
-    if (!dry && resp.ok) {
-      // 建对照表：这次填的字 ↔ 对上的音符身份证（实时同步靠它点对点）
-      if (resp.ids.length > 0) {
-        store.project.svMap = buildSvMapFromRefs(store.project, filledCellRefs(store.project), resp.ids)
+    // 排序走共享实现（和 OpenUtau 同一份规则）
+    const { order, overlap } = orderNotes(hanNotes(svNotes))
+    const list = [...chars]
+    const matched = Math.min(list.length, order.length)
+    const ids = order.map((note) => note.id ?? "")
+    const canPairs = matched > 0 && ids.slice(0, matched).every((id) => id !== "")
+    let builtMap = 0
+    if (!dry && matched > 0) {
+      // 有身份证：按身份证对点替换（和实时同步同一条路）；老脚本没有身份证就退回「按顺序整串填」
+      const resp = canPairs
+        ? await callBridge("fillLyrics", {
+            ids: ids.slice(0, matched).join(","),
+            cs: list.slice(0, matched).join(","),
+          })
+        : await callBridge("fillLyrics", { chars, dry: "0" })
+      if (!resp) {
+        resultEl.textContent = "SV2 那边没响应——先在 SV2 里跑「脚本 → 作词助手 → LyricAssistant bridge」"
+        return
+      }
+      if (!resp.ok) {
+        resultEl.textContent = resp.note || "SV2 报错"
+        return
+      }
+      const mapIds = canPairs ? ids.slice(0, matched) : resp.ids
+      if (mapIds.length > 0) {
+        store.project.svMap = buildSvMapFromRefs(store.project, filledCellRefs(store.project), mapIds)
         store.touch()
         svSyncRebase()
-        resultEl.textContent += `；已建立对照表 ${store.project.svMap.length} 格`
+        builtMap = store.project.svMap.length
       }
-      setStatus(`SV2：已替换 ${resp.matched} 个字`)
+      setStatus(`SV2：已替换 ${matched} 个字`)
     }
+    const notes = [
+      dry
+        ? `预演：会替换 ${matched} 个字（SV 带字音符 ${order.length} 个）`
+        : `已替换 ${matched} 个字（一次撤销可还原）`,
+    ]
+    if (overlap) notes.push("检测到时间重叠：按「导入 MIDI」的规则排序（字数多的当主歌，和声挂在重叠的主句后）")
+    if (order.length > matched) notes.push(`SV 里还有 ${order.length - matched} 个带字音符没被替换`)
+    else if (list.length > matched) notes.push(`作词助手还有 ${list.length - matched} 个字没地方放（SV 带字音符不够）`)
+    if (builtMap > 0) notes.push(`已建立对照表 ${builtMap} 格`)
+    resultEl.textContent = notes.join("；")
     void refreshStatus()
   }
   dialog.querySelector("#sv-bridge-launch")!.addEventListener("click", () => {
     void (async () => {
-      const ok = await launchSv2()
-      resultEl.textContent = ok
+      const result = await launchEngineExe(sv2Path())
+      resultEl.textContent = result.ok
         ? "已启动 SV2——等它打开后在 SV2 里跑「脚本 → 作词助手 → LyricAssistant bridge」"
-        : "没能启动 SV2（路径不对 / 权限没给？）"
-      if (ok) void refreshStatus()
+        : `没能启动 SV2（${result.error || "未知原因"}）——点上面那行「主程序」改路径（当前：${sv2Path()}）`
+      if (result.ok) void refreshStatus()
     })()
   })
   dialog.querySelector("#sv-bridge-preview")!.addEventListener("click", () => void run(true))
@@ -3071,92 +3309,43 @@ async function openEngineDialog(): Promise<void> {
       // 先问 SV 要一份音符（含「词格酱」标记）：有标记 → 按标记生成新词格；没有 → 只往现有词格填字
       const dumped = await callBridge("dumpNotes", {}, 5000)
       const svNotes = dumped?.ok ? await readSvNotes() : []
-      if (hasCigeMarks(svNotes)) {
-        const built = svNotesToSections(svNotes)
-        const count = built.reduce(
-          (n, section) => n + section.lines.reduce((m, line) => m + line.cells.length, 0),
-          0,
-        )
-        if (built.length === 0 || count === 0) {
-          resultEl.textContent = "检测到「词格酱」标记，但没解析出可用的词格"
-          return
-        }
-        const mapRefs: { sid: string; cell: number }[] = []
-        const mapIds: string[] = []
-        mutate(() => {
-          const sections = built.map((section, i) => {
-            const sentences = section.lines.map((line) => {
-              const sentence = createSentence(line.pattern)
-              setCells(sentence, line.cells)
-              for (let k = 0; k < line.cells.length; k++) {
-                mapRefs.push({ sid: sentence.id, cell: k })
-                mapIds.push(line.ids?.[k] ?? "")
-              }
-              return sentence
-            })
-            return createSection(section.name || `段落 ${i + 1}`, sentences)
-          })
-          store.project.sections = sections
-          store.cursor = { sentenceId: sections[0]?.sentences[0]?.id ?? "", cell: 0 }
-        })
-        let mapNote = ""
-        if (mapIds.some((id) => id !== "")) {
-          store.project.svMap = buildSvMapFromRefs(store.project, mapRefs, mapIds)
-          store.touch()
-          svSyncRebase()
-          mapNote = `；已建立对照表 ${store.project.svMap.length} 格`
-        }
-        resultEl.textContent = `检测到「词格酱」标记：已按标记生成新词格（成为当前词格）并填入 ${count} 个字；一次撤销可还原${mapNote}`
-        setStatus(`从 SV2 读回：按标记重建词格，填入 ${count} 个字`)
+      if (svNotes.length === 0) {
+        resultEl.textContent = "没读到 SV2 的音符（脚本没在跑？）"
         return
       }
-      const state = await readBridgeState()
-      if (!state || !state.chars) {
-        resultEl.textContent = "没读到 SV2 的歌词（脚本没在跑？）"
-        return
-      }
-      const chars = [...state.chars]
-      if (chars.length === 0) {
-        resultEl.textContent = "SV2 里没有带字的音符"
-        return
-      }
-      // 没有约定：只按顺序往「现有格子」里填字——词格一个字都不动（可一次撤销）
-      let at = 0
-      let total = 0
-      mutate(() => {
-        for (const section of store.project.sections) {
-          for (const sentence of section.sentences) {
-            total += totalCells(sentence.pattern)
-            const cells = getCells(sentence).slice()
-            let changed = false
-            for (let k = 0; k < cells.length && at < chars.length; k++) {
-              cells[k] = chars[at]
-              at += 1
-              changed = true
-            }
-            if (changed) setCells(sentence, cells)
-          }
-        }
-      })
-      const notes = [`已按顺序填进当前工程的格子里 ${at} 个字（词格没动，一次撤销可还原）`]
-      if (chars.length > at) notes.push(`SV 里还有 ${chars.length - at} 个字没地方放`)
-      else if (total > at) notes.push(`当前工程还有 ${total - at} 个格子没填`)
-      // 建对照表：这次填的格子 ↔ SV 音符身份证（实时同步靠它点对点）
-      const ids = state.ids.slice(0, at)
-      if (ids.length > 0 && ids.some((id) => id !== "")) {
-        store.project.svMap = buildSvMapFromRefs(store.project, allCellRefs(store.project).slice(0, at), ids)
-        store.touch()
-        svSyncRebase()
-        notes.push(`已建立对照表 ${store.project.svMap.length} 格`)
-      }
-      resultEl.textContent = notes.join("；")
-      setStatus(`从 SV2 读回：按序填了 ${at} 个字`)
+      readEngineNotesBack(svNotes, hanNotes(svNotes), resultEl, "SV2")
     })()
   })
 
   // ===== OpenUtau 段（文件级） =====
   const ouPathEl = dialog.querySelector<HTMLElement>("#ou-path")!
   const ouResultEl = dialog.querySelector<HTMLElement>("#ou-result")!
+  const ouExeEl = dialog.querySelector<HTMLElement>("#ou-exe")!
+  const renderOuExe = (): void => {
+    ouExeEl.textContent = `主程序：${ouPath()}（点击修改）`
+  }
+  renderOuExe()
+  ouExeEl.addEventListener("click", () => {
+    askEnginePath(engineSetting("openutau"), () => {
+      renderOuExe()
+      // 改完路径顺手重试一次启动
+      void (async () => {
+        const result = await launchEngineExe(ouPath())
+        ouResultEl.textContent = result.ok
+          ? `已启动 OpenUtau（${ouPath()}）`
+          : `还是没能启动：${result.error || "未知原因"}`
+      })()
+    })
+  })
+  dialog.querySelector("#ou-launch")!.addEventListener("click", () => {
+    void (async () => {
+      const exe = ouPath()
+      const result = await launchEngineExe(exe)
+      ouResultEl.textContent = result.ok
+        ? `已启动 OpenUtau（${exe}）`
+        : `没能启动 OpenUtau（${result.error || "未知原因"}）——点上面那行「主程序」改路径（当前：${exe}）`
+    })()
+  })
   const refreshOuPath = (): void => {
     ouPathEl.textContent = ouSource ? `当前工程：${ouSource.path ?? ouSource.name}` : "还没选工程"
   }
@@ -3234,34 +3423,9 @@ async function openEngineDialog(): Promise<void> {
       const src = await ensureOuSource()
       if (!src) return
       try {
-        const { chars, total } = readUstxLyrics(await src.readText())
-        if (!chars) {
-          ouResultEl.textContent = "工程里没读到歌词（都是延音/静音轨？）"
-          return
-        }
-        const list = [...chars]
-        let at = 0
-        let cellTotal = 0
-        mutate(() => {
-          for (const section of store.project.sections) {
-            for (const sentence of section.sentences) {
-              cellTotal += totalCells(sentence.pattern)
-              const cells = getCells(sentence).slice()
-              let changed = false
-              for (let k = 0; k < cells.length && at < list.length; k++) {
-                cells[k] = list[at]
-                at += 1
-                changed = true
-              }
-              if (changed) setCells(sentence, cells)
-            }
-          }
-        })
-        const notes = [`已按顺序读回 ${at} 个字符（工程里字位 ${total} 个；词格没动，一次撤销可还原）`]
-        if (list.length > at) notes.push(`工程里还有 ${list.length - at} 个没地方放`)
-        else if (cellTotal > at) notes.push(`当前工程还有 ${cellTotal - at} 个格子没填`)
-        ouResultEl.textContent = notes.join("；")
-        setStatus(`从 OpenUtau 读回：按序填了 ${at} 个字符`)
+        const { notes: allNotes } = parseUstx(await src.readText())
+        // 两个引擎共用的读回：有词格酱标记 → 重建词格；没有 → 按序只填现有格子
+        readEngineNotesBack(allNotes, ouEligible(allNotes), ouResultEl, "OpenUtau")
       } catch (err) {
         ouResultEl.textContent = err instanceof Error ? err.message : String(err)
       }
@@ -5789,9 +5953,9 @@ const HELP_KEYS: string[] = [
 ]
 
 /** 帮助：使用说明 + 快捷键 + 导出诊断日志 */
-type SettingsSection = "appearance" | "ai" | "data" | "about"
+type SettingsSection = "appearance" | "ai" | "engine" | "data" | "about"
 
-/** 统一设置（标题栏 ⚙）：外观 / AI / 数据 / 关于 */
+/** 统一设置（标题栏 ⚙）：外观 / 模型 / 引擎 / 数据 / 关于 */
 function openSettingsDialog(initial: SettingsSection = "appearance"): void {
   const dialog = document.createElement("dialog")
   dialog.className = "settings-dialog"
@@ -5822,16 +5986,18 @@ function openSettingsDialog(initial: SettingsSection = "appearance"): void {
   document.body.appendChild(dialog)
   dialog.addEventListener("close", () => dialog.remove())
 
-  const ids: SettingsSection[] = ["appearance", "ai", "data", "about"]
+  const ids: SettingsSection[] = ["appearance", "ai", "engine", "data", "about"]
   const labels: Record<SettingsSection, string> = {
     appearance: "外观",
     ai: "模型",
+    engine: "引擎",
     data: "数据",
     about: "关于",
   }
   const icons: Record<SettingsSection, string> = {
     appearance: "ic-set-appearance",
     ai: "ic-set-model",
+    engine: "ic-set-engine",
     data: "ic-set-data",
     about: "ic-set-about",
   }
@@ -5886,8 +6052,71 @@ function openSettingsDialog(initial: SettingsSection = "appearance"): void {
 function settingsSectionView(section: SettingsSection, reRender?: () => void): HTMLElement {
   if (section === "appearance") return settingsAppearanceView()
   if (section === "ai") return settingsAiView(reRender ?? (() => {}))
+  if (section === "engine") return settingsEngineView()
   if (section === "data") return settingsDataView()
   return settingsAboutView()
+}
+
+/** 设置 → 引擎：合成引擎主程序路径（可改 / 可浏览 / 可测试启动，留空走默认） */
+function settingsEngineView(): HTMLElement {
+  const wrap = settingsSection(
+    "合成引擎",
+    "指定引擎主程序（.exe）的位置；装别处 / 换盘了就改这里。留空＝用默认路径，「测试启动」能马上验证。",
+  )
+  for (const engine of ENGINE_PATH_SETTINGS) {
+    const row = document.createElement("div")
+    row.className = "settings-field"
+    const main = document.createElement("div")
+    const name = document.createElement("strong")
+    name.textContent = engine.label + (engine.isCustom() ? "（自定义）" : "")
+    const hint = document.createElement("span")
+    hint.className = "settings-hint"
+    hint.textContent = engine.hint
+    main.append(name, hint)
+
+    const controls = document.createElement("div")
+    controls.className = "settings-engine-controls"
+    const input = document.createElement("input")
+    input.type = "text"
+    input.spellcheck = false
+    input.value = engine.isCustom() ? engine.get() : ""
+    input.placeholder = `默认：${engine.fallback}`
+    const apply = (): void => {
+      engine.set(input.value)
+      name.textContent = engine.label + (engine.isCustom() ? "（自定义）" : "")
+      setStatus(engine.isCustom() ? `${engine.label} 路径已记住` : `${engine.label} 改回默认路径`)
+    }
+    input.addEventListener("change", apply)
+
+    const browse = document.createElement("button")
+    browse.type = "button"
+    browse.className = "dialog-inline-btn"
+    browse.textContent = "浏览…"
+    browse.addEventListener("click", () => {
+      void (async () => {
+        const picked = await pickFile({ description: `${engine.label} 主程序`, extensions: ["exe"] })
+        if (!picked?.path) return
+        input.value = picked.path
+        apply()
+      })()
+    })
+
+    const test = document.createElement("button")
+    test.type = "button"
+    test.className = "dialog-inline-btn"
+    test.textContent = "测试启动"
+    test.addEventListener("click", () => {
+      void (async () => {
+        const ok = await launchEngineExe(engine.get())
+        setStatus(ok ? `已启动 ${engine.label}（${engine.get()}）` : `没能启动 ${engine.label}——路径对吗？`, !ok)
+      })()
+    })
+
+    controls.append(input, browse, test)
+    row.append(main, controls)
+    wrap.appendChild(row)
+  }
+  return wrap
 }
 
 function settingsSection(title: string, hint?: string): HTMLElement {
@@ -7137,7 +7366,17 @@ function initPickBar(): void {
     }, "pick-close"),
   )
   document.body.appendChild(pickBar)
-  window.addEventListener("scroll", () => refreshPickBar(), { passive: true })
+  // 滚动时别每个事件都刷浮动条：rAF 合并成每帧一次，且没选区/没在拖动时直接跳过
+// （refreshPickBar 会读格子位置 → getBoundingClientRect → 强制排版，滚动时最忌讳）
+let pickBarScrollRaf = 0
+function schedulePickBarRefresh(): void {
+  if (pickBarScrollRaf !== 0) return
+  pickBarScrollRaf = requestAnimationFrame(() => {
+    pickBarScrollRaf = 0
+    if (pickedCells.size > 0 && !dragStart) refreshPickBar()
+  })
+}
+window.addEventListener("scroll", schedulePickBarRefresh, { passive: true })
 }
 
 /** 挑格模式里点到成员（没有选择时）：出"解散这个押韵组"小条（1.2 秒自动收；光标在条上不收 / 点别处收） */
@@ -8861,16 +9100,9 @@ function initDocsWindowMode(): void {
     await redock()
   })
   document.querySelector("#btn-docs-redock")?.addEventListener("click", () => void redock())
-  // 标题栏右上角那个「✕」在这个窗口里其实就是「放回主窗口」（关窗＝收回，见上）——
-  // 图标 / 悬停色 / 提示都换成「放回」，别用红叉骗人
-  const titleClose = document.querySelector<HTMLButtonElement>("#win-close")
-  if (titleClose) {
-    titleClose.classList.remove("close")
-    titleClose.title = "放回主窗口"
-    titleClose.setAttribute("aria-label", "放回主窗口")
-    titleClose.innerHTML =
-      '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-frame" /><use href="#ic-arrow-in" /><use href="#ic-arrow-in-head" /></svg>'
-  }
+  document.querySelector("#btn-sidebar")?.setAttribute("hidden", "")
+  // 标题栏右上角的关闭按钮在这个窗口里不需要（收回文档栏用主窗口侧边栏那颗）
+  document.querySelector<HTMLButtonElement>("#win-close")?.setAttribute("hidden", "")
   // 这两个按钮的 handler 平时挂在 bindToolbar / initAiPanel 里，文档栏窗口模式自己绑
   document.querySelector("#btn-new-doc")?.addEventListener("click", () => addDoc())
   document.querySelector("#btn-new-convo")?.addEventListener("click", () => newConvo())
@@ -9283,8 +9515,17 @@ if (DOCS_WINDOW_MODE) {
   bindDrop()
   initFindPanel()
   initAiPanel()
-  window.addEventListener("scroll", updateScrollProgress, { passive: true })
-  window.addEventListener("resize", updateScrollProgress)
+// 滚动时用 rAF 节流：scroll 事件很密，直接读 scrollHeight 会每帧强制回流
+let scrollProgressRaf = 0
+function scheduleScrollProgress(): void {
+  if (scrollProgressRaf !== 0) return
+  scrollProgressRaf = requestAnimationFrame(() => {
+    scrollProgressRaf = 0
+    updateScrollProgress()
+  })
+}
+window.addEventListener("scroll", scheduleScrollProgress, { passive: true })
+window.addEventListener("resize", scheduleScrollProgress)
   render()
   focusCellInput()
   // 清掉残留的独立 AI 窗（默认内嵌；避免重载后主窗口与独立窗两处都有面板）

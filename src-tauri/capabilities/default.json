@@ -10,7 +10,10 @@
     "core:webview:allow-set-webview-zoom",
     "core:window:allow-start-dragging",
     "opener:default",
-    "opener:allow-open-path",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "**" }]
+    },
     "dialog:default",
     "fs:allow-read-text-file",
     "fs:allow-read-file",

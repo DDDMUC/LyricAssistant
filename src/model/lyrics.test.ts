@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest"
-import { parseLyrics } from "./lyrics"
+import { isCreditLine, parseLyrics } from "./lyrics"
+
+describe("isCreditLine（原文面板区分创作信息 / 歌词用）", () => {
+  it("作词 / 作曲 / 编曲这类算创作信息", () => {
+    expect(isCreditLine("作词：骆栖淮")).toBe(true)
+    expect(isCreditLine("作曲: 沈雾敛")).toBe(true)
+    expect(isCreditLine("编曲：1AN")).toBe(true)
+    // 一行里连着写两条也算
+    expect(isCreditLine("作词：甲 作曲：乙")).toBe(true)
+  })
+
+  it("歌词行不算", () => {
+    expect(isCreditLine("风割海棠沉如雪，压弯旧眉眼")).toBe(false)
+    expect(isCreditLine("生同花开枝头灭，最难辨")).toBe(false)
+    expect(isCreditLine("")).toBe(false)
+    expect(isCreditLine("真的 假的")).toBe(false)
+  })
+})
 
 describe("parseLyrics", () => {
   it("歌词行生成词格并填入文字", () => {

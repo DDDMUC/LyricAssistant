@@ -234,5 +234,9 @@ it("MIDI 里的歌词事件整段抄进原文面板", async () => {
   await tick(30)
 
   expect(document.querySelector<HTMLElement>("#btn-source")!.hidden).toBe(false)
-  expect(document.querySelector<HTMLTextAreaElement>("#source-text")!.value).toBe("春风吹又生")
+  // 原文按行渲染后：整段文字仍完整（换行保留在新节点里）
+  const sourceLines = document.querySelectorAll<HTMLElement>("#source-text p")
+  expect(sourceLines).toHaveLength(1)
+  expect(sourceLines[0].textContent).toBe("春风吹又生")
+  expect(sourceLines[0].className).toBe("source-line")
 })

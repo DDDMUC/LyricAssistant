@@ -102,7 +102,7 @@ it("模型页：服务商卡片列表（状态点 / 当前 / 编辑），编辑�
     Array.from(dialog!.querySelectorAll<HTMLButtonElement>(".settings-nav button")).map((b) =>
       b.textContent,
     ),
-  ).toEqual(["外观", "模型", "数据", "关于"])
+  ).toEqual(["外观", "模型", "引擎", "数据", "关于"])
   // 卡片列表：DeepSeek 在最前
   const cards = dialog!.querySelectorAll<HTMLElement>(".settings-card")
   expect(cards.length).toBe(2)

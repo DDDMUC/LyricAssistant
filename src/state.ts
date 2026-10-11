@@ -172,6 +172,14 @@ export function switchAlternative(sentence: Sentence, index: number): void {
 }
 
 export function cloneProject(project: Project): Project {
+  // 撤销快照每次都要克隆整个工程：structuredClone 比 JSON 序列化快一截（旧 WebView 没有就退回 JSON）
+  if (typeof structuredClone === "function") {
+    try {
+      return structuredClone(project)
+    } catch {
+      // 掉下去走 JSON
+    }
+  }
   return JSON.parse(JSON.stringify(project)) as Project
 }
 

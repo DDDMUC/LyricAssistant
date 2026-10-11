@@ -1,37 +1,31 @@
 import { getCells, setCells } from "./state"
 import type { Project, SvMapEntry } from "./model/types"
 import { isDesktop } from "./platform"
+import {
+  CIGE_KEYSWITCH,
+  engineNotesToSections,
+  hasCigeMarks,
+  orderedChars,
+  orderNotes,
+  type EngineNote,
+  type EngineSection,
+} from "./engine-core"
+import { launchEngineExe, sv2Path } from "./engine-paths"
 
-/** SV2 主程序路径（SV 没开时可以一键启动它） */
-export const SV2_EXE_PATH = ""
+export { hasCigeMarks, orderedChars, orderNotes }
+export const SV_KEYSWITCH = CIGE_KEYSWITCH
+export const svNotesToSections = engineNotesToSections
+export type SvSection = EngineSection
 
-/** 启动 SV2（走系统打开；失败返回 false） */
+/** 启动 SV2（走系统打开，路径可在设置 → 引擎里改）；失败返回 false */
 export async function launchSv2(): Promise<boolean> {
-  if (!isDesktop()) return false
-  try {
-    const { openPath } = await import("@tauri-apps/plugin-opener")
-    await openPath(SV2_EXE_PATH)
-    return true
-  } catch {
-    return false
-  }
+  const result = await launchEngineExe(sv2Path())
+  return result.ok
 }
 
 /** 和 SV2 脚本约定好的信箱目录：%LOCALAPPDATA%\LyricAssistantBridge */
 const BRIDGE_DIR_NAME = "LyricAssistantBridge"
 
-/** 作词助手里「填了字的格子」按顺序拼出的汉字串（忽略词格、忽略空） */
-export function orderedChars(project: Project): string {
-  const chars: string[] = []
-  for (const section of project.sections) {
-    for (const sentence of section.sentences) {
-      for (const cell of getCells(sentence)) {
-        if (cell.trim() !== "") chars.push(cell.trim())
-      }
-    }
-  }
-  return chars.join("")
-}
 
 /** 行协议（key=value）解析：两边的桥都用这个 */
 export function parseBridgeLines(text: string): Record<string, string> {
@@ -81,20 +75,9 @@ export interface BridgeState {
 }
 
 /** SV 里的一个音符（onset/end 是 blick，pitch 是 MIDI 音高） */
-export interface SvNote {
-  onset: number
-  end: number
+export interface SvNote extends EngineNote {
   pitch: number
-  track: number
-  lyric: string
-  /** 音符身份证（t<轨>g<组>@<onset>）——新版 bridge.lua 的 dumpNotes 才有 */
-  id?: string
 }
-
-/** 「词格酱」标记（和导入 MIDI 同一套）：C0=分格、C#0=换句、D0=换段 */
-export const SV_KEYSWITCH = { group: 24, sentence: 25, section: 26 } as const
-
-const isHanChar = (ch: string): boolean => /[\u4e00-\u9fff]/.test(ch)
 
 /** 解析 bridge.lua 导出的 notes.txt：onset \t end \t pitch \t track \t lyric [\t id] */
 export function parseSvNotes(text: string): SvNote[] {
@@ -112,77 +95,6 @@ export function parseSvNotes(text: string): SvNote[] {
     out.push({ onset, end, pitch, track, lyric: parts[4] ?? "", ...(id ? { id } : {}) })
   }
   return out
-}
-
-export interface SvSection {
-  name: string
-  lines: { pattern: number[]; cells: string[]; ids?: string[] }[]
-}
-
-/**
- * SV 工程里带了「词格酱」标记（C0/C#0/D0）时：照标记生成新词格
- * （规则和「导入 MIDI」的 keyswitch 模式一致：D0 换段、C#0 换句、C0 分格；空段/空句/空格不生成）
- */
-export function svNotesToSections(notes: SvNote[]): SvSection[] {
-  const sorted = [...notes].sort((a, b) => a.onset - b.onset)
-  const sections: SvSection[] = []
-  const hasIds = notes.some((note) => note.id !== undefined && note.id !== "")
-  let section: SvSection = { name: "", lines: [] }
-  let pattern: number[] = []
-  let cells: string[] = []
-  let ids: string[] = []
-  let group = 0
-  const flushGroup = (): void => {
-    if (group > 0) {
-      pattern.push(group)
-      group = 0
-    }
-  }
-  const flushLine = (): void => {
-    flushGroup()
-    if (pattern.length > 0) {
-      section.lines.push(hasIds ? { pattern, cells, ids } : { pattern, cells })
-    }
-    pattern = []
-    cells = []
-    ids = []
-  }
-  const flushSection = (): void => {
-    flushLine()
-    if (section.lines.length > 0) sections.push(section)
-    section = { name: "", lines: [] }
-  }
-  for (const note of sorted) {
-    if (note.pitch === SV_KEYSWITCH.section) {
-      flushSection()
-      continue
-    }
-    if (note.pitch === SV_KEYSWITCH.sentence) {
-      flushLine()
-      continue
-    }
-    if (note.pitch === SV_KEYSWITCH.group) {
-      flushGroup()
-      continue
-    }
-    // 只收汉字；`-`（延音）/空/非汉字不占格
-    if (!isHanChar(note.lyric)) continue
-    group += 1
-    cells.push(note.lyric)
-    ids.push(note.id ?? "")
-  }
-  flushSection()
-  return sections
-}
-
-/** 有没有「词格酱」标记 */
-export function hasCigeMarks(notes: SvNote[]): boolean {
-  return notes.some(
-    (note) =>
-      note.pitch === SV_KEYSWITCH.group ||
-      note.pitch === SV_KEYSWITCH.sentence ||
-      note.pitch === SV_KEYSWITCH.section,
-  )
 }
 
 /** 句子 id + 格号 → 现在的字（找不到返回 null） */
