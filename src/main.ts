@@ -3354,7 +3354,8 @@ async function openEngineDialog(): Promise<void> {
   const ouResultEl = dialog.querySelector<HTMLElement>("#ou-result")!
   const ouExeEl = dialog.querySelector<HTMLElement>("#ou-exe")!
   const renderOuExe = (): void => {
-    ouExeEl.textContent = `主程序：${ouPath()}（点击修改）`
+    const path = ouPath()
+    ouExeEl.textContent = path ? `主程序：${path}（点击修改）` : "主程序：未设置（点击设置）"
   }
   renderOuExe()
   ouExeEl.addEventListener("click", () => {

@@ -8,8 +8,9 @@ import { isDesktop } from "./platform"
 const SV2_KEY = "cige-grid-sv2-path"
 const OU_KEY = "cige-grid-ou-path"
 
-/** 默认路径（按这台机器现状给的兜底） */
+/** 引擎主程序路径都不猜（装在哪儿都可能）：默认空，第一次用请在「设置 → 引擎」里填一次 */
 export const DEFAULT_SV2_PATH = ""
+/** OpenUtau 同样没有通用安装位（便携版放哪的都有） */
 export const DEFAULT_OU_PATH = ""
 
 function read(key: string): string {
@@ -70,7 +71,7 @@ export const ENGINE_PATH_SETTINGS: EnginePathSetting[] = [
   {
     key: "openutau",
     label: "OpenUtau",
-    hint: "「引擎」弹窗 OpenUtau 页的「启动 OpenUtau」用它",
+    hint: "「引擎」弹窗 OpenUtau 页的「启动 OpenUtau」用它；OpenUtau 没有通用安装位，需要自己填一次",
     get: ouPath,
     set: setOuPath,
     isCustom: () => read(OU_KEY) !== "",

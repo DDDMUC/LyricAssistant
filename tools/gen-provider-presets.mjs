@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // 从 DSH 的 provider 目录生成 src/model/provider-presets.ts（数据照搬，只做归一化）。
-// 用法：node tools/gen-provider-presets.mjs [providers.js 的路径]
-//   默认路径：dsh-provider-hub/core/providers.js
+// 用法：node tools/gen-provider-presets.mjs <providers.js 的路径>
 import { writeFileSync } from "node:fs"
 import { pathToFileURL } from "node:url"
-import { homedir } from "node:os"
-import { join } from "node:path"
 
-const source =
-  process.argv[2] ?? join(homedir(), "dsh-provider-hub/core/providers.js")
+const source = process.argv[2]
+if (!source) {
+  console.error("用法：node tools/gen-provider-presets.mjs <providers.js 的路径>")
+  process.exit(1)
+}
 
 /** 我们系统支持的档位；off 归一成 none，其余（xhigh / minimal / ultra…）丢弃 */
 const KEEP = ["none", "low", "medium", "high", "max"]
