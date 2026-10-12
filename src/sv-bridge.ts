@@ -1,6 +1,5 @@
 import { getCells, setCells } from "./state"
 import type { Project, SvMapEntry } from "./model/types"
-import { isDesktop } from "./platform"
 import {
   CIGE_KEYSWITCH,
   engineNotesToSections,
@@ -11,6 +10,7 @@ import {
   type EngineSection,
 } from "./engine-core"
 import { launchEngineExe, sv2Path } from "./engine-paths"
+import { bridgeFs } from "./bridge-fs"
 
 export { hasCigeMarks, orderedChars, orderNotes }
 export const SV_KEYSWITCH = CIGE_KEYSWITCH
@@ -22,10 +22,6 @@ export async function launchSv2(): Promise<boolean> {
   const result = await launchEngineExe(sv2Path())
   return result.ok
 }
-
-/** 和 SV2 脚本约定好的信箱目录：%LOCALAPPDATA%\LyricAssistantBridge */
-const BRIDGE_DIR_NAME = "LyricAssistantBridge"
-
 
 /** 行协议（key=value）解析：两边的桥都用这个 */
 export function parseBridgeLines(text: string): Record<string, string> {
@@ -197,36 +193,19 @@ export function applySvEdits(
   return applied
 }
 
-async function fsApi(): Promise<typeof import("@tauri-apps/plugin-fs")> {
-  return import("@tauri-apps/plugin-fs")
-}
-
-async function bridgePaths(): Promise<{ dir: string; request: string; response: string; state: string }> {
-  const { localDataDir, join } = await import("@tauri-apps/api/path")
-  const dir = await join(await localDataDir(), BRIDGE_DIR_NAME)
-  return {
-    dir,
-    request: await join(dir, "request.txt"),
-    response: await join(dir, "response.txt"),
-    state: await join(dir, "state.txt"),
-  }
-}
-
 /** 给 SV2 那边的后台脚本发一条命令，等它回信；超时（脚本没在跑）返回 null */
 export async function callBridge(
   cmd: string,
   extra: Record<string, string> = {},
   timeoutMs = 4000,
 ): Promise<BridgeResponse | null> {
-  if (!isDesktop()) return null
-  const fs = await fsApi()
-  const paths = await bridgePaths()
-  await fs.mkdir(paths.dir, { recursive: true }).catch(() => {})
+  const io = await bridgeFs()
+  if (!io) return null
   const seq = String(Date.now())
-  await fs.writeTextFile(paths.request, formatBridgeRequest(seq, cmd, extra))
+  await io.write("request.txt", formatBridgeRequest(seq, cmd, extra))
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const text = await fs.readTextFile(paths.response).catch(() => "")
+    const text = await io.read("response.txt").catch(() => "")
     const parsed = parseBridgeLines(text)
     if (parsed.seq === seq) {
       return {
@@ -250,20 +229,17 @@ export async function callBridge(
 
 /** 读 bridge.lua 导出的音符（先发 dumpNotes 让它写 notes.txt） */
 export async function readSvNotes(): Promise<SvNote[]> {
-  if (!isDesktop()) return []
-  const fs = await fsApi()
-  const paths = await bridgePaths()
-  const { join } = await import("@tauri-apps/api/path")
-  const text = await fs.readTextFile(await join(paths.dir, "notes.txt")).catch(() => "")
+  const io = await bridgeFs()
+  if (!io) return []
+  const text = await io.read("notes.txt").catch(() => "")
   return text ? parseSvNotes(text) : []
 }
 
 /** 读 SV2 脚本上报的状态（state.txt），判断它还在不在跑 */
 export async function readBridgeState(): Promise<BridgeState | null> {
-  if (!isDesktop()) return null
-  const fs = await fsApi()
-  const paths = await bridgePaths()
-  const text = await fs.readTextFile(paths.state).catch(() => "")
+  const io = await bridgeFs()
+  if (!io) return null
+  const text = await io.read("state.txt").catch(() => "")
   if (!text) return null
   const parsed = parseBridgeLines(text)
   const updated = Number(parsed.updated ?? 0)

@@ -162,6 +162,7 @@ import {
 import { bindZoomShortcuts, initZoom } from "./zoom"
 import { allCellRefs, applySvEdits, buildSvMapFromRefs, callBridge, diffSvMap, filledCellRefs, hasCigeMarks, orderedChars, readBridgeState, readSvNotes, svNotesToSections } from "./sv-bridge"
 import { ENGINE_PATH_SETTINGS, launchEngineExe, ouPath, sv2Path, type EnginePathSetting } from "./engine-paths"
+import { pickWebBridgeDir, webBridgeStatus } from "./bridge-fs"
 import { fillUstx, ouEligible, parseUstx } from "./openutau"
 import { hanNotes, orderNotes, type EngineNote } from "./engine-core"
 
@@ -3139,6 +3140,8 @@ async function openEngineDialog(): Promise<void> {
 
       <div class="engine-page" id="engine-page-sv">
         <p class="dialog-note">把<b>填了字的格子</b>按顺序填进 SV2（与词格、旋律无关）：时间不重叠时第 i 个字替换第 i 个；有重叠按「导入 MIDI」规则（字数多的当主歌，和声挂在重叠的主句后）。只替换能对上的部分。</p>
+        <p class="dialog-note" id="sv-web-hint" hidden>网页版要先授权一次 SV2 的桥目录（%LOCALAPPDATA%\LyricAssistantBridge，SV2 脚本读写的那个文件夹），授权后和桌面版一样用。</p>
+        <button type="button" id="sv-bridge-auth" hidden>授权 SV2 桥目录</button>
         <p class="dialog-note" id="sv-bridge-status">正在检查 SV2 脚本…</p>
         <p class="dialog-note engine-path" id="sv-exe" role="button" tabindex="0">主程序：</p>
         <label class="dialog-check"><input type="checkbox" id="sv-bridge-sync"> <span>实时同步（打开后：你在格子里改字会自动推给 SV2，你在 SV2 里改字会自动写回格子；先「按序填词」或「读回」一次建立格子 ↔ 音符对照表）</span></label>
@@ -3201,6 +3204,35 @@ async function openEngineDialog(): Promise<void> {
   const renderSvExe = (): void => {
     svExeEl.textContent = `主程序：${sv2Path()}（点击修改）`
   }
+
+  // 网页版：不能拉起本地程序（启动 SV2 / 启动 OpenUtau / 用 OpenUtau 打开、程序路径都不适用），
+  // 但要给 SV2 桥目录授权（File System Access）；OpenUtau 本来就是选文件/存文件，网页直接能用
+  const webMode = !isDesktop()
+  if (webMode) {
+    dialog.querySelector<HTMLElement>("#sv-bridge-launch")!.hidden = true
+    dialog.querySelector<HTMLElement>("#ou-launch")!.hidden = true
+    dialog.querySelector<HTMLElement>("#ou-open")!.hidden = true
+    dialog.querySelector<HTMLElement>("#ou-exe")!.hidden = true
+  }
+  const svWebHintEl = dialog.querySelector<HTMLElement>("#sv-web-hint")!
+  const svAuthBtn = dialog.querySelector<HTMLElement>("#sv-bridge-auth")!
+  const refreshWebAuth = async (): Promise<void> => {
+    if (!webMode) return
+    const status = await webBridgeStatus()
+    const ready = status === "ready"
+    svWebHintEl.hidden = ready
+    svAuthBtn.hidden = ready
+    if (ready) statusEl.textContent = "已授权 SV2 桥目录，正在检查脚本状态…"
+  }
+  svAuthBtn.addEventListener("click", () => {
+    void (async () => {
+      const ok = await pickWebBridgeDir()
+      await refreshWebAuth()
+      void refreshStatus()
+      resultEl.textContent = ok ? "桥目录已授权，可以用了" : "没有授权（取消了选择或浏览器不支持）"
+    })()
+  })
+  void refreshWebAuth()
   renderSvExe()
   svExeEl.addEventListener("click", () => {
     askEnginePath(engineSetting("sv2"), () => {
