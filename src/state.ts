@@ -1,5 +1,6 @@
-import type { Alternative, Cursor, Project, ProjectStats, Section, Sentence, SvMapEntry } from "./model/types"
+import type { Alternative, Cursor, Project, ProjectStats, Section, Sentence, SourceLine, SvMapEntry } from "./model/types"
 import { cellsFromPattern, resizeToPattern } from "./model/grid"
+import { isCreditLine } from "./model/lyrics"
 import { totalCells } from "./model/pattern"
 import { hanOnly } from "./model/rhyme"
 
@@ -48,6 +49,7 @@ export function createProject(): Project {
     updatedAt: new Date().toISOString(),
     credits: [],
     source: "",
+    sourceLines: [],
   }
 }
 
@@ -294,6 +296,20 @@ export function parseProject(raw: string): Project {
   project.credits = Array.isArray(project.credits)
     ? project.credits.filter((credit): credit is string => typeof credit === "string" && credit.trim() !== "")
     : []
+  // 原文面板的行：老工程没有（或只有 source）就从原文现拆；坏条目丢掉；source 始终由行拼出来
+  const sourceText = typeof project.source === "string" ? project.source : ""
+  if (!Array.isArray(project.sourceLines) || (project.sourceLines.length === 0 && sourceText !== "")) {
+    project.sourceLines = sourceLinesFromText(sourceText)
+  } else {
+    project.sourceLines = project.sourceLines.filter(
+      (line): line is SourceLine =>
+        !!line &&
+        typeof line === "object" &&
+        typeof line.text === "string" &&
+        typeof line.credit === "boolean",
+    )
+  }
+  project.source = sourceTextFromLines(project.sourceLines)
   // SV2 对照表：结构不合法的条目直接丢掉（旧工程没有这字段，照常能开）
   if (Array.isArray(project.svMap)) {
     const map = project.svMap.filter(
@@ -452,7 +468,103 @@ export function applyImportedSource(
   merge: boolean,
 ): void {
   const current = project.source ?? ""
-  project.source = merge ? (current ? `${current}\n\n${text}` : text) : text
+  setSourceText(project, merge ? (current ? `${current}\n\n${text}` : text) : text)
+}
+
+/** 直接设定原文（同时把面板的行重建；清空原文就传 ""） */
+export function setSourceText(project: Project, text: string): void {
+  project.source = text
+  project.sourceLines = sourceLinesFromText(text)
+}
+
+/** 原文文本 → 面板的行（按识别给每行定归属） */
+export function sourceLinesFromText(text: string): SourceLine[] {
+  if (text === "") return []
+  return text.split(/\r?\n/).map((line) => ({ text: line, credit: isCreditLine(line) }))
+}
+
+/** 面板的行 → 原文文本（各行用换行拼，和导入时的原文一致） */
+export function sourceTextFromLines(lines: SourceLine[]): string {
+  return lines.map((line) => line.text).join("\n")
+}
+
+/** 拿工程的面板行；旧工程（没有 sourceLines）按原文现拆，不写回 */
+export function getSourceLines(project: Project): SourceLine[] {
+  return project.sourceLines ?? sourceLinesFromText(project.source ?? "")
+}
+
+function ensureSourceLines(project: Project): SourceLine[] {
+  if (!Array.isArray(project.sourceLines)) {
+    project.sourceLines = sourceLinesFromText(project.source ?? "")
+  }
+  return project.sourceLines
+}
+
+function syncSourceText(project: Project): void {
+  project.source = sourceTextFromLines(project.sourceLines ?? [])
+}
+
+function hasCreditLine(lines: SourceLine[], text: string): boolean {
+  const value = text.trim()
+  return value !== "" && lines.some((line) => line.credit && line.text.trim() === value)
+}
+
+function addCredit(project: Project, text: string): void {
+  const value = text.trim()
+  if (value === "") return
+  const credits = project.credits ?? []
+  if (credits.includes(value)) return
+  project.credits = [...credits, value]
+}
+
+/** 从创作信息里移除这一句；还有别的创作信息行占着同一句就不动 */
+function removeCredit(project: Project, text: string, lines: SourceLine[]): void {
+  const value = text.trim()
+  if (value === "" || hasCreditLine(lines, value)) return
+  project.credits = (project.credits ?? []).filter((credit) => credit !== value)
+}
+
+/** 点小点：正文 ⇄ 创作信息（同时同步工程的创作信息） */
+export function toggleSourceLineKind(project: Project, index: number): void {
+  const lines = ensureSourceLines(project)
+  const line = lines[index]
+  if (!line) return
+  line.credit = !line.credit
+  if (line.credit) addCredit(project, line.text)
+  else removeCredit(project, line.text, lines)
+}
+
+/** 改某一行的文字（创作信息行的改动同步进工程创作信息） */
+export function setSourceLineText(project: Project, index: number, text: string): void {
+  const lines = ensureSourceLines(project)
+  const line = lines[index]
+  if (!line || line.text === text) return
+  const oldText = line.text
+  line.text = text
+  syncSourceText(project)
+  if (!line.credit) return
+  const value = text.trim()
+  project.credits = (project.credits ?? [])
+    .map((credit) => (credit === oldText.trim() ? value : credit))
+    .filter((credit, i, all) => credit !== "" && all.indexOf(credit) === i)
+}
+
+/** 在第 index 行前面插一个空行（回车换行用） */
+export function insertSourceLine(project: Project, index: number): void {
+  const lines = ensureSourceLines(project)
+  const at = Math.max(0, Math.min(index, lines.length))
+  lines.splice(at, 0, { text: "", credit: false })
+  syncSourceText(project)
+}
+
+/** 删掉第 index 行（创作信息行连带把工程创作信息也清掉） */
+export function removeSourceLine(project: Project, index: number): void {
+  const lines = ensureSourceLines(project)
+  const line = lines[index]
+  if (!line) return
+  lines.splice(index, 1)
+  syncSourceText(project)
+  if (line.credit) removeCredit(project, line.text, lines)
 }
 
 export interface ExportOptions {

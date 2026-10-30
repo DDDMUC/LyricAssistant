@@ -34,6 +34,13 @@ describe("parseLyrics", () => {
     expect(parsed.sections[0].lines[0].cells).toEqual(new Array(8).fill(""))
   })
 
+  it("keepCreditLines：看起来像创作信息的行也当歌词（原文面板生成词格用）", () => {
+    const parsed = parseLyrics("作词：甲\n风割海棠沉如雪", true)
+    expect(parsed.credits).toEqual([])
+    expect(parsed.sections[0].lines).toHaveLength(2)
+    expect(parsed.sections[0].lines[0].cells).toEqual(["作", "词", "甲"])
+  })
+
   it("中文停顿标点不占格，但作为分句边界", () => {
     const parsed = parseLyrics("你好，世界！ 啊")
     const line = parsed.sections[0].lines[0]

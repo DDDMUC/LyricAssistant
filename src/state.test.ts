@@ -12,8 +12,13 @@ import {
   exportGrid,
   exportLyrics,
   getCells,
+  getSourceLines,
+  insertSourceLine,
   moveSection,
   parseProject,
+  removeSourceLine,
+  setSourceLineText,
+  toggleSourceLineKind,
   reflowOverflow,
   sentenceLine,
   sentenceLabels,
@@ -377,6 +382,103 @@ describe("applyImportedSource", () => {
     expect(project.source).toBe("旧原文\n\n新原文")
     applyImportedSource(project, "第三次", true)
     expect(project.source).toBe("旧原文\n\n新原文\n\n第三次")
+  })
+})
+
+describe("原文面板：行归属与就地编辑", () => {
+  it("旧工程迁移：老工程（只有 source）打开后按识别拆行、自动标出创作信息", () => {
+    const raw = JSON.stringify({
+      version: 2,
+      title: "t",
+      sections: [
+        {
+          id: "sec1",
+          name: "",
+          sentences: [
+            {
+              id: "s1",
+              pattern: [2],
+              alternatives: [{ id: "a1", name: "备选 1", cells: ["", ""] }],
+              activeAlt: 0,
+              note: "",
+              overflow: "",
+            },
+          ],
+        },
+      ],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      source: "作词：骆栖淮\n作曲：沈雾敛\n\n风割海棠沉如雪",
+    })
+    const project = parseProject(raw)
+    expect(getSourceLines(project).map((line) => [line.text, line.credit])).toEqual([
+      ["作词：骆栖淮", true],
+      ["作曲：沈雾敛", true],
+      ["", false],
+      ["风割海棠沉如雪", false],
+    ])
+    expect(project.source).toBe("作词：骆栖淮\n作曲：沈雾敛\n\n风割海棠沉如雪")
+  })
+
+  it("导入原文时同时把行建好", () => {
+    const project = createProject()
+    applyImportedSource(project, "作词：骆栖淮", false)
+    expect(getSourceLines(project)).toEqual([{ text: "作词：骆栖淮", credit: true }])
+  })
+
+  it("点成创作信息：行归属变了，文字也进了工程创作信息", () => {
+    const project = createProject()
+    applyImportedSource(project, "风割海棠沉如雪", false)
+    toggleSourceLineKind(project, 0)
+    expect(getSourceLines(project)[0].credit).toBe(true)
+    expect(project.credits).toEqual(["风割海棠沉如雪"])
+    expect(project.source).toBe("风割海棠沉如雪")
+  })
+
+  it("再点回正文：从工程创作信息里移除", () => {
+    const project = createProject()
+    applyImportedSource(project, "风割海棠沉如雪", false)
+    toggleSourceLineKind(project, 0)
+    toggleSourceLineKind(project, 0)
+    expect(getSourceLines(project)[0].credit).toBe(false)
+    expect(project.credits).toEqual([])
+  })
+
+  it("同文字还有另一行是创作信息时，切回正文不移除", () => {
+    const project = createProject()
+    applyImportedSource(project, "作词：甲\n作词：甲", false)
+    applyImportedCredits(project, ["作词：甲"], false)
+    toggleSourceLineKind(project, 0)
+    expect(project.credits).toEqual(["作词：甲"])
+    toggleSourceLineKind(project, 1)
+    expect(project.credits).toEqual([])
+  })
+
+  it("改创作信息行的文字：工程创作信息同步替换", () => {
+    const project = createProject()
+    applyImportedSource(project, "作词：骆栖淮\n风割海棠沉如雪", false)
+    applyImportedCredits(project, ["作词：骆栖淮"], false)
+    setSourceLineText(project, 0, "作词：骆栖淮、某某")
+    expect(getSourceLines(project)[0].text).toBe("作词：骆栖淮、某某")
+    expect(project.credits).toEqual(["作词：骆栖淮、某某"])
+    expect(project.source).toBe("作词：骆栖淮、某某\n风割海棠沉如雪")
+  })
+
+  it("插入行：在指定位置插空行，原文镜像同步", () => {
+    const project = createProject()
+    applyImportedSource(project, "甲\n乙", false)
+    insertSourceLine(project, 1)
+    expect(getSourceLines(project).map((line) => line.text)).toEqual(["甲", "", "乙"])
+    expect(project.source).toBe("甲\n\n乙")
+  })
+
+  it("删行：删创作信息行会同步移除创作信息", () => {
+    const project = createProject()
+    applyImportedSource(project, "作词：甲\n乙", false)
+    applyImportedCredits(project, ["作词：甲"], false)
+    removeSourceLine(project, 0)
+    expect(getSourceLines(project).map((line) => line.text)).toEqual(["乙"])
+    expect(project.credits).toEqual([])
+    expect(project.source).toBe("乙")
   })
 })
 

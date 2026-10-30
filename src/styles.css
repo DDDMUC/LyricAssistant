@@ -600,6 +600,18 @@ html:not(.sidebar-collapsed) #btn-sidebar-expand {
   padding: 0 2px 2px 6px;
 }
 
+.source-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#btn-source-grid {
+  width: auto;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
 .source-head button {
   display: inline-flex;
   align-items: center;
@@ -639,9 +651,54 @@ html:not(.sidebar-collapsed) #btn-sidebar-expand {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-/* 原文按行渲染：创作信息和歌词分开样式 */
+/* 原文按行渲染：创作信息和歌词分开样式；每行右边一个小点切归属 */
 .source-text p {
   margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.source-line-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 4px;
+  outline: none;
+}
+
+.source-line-text:focus {
+  background: var(--bg-hover);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.source-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin-top: 0.45em;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.source-credit .source-dot {
+  background: var(--text-muted);
+}
+
+.source-dot:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* 创作信息块和歌词块的交界处 */
+.source-divider {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
 }
 
 .source-credit {
@@ -3714,6 +3771,70 @@ body.docs-window #btn-settings {
   height: 150px;
   font-size: 12.5px;
   line-height: 1.6;
+}
+
+/* 「发给模型的提示词」窗：比普通弹窗大一些，三段各自翻页 */
+.ai-prompt-dialog {
+  width: min(760px, 92vw);
+  max-height: min(86vh, 900px);
+}
+
+.ai-prompt-dialog textarea.ai-pre {
+  height: 132px;
+}
+
+.prompt-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.prompt-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prompt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.prompt-pager {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.prompt-pager button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.prompt-pager button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.prompt-pager button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.prompt-page {
+  min-width: 42px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .ai-actions {

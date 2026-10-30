@@ -72,7 +72,19 @@ import {
   saveDocs,
   type DocRecord,
 } from "./docs"
-import { isCreditLine, parseLyrics } from "./model/lyrics"
+import { parseLyrics } from "./model/lyrics"
+import {
+  addPage as addPromptPage,
+  currentPageText,
+  gotoPage as gotoPromptPage,
+  isBuiltinPage,
+  loadPromptPages,
+  pageCount,
+  removePage as removePromptPage,
+  savePromptPages,
+  setPageText,
+  type AiPromptPages,
+} from "./ai-prompts"
 import {
   KEYSWITCH,
   buildLyricMidi,
@@ -135,12 +147,15 @@ import {
   exportLyrics,
   findSectionBySentence,
   getCells,
+  getSourceLines,
+  insertSourceLine,
   markAutosaved,
   moveSection,
   onAutosave,
   onAutosaveWrite,
   parseProject,
   reflowOverflow,
+  removeSourceLine,
   sentenceAt,
   sentenceIndex,
   sentenceLabels,
@@ -148,8 +163,11 @@ import {
   setCells,
   setPattern,
   setPatternShape,
+  setSourceLineText,
+  setSourceText,
   statsOf,
   switchAlternative,
+  toggleSourceLineKind,
 } from "./state"
 import { applyTheme, initTheme, themeIcon, themeLabel, themeState, type ThemePref } from "./theme"
 import {
@@ -184,6 +202,7 @@ const sourceBtn = document.querySelector("#btn-source") as HTMLButtonElement
 const sourcePanel = document.querySelector("#source-panel") as HTMLElement
 const sourceTextEl = document.querySelector<HTMLElement>("#source-text")!
 const sourceCloseBtn = document.querySelector("#btn-source-close") as HTMLButtonElement
+const sourceGridBtn = document.querySelector("#btn-source-grid") as HTMLButtonElement
 const editorActionsEl = document.querySelector("#editor-actions") as HTMLElement
 
 const sidebarToggleBtns = ["#btn-sidebar", "#btn-sidebar-expand"]
@@ -417,12 +436,35 @@ function rhymeSummaryText(): string {
   return `韵脚 ${parts.join(" ")}`
 }
 
-function mutate(fn: () => void): void {
+/** 重画范围：整表（默认，结构变化用）/ 只刷状态栏（句子没变）/ 只重画这些句子 */
+type RepaintScope = "all" | "status" | Iterable<string>
+
+function mutate(fn: () => void, repaint: RepaintScope = "all"): void {
   store.pushUndo()
   fn()
   store.ensureCursor()
   store.touch()
-  render()
+  if (repaint === "all") {
+    render()
+    return
+  }
+  if (repaint === "status") {
+    renderStatusBar()
+    paintSelection()
+    return
+  }
+  repaintSentences(repaint)
+}
+
+/** 这个韵组落在哪些句子上（定向重画用） */
+function groupSentenceIds(groupId: string): string[] {
+  const ids: string[] = []
+  for (const section of store.project.sections) {
+    for (const sentence of section.sentences) {
+      if (sentence.rhymeGroups?.some((ref) => ref.id === groupId)) ids.push(sentence.id)
+    }
+  }
+  return ids
 }
 
 function persistDocs(): void {
@@ -791,7 +833,7 @@ function openSourcePanel(): void {
   closeAiPanel()
   sourcePanel.hidden = false
   document.documentElement.classList.add("source-open")
-  renderSourceText(store.project.source ?? "")
+  renderSourceText()
 }
 
 function closeSourcePanel(): void {
@@ -800,24 +842,162 @@ function closeSourcePanel(): void {
 }
 
 function syncSourcePanel(): void {
-  const hasSource = !!store.project.source
+  const hasSource = getSourceLines(store.project).length > 0
   sourceBtn.hidden = !hasSource
-  renderSourceText(store.project.source ?? "")
+  renderSourceText()
   if (!hasSource) closeSourcePanel()
 }
 
-/** 原文面板：按我们的识别把「创作信息」和「歌词」分开显示（原文只读，不改内容） */
-function renderSourceText(text: string): void {
+/** 原文面板的改动：能撤销、会存盘，改完重画面板 */
+function mutateSource(fn: () => void): void {
+  store.pushUndo()
+  fn()
+  store.touch()
+  renderSourceText()
+}
+
+/** 把光标放到第 index 行的文字上（换行/删行后接着编辑用） */
+function focusSourceLine(index: number, atEnd = false): void {
+  const span = sourceTextEl.querySelectorAll<HTMLElement>(".source-line-text")[index]
+  if (!span) return
+  span.focus()
+  const range = document.createRange()
+  range.selectNodeContents(span)
+  range.collapse(!atEnd)
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+}
+
+/** 原文面板：按行渲染——文字可就地改；每行右边一个小点切「正文 / 创作信息」；相邻归属不同画分割线 */
+function renderSourceText(): void {
+  const lines = getSourceLines(store.project)
   const frag = document.createDocumentFragment()
-  for (const line of text.split(/\r?\n/)) {
+  lines.forEach((line, index) => {
+    const blank = line.text.trim() === ""
     const item = document.createElement("p")
-    item.textContent = line
-    if (line.trim() === "") item.className = "source-blank"
-    else if (isCreditLine(line)) item.className = "source-credit"
-    else item.className = "source-line"
+    item.className = blank ? "source-blank" : line.credit ? "source-credit" : "source-line"
+    if (index > 0 && lines[index - 1].credit !== line.credit) item.classList.add("source-divider")
+
+    const text = document.createElement("span")
+    text.className = "source-line-text"
+    text.contentEditable = "true"
+    text.spellcheck = false
+    text.textContent = line.text
+    text.addEventListener("blur", () => {
+      const value = text.textContent ?? ""
+      if (value === getSourceLines(store.project)[index]?.text) return
+      mutateSource(() => setSourceLineText(store.project, index, value))
+    })
+    text.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault()
+        const value = text.textContent ?? ""
+        mutateSource(() => {
+          setSourceLineText(store.project, index, value)
+          insertSourceLine(store.project, index + 1)
+        })
+        focusSourceLine(index + 1)
+        return
+      }
+      if (event.key === "Backspace" && (text.textContent ?? "") === "" && lines.length > 1) {
+        event.preventDefault()
+        mutateSource(() => removeSourceLine(store.project, index))
+        focusSourceLine(Math.max(0, index - 1), true)
+      }
+    })
+    text.addEventListener("paste", (event) => {
+      const plain = event.clipboardData?.getData("text/plain") ?? ""
+      if (plain === "") return
+      event.preventDefault()
+      const value = plain.replace(/\r?\n+/g, " ")
+      const current = text.textContent ?? ""
+      const next = current + value
+      text.textContent = next
+      mutateSource(() => setSourceLineText(store.project, index, next))
+    })
+    item.appendChild(text)
+
+    if (!blank) {
+      const dot = document.createElement("button")
+      dot.type = "button"
+      dot.className = "source-dot"
+      dot.title = line.credit ? "点一下改成正文" : "点一下改成创作信息"
+      dot.setAttribute("aria-label", dot.title)
+      dot.addEventListener("click", () => {
+        mutateSource(() => toggleSourceLineKind(store.project, index))
+      })
+      item.appendChild(dot)
+    }
+
     frag.appendChild(item)
-  }
+  })
   sourceTextEl.replaceChildren(frag)
+}
+
+/** 「用原文生成词格」的选择框：覆盖 / 追加 */
+function askSourceGridMode(): Promise<"replace" | "append" | null> {
+  return new Promise((resolve) => {
+    dismissOpenDialogs()
+    const dialog = document.createElement("dialog")
+    const form = document.createElement("form")
+    form.method = "dialog"
+    form.className = "dialog-body"
+
+    const title = document.createElement("strong")
+    title.textContent = "用原文生成词格"
+    const hint = document.createElement("p")
+    hint.textContent = "按原文里的正文行生成（创作信息行不计入），只出词格、不把字填进去。"
+    const actions = document.createElement("div")
+    actions.className = "dialog-actions"
+    const cancel = document.createElement("button")
+    cancel.type = "submit"
+    cancel.value = "cancel"
+    cancel.textContent = "取消"
+    const append = document.createElement("button")
+    append.type = "submit"
+    append.value = "append"
+    append.textContent = "追加"
+    const replace = document.createElement("button")
+    replace.type = "submit"
+    replace.value = "replace"
+    replace.textContent = "覆盖"
+    actions.append(cancel, append, replace)
+
+    form.append(title, hint, actions)
+    dialog.appendChild(form)
+    dialog.addEventListener("close", () => {
+      const value = dialog.returnValue
+      dialog.remove()
+      resolve(value === "replace" || value === "append" ? value : null)
+    })
+    document.body.appendChild(dialog)
+    dialog.showModal()
+  })
+}
+
+/** 用原文面板里的正文行生成词格（不动原文 / 创作信息 / 歌名） */
+async function generateGridFromSource(): Promise<void> {
+  const text = getSourceLines(store.project)
+    .filter((line) => !line.credit)
+    .map((line) => line.text)
+    .join("\n")
+  if (text.trim() === "") {
+    setStatus("没有识别到歌词行", true)
+    return
+  }
+  const mode = await askSourceGridMode()
+  if (!mode) return
+  if (
+    !applyLyricsText(text, undefined, {
+      merge: mode === "append",
+      fillLyrics: false,
+      touchMeta: false,
+      keepCreditLines: true,
+    })
+  )
+    return
+  setStatus(mode === "append" ? "已按原文追加词格" : "已按原文生成词格")
 }
 
 function renderEmptyState(): HTMLElement {
@@ -1044,16 +1224,21 @@ function togglePicked(sentenceId: string, index: number): void {
   paintSelection()
 }
 
+/** 上一次画上 "selected" 的格子（避免每次整文档扫） */
+let paintedSelected = new Set<HTMLElement>()
+
 function paintSelection(): void {
-  document
-    .querySelectorAll(".cell.selected, .cell-input.selected")
-    .forEach((el) => el.classList.remove("selected"))
+  for (const el of paintedSelected) el.classList.remove("selected")
+  paintedSelected = new Set()
   for (const span of selectionSpans()) {
     const root = document.querySelector(`.sentence[data-id="${span.sentence.id}"]`)
     if (!root) continue
     root.querySelectorAll<HTMLElement>(".cell, .cell-input").forEach((el) => {
       const index = Number(el.dataset.index)
-      if (index >= span.from && index <= span.to) el.classList.add("selected")
+      if (index >= span.from && index <= span.to) {
+        el.classList.add("selected")
+        paintedSelected.add(el)
+      }
     })
   }
   syncNativeSelection()
@@ -1668,21 +1853,30 @@ function applyGroupClasses(el: HTMLElement, sentence: Sentence, index: number): 
  * 押韵组的显示规则（用户定稿）：只显示"当前格所在的组"——
  * 光标在哪一格，同组所有格子整格亮起（跨句同步）；光标不在组里就不显示任何标记。
  * 只切类不重画，挂在 render / repaintSentence 尾部。
+ * 为了不每次整文档扫，只记住"上一次点亮的那批格子"。
  */
+let litGroupEls = new Set<HTMLElement>()
+
 function paintGroupLit(): void {
   const cursorSentence = store.findSentence(store.cursor.sentenceId)
   const activeGroup = cursorSentence ? groupAt(store.project, cursorSentence, store.cursor.cell) : null
-  document
-    .querySelectorAll<HTMLElement>(".cell.group-member, .cell-input.group-member")
-    .forEach((el) => {
-      const sentence = store.findSentence(el.dataset.sentenceId ?? "")
-      const index = Number(el.dataset.index)
-      const group = sentence ? groupAt(store.project, sentence, index) : null
-      el.classList.toggle(
-        "group-lit",
-        group !== null && activeGroup !== null && group.id === activeGroup.id,
-      )
-    })
+  const wanted = new Set<HTMLElement>()
+  if (activeGroup) {
+    for (const sentenceId of groupSentenceIds(activeGroup.id)) {
+      const sentence = store.findSentence(sentenceId)
+      const root = sentencesEl.querySelector<HTMLElement>(`.sentence[data-id="${sentenceId}"]`)
+      if (!sentence || !root) continue
+      root
+        .querySelectorAll<HTMLElement>(".cell.group-member, .cell-input.group-member")
+        .forEach((el) => {
+          const group = groupAt(store.project, sentence, Number(el.dataset.index))
+          if (group && group.id === activeGroup.id) wanted.add(el)
+        })
+    }
+  }
+  for (const el of litGroupEls) if (!wanted.has(el)) el.classList.remove("group-lit")
+  for (const el of wanted) el.classList.add("group-lit")
+  litGroupEls = wanted
 }
 
 /** 当前 DOM 里属于这个组的所有格子元素 */
@@ -2215,7 +2409,7 @@ function startRenameAlternative(
         const target = store.findSentence(sentenceId)
         const targetAlt = target?.alternatives[sentence.activeAlt]
         if (targetAlt) targetAlt.name = name
-      })
+      }, [sentenceId])
     } else {
       render()
     }
@@ -2900,7 +3094,7 @@ function openRhymeLockDialog(sentenceId: string, cellIndex: number, current: str
         dialog.close("cancel")
         mutate(() => {
           dissolveRhymeGroup(store.project, group.id)
-        })
+        }, groupSentenceIds(group.id))
         setStatus("已解散韵组")
       })
       row.append(info, " ", dissolve)
@@ -2973,7 +3167,7 @@ function openCreditsDialog(): void {
       .filter(Boolean)
     mutate(() => {
       store.project.credits = credits
-    })
+    }, "status")
     setStatus(credits.length > 0 ? `已保存 ${credits.length} 条创作信息` : "已清空创作信息")
   })
   dialog.showModal()
@@ -3833,14 +4027,23 @@ async function exportLyricMidi(): Promise<void> {
   }
 }
 
+interface LyricsApplyOptions {
+  merge?: boolean
+  fillLyrics?: boolean
+  /** 用原文生成词格时：不动歌名 / 创作信息 / 原文 */
+  touchMeta?: boolean
+  /** 用原文生成词格时：连看起来像创作信息的行也当歌词（面板里标的归属说了算） */
+  keepCreditLines?: boolean
+}
+
 function applyLyricsText(
   text: string,
   fileTitle?: string,
-  merge = false,
-  fillLyrics = true,
+  options: LyricsApplyOptions = {},
 ): boolean {
+  const { merge = false, fillLyrics = true, touchMeta = true, keepCreditLines = false } = options
   try {
-    const parsed = parseLyrics(text)
+    const parsed = parseLyrics(text, keepCreditLines)
     const total = parsed.sections.reduce((n, section) => n + section.lines.length, 0)
     diag("import.lyrics", {
       chars: text.length,
@@ -3889,9 +4092,11 @@ function applyLyricsText(
       }
       const first = imported[0]?.sentences[0]
       if (first) store.cursor = { sentenceId: first.id, cell: 0 }
-  applyImportedCredits(store.project, parsed.credits, merge)
-  applyImportedTitle(store.project, parsed.title || fileTitle || "", merge)
-  applyImportedSource(store.project, text, merge)
+  if (touchMeta) {
+    applyImportedCredits(store.project, parsed.credits, merge)
+    applyImportedTitle(store.project, parsed.title || fileTitle || "", merge)
+    applyImportedSource(store.project, text, merge)
+  }
     })
     const creditNote =
       parsed.credits.length > 0 ? `，创作信息 ${parsed.credits.length} 条` : ""
@@ -3995,8 +4200,7 @@ function openImportDialog(initialText?: string, fileTitle?: string): void {
       const imported = await applyLyricsText(
         textarea.value,
         textarea.dataset.fileTitle,
-        merge,
-        fillLyrics,
+        { merge, fillLyrics },
       )
       if (imported) openSourcePanel()
     }
@@ -4325,7 +4529,7 @@ function applyMidiSections(
       // 和文本导入一样的防护：识别不到就清空旧的，不留上一首的残留
       store.project.title = midiTitle(file) || "未命名歌曲"
       store.project.credits = copyrightsOf(file)
-      store.project.source = sourceText
+      setSourceText(store.project, sourceText)
     }
     const first = imported[0]?.sentences[0]
     if (first) store.cursor = { sentenceId: first.id, cell: 0 }
@@ -5721,11 +5925,12 @@ function applyAiReply(reply: AiVersion): void {
   }
   let filled = 0
   let alternatives = 0
-  mutate(() => {
-    const summary = applyAiResults(store.project, reply.ok ?? [])
-    filled = summary.filled
-    alternatives = summary.alternatives
-  })
+    const appliedIds = (reply.ok ?? []).map((result) => result.id)
+    mutate(() => {
+      const summary = applyAiResults(store.project, reply.ok ?? [])
+      filled = summary.filled
+      alternatives = summary.alternatives
+    }, appliedIds)
   reply.applied = true
   renderAiMessages()
   focusCellInput()
@@ -5836,15 +6041,23 @@ async function runAiGeneration(
   }
   try {
     const writing = targets === null || targets.length > 0
+    // 提示词窗里翻到哪页就用哪页：① → system，③ + ② → user（对话模式 ② 默认是空的）
+    const promptPages = loadPromptPages()
+    const systemText = currentPageText(
+      promptPages.system,
+      writing ? buildSystemPrompt() : buildChatSystemPrompt(),
+    )
+    const briefText = writing
+      ? currentPageText(promptPages.brief, buildBrief(aiProject(), targets, requestText))
+      : currentPageText(promptPages.brief, "")
+    const userWords = currentPageText(promptPages.user, requestText)
+    const userText = [userWords, briefText]
+      .filter((part) => part.trim() !== "")
+      .join("\n\n")
     const messages: ChatMessage[] = [
-      { role: "system", content: writing ? buildSystemPrompt() : buildChatSystemPrompt() },
+      { role: "system", content: systemText },
       ...history,
-      {
-        role: "user",
-        content: writing
-          ? `${requestText}\n\n${buildBrief(aiProject(), targets, requestText)}`
-          : requestText,
-      },
+      { role: "user", content: userText },
     ]
     let raw = await requestChat(target, messages, {
       signal: aiAbort.signal,
@@ -7454,7 +7667,7 @@ function dissolveFlashedGroup(): void {
   clearGroupDissolve()
   mutate(() => {
     dissolveRhymeGroup(store.project, id)
-  })
+  }, groupSentenceIds(id))
   setStatus("已解散韵组")
 }
 
@@ -7568,7 +7781,7 @@ function openRhymeGroupsOverview(): void {
       dissolve.addEventListener("click", () => {
         mutate(() => {
           dissolveRhymeGroup(store.project, group.id)
-        })
+        }, groupSentenceIds(group.id))
         setStatus("已解散韵组")
         renderList()
       })
@@ -7661,7 +7874,7 @@ function dissolveSelectedGroups(): void {
   }
   mutate(() => {
     for (const id of ids) dissolveRhymeGroup(store.project, id)
-  })
+  }, [...ids].flatMap((id) => groupSentenceIds(id)))
   clearSelection()
   setStatus(ids.size === 1 ? "已解散韵组" : `已解散 ${ids.size} 个韵组`)
 }
@@ -7780,7 +7993,7 @@ function openRhymeGroupDialog(): void {
             clearedCount += 1
           }
         }
-      })
+      }, cells.map((cell) => cell.sentenceId))
       clearSelection()
       focusCellInput()
       setStatus(
@@ -7838,7 +8051,7 @@ function openRhymeGroupEditDialog(groupId: string): void {
     onSubmit: (constraint) => {
       mutate(() => {
         updateRhymeGroupConstraint(store.project, groupId, constraint)
-      })
+      }, groupSentenceIds(groupId))
       setStatus(`已更新韵组约束：${before} → ${constraintText(constraint)}`)
       openRhymeGroupsOverview()
     },
@@ -8165,10 +8378,12 @@ async function exportDiagLog(): Promise<void> {
 function openAiPromptView(): void {
   const targets = aiTargetIds()
   const writing = targets === null || targets.length > 0
-  const userText = aiInput.value.trim() || "（这里会带上你在输入框里写的要求）"
   const scopeLabel = AI_SCOPE_OPTIONS.find((option) => option.value === aiScope)?.label ?? "整首"
   const target = resolveTarget(aiSettings)
+  const pages = loadPromptPages()
+
   const dialog = document.createElement("dialog")
+  dialog.className = "ai-prompt-dialog"
   const form = document.createElement("form")
   form.method = "dialog"
   form.className = "dialog-body"
@@ -8177,27 +8392,116 @@ function openAiPromptView(): void {
   title.textContent = "发给模型的提示词"
 
   const hint = document.createElement("p")
+  const pagesHint = "每段第 1 页都是内置的（固定、不能删）；第 2 页起可以自己加，翻到哪页就用哪页。"
   hint.textContent = writing
-    ? `范围「${scopeLabel}」只影响下面第二段——标「→ 要写」的句子会让模型生成，其余只作上下文。当前模型：${
+    ? `范围「${scopeLabel}」只影响第二段——标「→ 要写」的句子会让模型生成，其余只作上下文。${pagesHint}当前模型：${
         target ? modelLabel(target.model) : "（还没配）"
       }`
-    : `对话模式：不附带词格，只发你说的话。当前模型：${target ? modelLabel(target.model) : "（还没配）"}`
+    : `对话模式：不附带词格，只发你说的话。${pagesHint}当前模型：${
+        target ? modelLabel(target.model) : "（还没配）"
+      }`
 
-  const sysTitle = document.createElement("div")
-  sysTitle.className = "ai-provider-note"
-  sysTitle.textContent = "① 系统提示词（固定）"
-  const sysArea = document.createElement("textarea")
-  sysArea.readOnly = true
-  sysArea.className = "ai-pre"
-  sysArea.value = writing ? buildSystemPrompt() : buildChatSystemPrompt()
+  // 三段各自的「内置页」文本（跟着当前状态实时算）
+  const builtinOf: Record<keyof AiPromptPages, () => string> = {
+    system: () => (writing ? buildSystemPrompt() : buildChatSystemPrompt()),
+    brief: () => (writing ? buildBrief(aiProject(), targets, aiInput.value.trim()) : ""),
+    user: () => aiInput.value.trim(),
+  }
+  const sections: { key: keyof AiPromptPages; label: string; placeholder: string }[] = [
+    { key: "system", label: "① 系统提示词", placeholder: "" },
+    {
+      key: "brief",
+      label: "② 本次请求",
+      placeholder: writing ? "" : "（对话模式不附带词格；想固定发点什么就加一页）",
+    },
+    { key: "user", label: "③ 你说的话", placeholder: "（默认跟输入框里那句走；想存几套就加一页）" },
+  ]
 
-  const userTitle = document.createElement("div")
-  userTitle.className = "ai-provider-note"
-  userTitle.textContent = writing ? "② 本次请求（附在你说的话后面）" : "② 你说的话"
-  const userArea = document.createElement("textarea")
-  userArea.readOnly = true
-  userArea.className = "ai-pre"
-  userArea.value = writing ? buildBrief(store.project, targets, userText) : userText
+  const body = document.createElement("div")
+  body.className = "prompt-sections"
+
+  const renderSections = (): void => {
+    body.replaceChildren()
+    for (const item of sections) {
+      const state = pages[item.key]
+      const wrap = document.createElement("div")
+      wrap.className = "prompt-section"
+
+      const head = document.createElement("div")
+      head.className = "prompt-head"
+      const label = document.createElement("div")
+      label.className = "ai-provider-note"
+      label.textContent = item.label
+
+      const pager = document.createElement("div")
+      pager.className = "prompt-pager"
+      const prev = document.createElement("button")
+      prev.type = "button"
+      prev.className = "prompt-prev"
+      prev.title = "上一页"
+      prev.textContent = "‹"
+      prev.disabled = state.active === 0
+      const pageLabel = document.createElement("span")
+      pageLabel.className = "prompt-page"
+      pageLabel.textContent = `${state.active + 1} / ${pageCount(state)}`
+      const next = document.createElement("button")
+      next.type = "button"
+      next.className = "prompt-next"
+      next.title = "下一页"
+      next.textContent = "›"
+      next.disabled = state.active >= state.custom.length
+      const add = document.createElement("button")
+      add.type = "button"
+      add.className = "prompt-add"
+      add.title = "新增一页（空白）"
+      add.textContent = "＋"
+      const del = document.createElement("button")
+      del.type = "button"
+      del.className = "prompt-del"
+      del.title = "删除这一页"
+      del.textContent = "−"
+      del.disabled = isBuiltinPage(state)
+
+      prev.addEventListener("click", () => {
+        gotoPromptPage(state, state.active - 1)
+        savePromptPages(pages)
+        renderSections()
+      })
+      next.addEventListener("click", () => {
+        gotoPromptPage(state, state.active + 1)
+        savePromptPages(pages)
+        renderSections()
+      })
+      add.addEventListener("click", () => {
+        addPromptPage(state)
+        savePromptPages(pages)
+        renderSections()
+      })
+      del.addEventListener("click", () => {
+        if (!window.confirm("删掉这一页？（内容找不回来）")) return
+        removePromptPage(state)
+        savePromptPages(pages)
+        renderSections()
+      })
+
+      pager.append(prev, pageLabel, next, add, del)
+      head.append(label, pager)
+
+      const area = document.createElement("textarea")
+      area.className = "ai-pre"
+      area.readOnly = isBuiltinPage(state)
+      area.value = currentPageText(state, builtinOf[item.key]())
+      if (item.placeholder) area.placeholder = item.placeholder
+      area.addEventListener("input", () => {
+        setPageText(state, area.value)
+        savePromptPages(pages)
+      })
+
+      wrap.append(head, area)
+      body.appendChild(wrap)
+    }
+  }
+  renderSections()
 
   const actions = document.createElement("div")
   actions.className = "dialog-actions"
@@ -8207,7 +8511,7 @@ function openAiPromptView(): void {
   close.textContent = "知道了"
   actions.appendChild(close)
 
-  form.append(title, hint, sysTitle, sysArea, userTitle, userArea, actions)
+  form.append(title, hint, body, actions)
   dialog.appendChild(form)
   document.body.appendChild(dialog)
   dialog.addEventListener("close", () => dialog.remove())
@@ -8958,7 +9262,7 @@ function bindAiDocChannels(docId: string): void {
       const summary = applyAiResults(store.project, ok)
       filled = summary.filled
       alternatives = summary.alternatives
-    })
+    }, ok.map((result) => result.id))
     focusCellInput()
     setStatus(
       `AI 已填 ${filled} 句${alternatives > 0 ? `，其中 ${alternatives} 句进了「AI」备选` : ""}（可撤销）`,
@@ -9225,6 +9529,8 @@ function initAiWindowMode(): void {
 }
 
 function initAiPanel(): void {
+  // 「系统提示词」窗和平台无关（只是看/改提示词），先绑上，别被下面的网页版分支跳过
+  document.querySelector("#btn-ai-prompt")?.addEventListener("click", openAiPromptView)
   if (!isDesktop()) {
     btnAi.disabled = true
     btnAi.title = "AI 填词仅桌面版可用（网页版暂不支持）"
@@ -9287,7 +9593,6 @@ function initAiPanel(): void {
     }
   })
   document.querySelector("#btn-new-convo")?.addEventListener("click", newConvo)
-  document.querySelector("#btn-ai-prompt")?.addEventListener("click", openAiPromptView)
   document.querySelector("#btn-ai-export")?.addEventListener("click", () => {
     if (aiExporting) exitAiExportMode()
     else enterAiExportMode()
@@ -9379,6 +9684,7 @@ if (svSyncOn()) startSvSync()
     else closeSourcePanel()
   })
   sourceCloseBtn.addEventListener("click", closeSourcePanel)
+  sourceGridBtn.addEventListener("click", () => void generateGridFromSource())
   statusPathEl.title = isDesktop()
     ? "点这里保存草稿备份（全部歌词文件）"
     : "点这里把全部歌词文件的草稿备份下载下来"

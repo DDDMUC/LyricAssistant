@@ -400,7 +400,7 @@ function parseContentLine(line: string): ParsedLine | null {
   return content ? { ...content, note } : null
 }
 
-export function parseLyrics(text: string): ParsedLyrics {
+export function parseLyrics(text: string, keepCreditLines = false): ParsedLyrics {
   const result: ParsedLyrics = { title: "", sections: [], credits: [] }
   let current: ParsedSection | null = null
   let first = true
@@ -426,7 +426,7 @@ export function parseLyrics(text: string): ParsedLyrics {
     line = line.replace(/^(\[[^\]]*\]\s*)+/, "").trim()
     if (!line) continue
 
-    const creditEntries = extractCredits(line)
+    const creditEntries = keepCreditLines ? null : extractCredits(line)
     if (creditEntries) {
       result.credits.push(...creditEntries)
       continue

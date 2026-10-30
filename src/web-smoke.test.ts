@@ -240,3 +240,176 @@ it("MIDI 里的歌词事件整段抄进原文面板", async () => {
   expect(sourceLines[0].textContent).toBe("春风吹又生")
   expect(sourceLines[0].className).toBe("source-line")
 })
+
+it("原文面板：每行一个小点，点了切归属；创作信息和歌词之间有分割线", async () => {
+  const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const file = new File(["作词：骆栖淮\n风割海棠沉如雪"], "src.txt")
+  const event = new Event("drop", { bubbles: true }) as Event & { dataTransfer?: unknown }
+  Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files: [file] } })
+  window.dispatchEvent(event)
+  await tick(30)
+  const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  Array.from(dialog.querySelectorAll("button"))
+    .find((button) => button.textContent === "导入")!
+    .click()
+  await tick(30)
+
+  const rows = () => Array.from(document.querySelectorAll<HTMLElement>("#source-text p"))
+  expect(rows().map((row) => row.querySelector(".source-line-text")?.textContent)).toEqual([
+    "作词：骆栖淮",
+    "风割海棠沉如雪",
+  ])
+  expect(rows()[0].className).toContain("source-credit")
+  expect(rows()[1].className).toContain("source-line")
+  // 创作信息块和歌词块交界处有分割线
+  expect(rows()[1].className).toContain("source-divider")
+
+  const dot = rows()[1].querySelector<HTMLButtonElement>("button.source-dot")
+  expect(dot).not.toBeNull()
+  dot!.click()
+  await tick(10)
+  expect(rows()[1].className).toContain("source-credit")
+  expect(rows()[1].className).not.toContain("source-divider")
+})
+
+it("原文面板：能用编辑后的原文生成词格（只算正文行，覆盖）", async () => {
+  const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const file = new File(["作词：骆栖淮\n风割海棠沉如雪"], "grid.txt")
+  const event = new Event("drop", { bubbles: true }) as Event & { dataTransfer?: unknown }
+  Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files: [file] } })
+  window.dispatchEvent(event)
+  await tick(30)
+  const importDialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  Array.from(importDialog.querySelectorAll("button"))
+    .find((button) => button.textContent === "导入")!
+    .click()
+  await tick(30)
+  expect(document.querySelectorAll(".sentence")).toHaveLength(1)
+
+  // 把创作信息那行点成正文 → 原文变成两行正文
+  document.querySelector<HTMLButtonElement>("#source-text p .source-dot")!.click()
+  await tick(10)
+
+  const gridBtn = document.querySelector<HTMLButtonElement>("#btn-source-grid")
+  expect(gridBtn).not.toBeNull()
+  gridBtn!.click()
+  await tick(30)
+  const ask = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  const labels = Array.from(ask.querySelectorAll("button")).map((button) => button.textContent)
+  expect(labels).toContain("覆盖")
+  expect(labels).toContain("追加")
+  Array.from(ask.querySelectorAll("button"))
+    .find((button) => button.textContent === "覆盖")!
+    .click()
+  await tick(30)
+  expect(document.querySelectorAll(".sentence")).toHaveLength(2)
+})
+
+it("原文面板：生成词格可以追加在后面", async () => {
+  const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const file = new File(["生同花开枝头灭"], "grid2.txt")
+  const event = new Event("drop", { bubbles: true }) as Event & { dataTransfer?: unknown }
+  Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files: [file] } })
+  window.dispatchEvent(event)
+  await tick(30)
+  const importDialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  Array.from(importDialog.querySelectorAll("button"))
+    .find((button) => button.textContent === "导入")!
+    .click()
+  await tick(30)
+  expect(document.querySelectorAll(".sentence")).toHaveLength(1)
+
+  document.querySelector<HTMLButtonElement>("#btn-source-grid")!.click()
+  await tick(30)
+  const ask = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  Array.from(ask.querySelectorAll("button"))
+    .find((button) => button.textContent === "追加")!
+    .click()
+  await tick(30)
+  expect(document.querySelectorAll(".sentence")).toHaveLength(2)
+})
+
+it("发给模型的提示词：三段各有翻页，自定义页可新增 / 删除 / 编辑", async () => {
+  const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  localStorage.removeItem("cige-grid-ai-prompts")
+  document.querySelector<HTMLButtonElement>("#btn-ai-prompt")!.click()
+  await tick(30)
+  const dialog = () => document.querySelector<HTMLDialogElement>("dialog[open]")!
+  expect(dialog().querySelectorAll(".prompt-pager")).toHaveLength(3)
+  expect(dialog().querySelectorAll("textarea.ai-pre")).toHaveLength(3)
+
+  const sysPage = () => dialog().querySelectorAll<HTMLElement>(".prompt-page")[0].textContent
+  const sysArea = () => dialog().querySelectorAll<HTMLTextAreaElement>("textarea.ai-pre")[0]
+  expect(sysPage()).toBe("1 / 1")
+  expect(sysArea().readOnly).toBe(true)
+  expect(sysArea().value.length).toBeGreaterThan(0)
+
+  // 新增一页（空白）→ 2 / 2、可编辑
+  dialog().querySelectorAll<HTMLButtonElement>(".prompt-add")[0].click()
+  await tick(10)
+  expect(sysPage()).toBe("2 / 2")
+  expect(sysArea().readOnly).toBe(false)
+  expect(sysArea().value).toBe("")
+
+  // 改内容 → 存进 localStorage
+  sysArea().value = "我的系统提示词"
+  sysArea().dispatchEvent(new Event("input"))
+  await tick(10)
+  const saved = JSON.parse(localStorage.getItem("cige-grid-ai-prompts")!) as {
+    system: { custom: string[]; active: number }
+  }
+  expect(saved.system.custom[0]).toBe("我的系统提示词")
+  expect(saved.system.active).toBe(1)
+
+  // 删除 → 回内置页（1 / 1、只读）
+  const originalConfirm = window.confirm
+  window.confirm = () => true
+  dialog().querySelectorAll<HTMLButtonElement>(".prompt-del")[0].click()
+  await tick(10)
+  window.confirm = originalConfirm
+  expect(sysPage()).toBe("1 / 1")
+  expect(sysArea().readOnly).toBe(true)
+  dialog().querySelector<HTMLButtonElement>(".dialog-actions button")!.click()
+  await tick(10)
+  localStorage.removeItem("cige-grid-ai-prompts")
+})
+
+it("保存创作信息只刷状态栏：句子 DOM 没被整表重画", async () => {
+  const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const file = new File(["作词：甲\n风割海棠沉如雪"], "credits.txt")
+  const event = new Event("drop", { bubbles: true }) as Event & { dataTransfer?: unknown }
+  Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files: [file] } })
+  window.dispatchEvent(event)
+  await tick(30)
+  const importDialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  Array.from(importDialog.querySelectorAll("button"))
+    .find((button) => button.textContent === "导入")!
+    .click()
+  await tick(30)
+
+  const before = Array.from(document.querySelectorAll(".sentence"))
+  expect(before.length).toBeGreaterThan(0)
+  document.querySelector<HTMLButtonElement>("#btn-credits")!.click()
+  await tick(30)
+  const creditsDialog = document.querySelector<HTMLDialogElement>("dialog[open]")!
+  creditsDialog.querySelector<HTMLTextAreaElement>("textarea")!.value = "作词：甲\n作曲：乙"
+  Array.from(creditsDialog.querySelectorAll("button"))
+    .find((button) => button.textContent === "保存")!
+    .click()
+  await tick(30)
+
+  const after = Array.from(document.querySelectorAll(".sentence"))
+  expect(after.map((el, index) => el === before[index])).toEqual(before.map(() => true))
+})
+
+it("原文面板：文字能就地改，改完重画后还是新文字", async () => {
+  const tick = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const text = document.querySelector<HTMLElement>("#source-text .source-line-text")!
+  expect(text.isContentEditable).toBe(true)
+  text.textContent = "作词：骆栖淮、某某"
+  text.dispatchEvent(new Event("blur"))
+  await tick(10)
+  expect(document.querySelector<HTMLElement>("#source-text .source-line-text")?.textContent).toBe(
+    "作词：骆栖淮、某某",
+  )
+})

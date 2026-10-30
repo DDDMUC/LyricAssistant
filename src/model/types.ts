@@ -61,8 +61,16 @@ export interface Project {
   updatedAt: string
   credits?: string[]
   source?: string
+  /** 原文面板：按行存（文字 + 归属），面板可编辑；source 是它的派生镜像 */
+  sourceLines?: SourceLine[]
   /** 连过 SV2 的话：格子 ↔ 音符对照表（跟着工程存） */
   svMap?: SvMapEntry[]
+}
+
+/** 原文面板的一行：文字 + 归属（创作信息 / 正文） */
+export interface SourceLine {
+  text: string
+  credit: boolean
 }
 
 export interface Cursor {
